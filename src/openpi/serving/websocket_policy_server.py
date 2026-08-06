@@ -6,6 +6,7 @@ import traceback
 
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
+from openpi_client import websocket_inference_protocol
 import websockets.asyncio.server as _server
 import websockets.frames
 
@@ -28,7 +29,7 @@ class WebsocketPolicyServer:
         self._policy = policy
         self._host = host
         self._port = port
-        self._metadata = metadata or {}
+        self._metadata = websocket_inference_protocol.with_server_capabilities(metadata or {})
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -55,10 +56,10 @@ class WebsocketPolicyServer:
         while True:
             try:
                 start_time = time.monotonic()
-                obs = msgpack_numpy.unpackb(await websocket.recv())
+                request = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action = _infer_request(self._policy, request)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
@@ -81,6 +82,13 @@ class WebsocketPolicyServer:
                     reason="Internal server error. Traceback included in previous frame.",
                 )
                 raise
+
+
+def _infer_request(policy: _base_policy.BasePolicy, request: dict) -> dict:
+    observation, inference_seed = websocket_inference_protocol.parse_inference_request(request)
+    if inference_seed is None:
+        return policy.infer(observation)
+    return policy.infer(observation, seed=inference_seed)
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:

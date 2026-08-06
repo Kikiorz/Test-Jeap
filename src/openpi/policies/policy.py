@@ -21,6 +21,12 @@ from openpi.shared import nnx_utils
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
 
+def _select_jax_inference_rng(rng: at.KeyArrayLike, seed: int | None) -> tuple[at.KeyArrayLike, at.KeyArrayLike]:
+    if seed is None:
+        return tuple(jax.random.split(rng))
+    return rng, jax.random.key(seed)
+
+
 class Policy(BasePolicy):
     def __init__(
         self,
@@ -65,14 +71,25 @@ class Policy(BasePolicy):
             self._rng = rng or jax.random.key(0)
 
     @override
-    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+    def infer(
+        self,
+        obs: dict,
+        *,
+        noise: np.ndarray | None = None,
+        seed: int | None = None,
+    ) -> dict:  # type: ignore[misc]
+        if seed is not None and noise is not None:
+            raise ValueError("seed and explicit noise are mutually exclusive")
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32):
+            raise ValueError(f"seed must be a uint32, got {seed!r}")
+
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
-            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            self._rng, sample_rng_or_pytorch_device = _select_jax_inference_rng(self._rng, seed)
         else:
             # Convert inputs to PyTorch tensors and move to correct device
             inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
@@ -80,8 +97,22 @@ class Policy(BasePolicy):
 
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
+        if self._is_pytorch_model and seed is not None:
+            generator = torch.Generator(device=self._pytorch_device)
+            generator.manual_seed(seed)
+            model_config = self._model.config
+            noise = torch.randn(
+                (1, model_config.action_horizon, model_config.action_dim),
+                device=self._pytorch_device,
+                dtype=torch.float32,
+                generator=generator,
+            )
         if noise is not None:
-            noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
+            if self._is_pytorch_model:
+                if isinstance(noise, np.ndarray):
+                    noise = torch.from_numpy(noise).to(self._pytorch_device)
+            else:
+                noise = jnp.asarray(noise)
 
             if noise.ndim == 2:  # If noise is (action_horizon, action_dim), add batch dimension
                 noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)
@@ -122,8 +153,8 @@ class PolicyRecorder(_base_policy.BasePolicy):
         self._record_step = 0
 
     @override
-    def infer(self, obs: dict) -> dict:  # type: ignore[misc]
-        results = self._policy.infer(obs)
+    def infer(self, obs: dict, *, seed: int | None = None) -> dict:  # type: ignore[misc]
+        results = self._policy.infer(obs) if seed is None else self._policy.infer(obs, seed=seed)
 
         data = {"inputs": obs, "outputs": results}
         data = flax.traverse_util.flatten_dict(data, sep="/")

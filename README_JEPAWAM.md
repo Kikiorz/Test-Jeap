@@ -313,7 +313,24 @@ Copy `pi05_libero_vjepa_aux` and update these fields together:
 At data-loader construction, the manifest is checked against the expected target shape, dtype, dataset frame count,
 future offset, and image key. A mismatch stops training before the first optimization step.
 
-## 10. Tests and current scope
+## 10. LIBERO and LIBERO-Plus rollout evaluation
+
+The repository includes the complete standard LIBERO and LIBERO-Plus rollout path, including the pinned simulator
+setup, checkpoint server, deterministic and resumable episode journals, task sharding, shard merging, seven-category
+and difficulty summaries, and both task-micro and category-macro success rates.
+
+See [README_LIBERO_EVAL.md](README_LIBERO_EVAL.md) for installation and commands. The shortest LIBERO-Plus smoke test
+after starting a checkpoint server is:
+
+```bash
+RUN_ID=pi05-jepa-step30000 \
+TASK_SUITE=libero_spatial \
+TASK_START=0 \
+TASK_END=1 \
+bash scripts/run_libero_evaluation.sh plus
+```
+
+## 11. Tests and current scope
 
 Run the focused test suite with:
 
