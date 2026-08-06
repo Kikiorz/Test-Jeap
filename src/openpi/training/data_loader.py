@@ -1,7 +1,10 @@
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
+import json
 import logging
 import multiprocessing
 import os
+from pathlib import Path
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
@@ -62,6 +65,107 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset)
 
 
+class VJepaTargetDataset(Dataset):
+    """Adds one precomputed V-JEPA target row to each LeRobot sample."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        target_root: str | Path,
+        *,
+        expected_shape: tuple[int, int],
+        expected_future_offset: int | None = None,
+        expected_image_key: str | None = None,
+        expected_num_frames: int | None = None,
+        mmap_cache_size: int = 16,
+    ):
+        if mmap_cache_size < 1:
+            raise ValueError("V-JEPA mmap cache size must be positive")
+        self._dataset = dataset
+        self._target_root = Path(target_root)
+        self._expected_shape = expected_shape
+        self._mmap_cache_size = mmap_cache_size
+        self._cache: OrderedDict[int, np.memmap] = OrderedDict()
+
+        manifest_path = self._target_root / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"V-JEPA target manifest not found: {manifest_path}")
+        with manifest_path.open() as f:
+            manifest = json.load(f)
+        if tuple(manifest.get("target_shape", ())) != expected_shape:
+            raise ValueError(
+                f"V-JEPA target shape mismatch: expected {expected_shape}, manifest has {manifest.get('target_shape')}"
+            )
+        if manifest.get("target_dtype") != "float16":
+            raise ValueError(f"Expected float16 V-JEPA targets, got {manifest.get('target_dtype')}")
+        if expected_future_offset is not None and manifest.get("future_offset") != expected_future_offset:
+            raise ValueError(
+                "V-JEPA future offset mismatch: "
+                f"expected {expected_future_offset}, manifest has {manifest.get('future_offset')}"
+            )
+        if expected_image_key is not None and manifest.get("image_key") != expected_image_key:
+            raise ValueError(
+                f"V-JEPA image key mismatch: expected {expected_image_key!r}, manifest has {manifest.get('image_key')!r}"
+            )
+        if expected_num_frames is not None and manifest.get("dataset_total_frames") != expected_num_frames:
+            raise ValueError(
+                "V-JEPA frame count mismatch: "
+                f"expected {expected_num_frames}, manifest has {manifest.get('dataset_total_frames')}"
+            )
+        self._chunks_size = int(manifest.get("chunks_size", 1000))
+        if self._chunks_size < 1:
+            raise ValueError("V-JEPA target manifest chunks_size must be positive")
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        sample = dict(self._dataset[index])
+        episode_index = int(np.asarray(sample["episode_index"]).item())
+        frame_index = int(np.asarray(sample["frame_index"]).item())
+        target = self._get_episode(episode_index)
+        if not 0 <= frame_index < target.shape[0]:
+            raise IndexError(
+                f"Frame {frame_index} is outside V-JEPA target episode {episode_index} with {target.shape[0]} rows"
+            )
+        # The copy decouples the row from an mmap that may be evicted before collation.
+        sample["vjepa_target"] = np.array(target[frame_index], copy=True)
+        return sample
+
+    def _get_episode(self, episode_index: int) -> np.memmap:
+        if episode_index in self._cache:
+            target = self._cache.pop(episode_index)
+            self._cache[episode_index] = target
+            return target
+
+        path = (
+            self._target_root
+            / "targets"
+            / f"chunk-{episode_index // self._chunks_size:03d}"
+            / f"episode_{episode_index:06d}.npy"
+        )
+        target = np.load(path, mmap_mode="r", allow_pickle=False)
+        if target.ndim != 3 or tuple(target.shape[1:]) != self._expected_shape or target.dtype != np.float16:
+            self._close_mmap(target)
+            raise ValueError(f"Invalid V-JEPA target array: {path}, shape={target.shape}, dtype={target.dtype}")
+        self._cache[episode_index] = target
+        while len(self._cache) > self._mmap_cache_size:
+            _, evicted = self._cache.popitem(last=False)
+            self._close_mmap(evicted)
+        return target
+
+    @staticmethod
+    def _close_mmap(value: np.ndarray) -> None:
+        mmap = getattr(value, "_mmap", None)
+        if mmap is not None:
+            mmap.close()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_cache"] = OrderedDict()
+        return state
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -109,8 +213,8 @@ class FakeDataset(Dataset):
             rng, data_rng = jax.random.split(rng)
             # Remove the batch dimension.
             shape = spec.shape[1:]
-            if spec.dtype == jnp.float32:
-                return jax.random.uniform(data_rng, shape=shape, minval=-1.0, maxval=1.0)
+            if jnp.issubdtype(spec.dtype, jnp.floating):
+                return jax.random.uniform(data_rng, shape=shape, minval=-1.0, maxval=1.0).astype(spec.dtype)
             if spec.dtype == jnp.int32:
                 return jax.random.randint(data_rng, shape=shape, minval=0, maxval=2048)
             return jnp.zeros(shape=shape, dtype=spec.dtype)
@@ -144,6 +248,24 @@ def create_torch_dataset(
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
     )
+
+    use_vjepa_aux = bool(getattr(model_config, "use_vjepa_aux", False))
+    if use_vjepa_aux and data_config.vjepa_target_root is None:
+        raise ValueError("V-JEPA auxiliary training requires data.vjepa_target_root")
+    if data_config.vjepa_target_root is not None:
+        if not use_vjepa_aux:
+            raise ValueError("V-JEPA targets were configured for a model with use_vjepa_aux=False")
+        if data_config.vjepa_future_offset is None or data_config.vjepa_image_key is None:
+            raise ValueError("V-JEPA targets require an expected future offset and image key")
+        dataset = VJepaTargetDataset(
+            dataset,
+            data_config.vjepa_target_root,
+            expected_shape=(model_config.vjepa_target_grid_size**2, model_config.vjepa_target_dim),
+            expected_future_offset=data_config.vjepa_future_offset,
+            expected_image_key=data_config.vjepa_image_key,
+            expected_num_frames=len(dataset),
+            mmap_cache_size=data_config.vjepa_mmap_cache_size,
+        )
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])

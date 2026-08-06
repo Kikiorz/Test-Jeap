@@ -97,6 +97,12 @@ class DataConfig:
     # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
     datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
 
+    # Optional per-frame frozen targets for Pi0.5 V-JEPA auxiliary training.
+    vjepa_target_root: str | None = None
+    vjepa_mmap_cache_size: int = 16
+    vjepa_future_offset: int | None = None
+    vjepa_image_key: str | None = None
+
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -236,6 +242,10 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     # the space used by the pi internal runtime which was used to train the base model. People who
     # use standard Aloha data should set this to true.
     adapt_to_pi: bool = True
+    vjepa_target_root: str | None = None
+    vjepa_mmap_cache_size: int = 16
+    vjepa_future_offset: int | None = None
+    vjepa_image_key: str | None = None
 
     # Repack transforms.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
@@ -275,6 +285,10 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+            vjepa_target_root=self.vjepa_target_root,
+            vjepa_mmap_cache_size=self.vjepa_mmap_cache_size,
+            vjepa_future_offset=self.vjepa_future_offset,
+            vjepa_image_key=self.vjepa_image_key,
         )
 
 
@@ -287,6 +301,10 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     """
 
     extra_delta_transform: bool = False
+    vjepa_target_root: str | None = None
+    vjepa_mmap_cache_size: int = 16
+    vjepa_future_offset: int | None = None
+    vjepa_image_key: str | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -298,19 +316,16 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # For your own dataset, first figure out what keys your environment passes to the policy server
         # and then modify the mappings below so your dataset's keys get matched to those target keys.
         # The repack transform simply remaps key names here.
-        repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/image": "image",
-                        "observation/wrist_image": "wrist_image",
-                        "observation/state": "state",
-                        "actions": "actions",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        )
+        repack_mapping = {
+            "observation/image": "image",
+            "observation/wrist_image": "wrist_image",
+            "observation/state": "state",
+            "actions": "actions",
+            "prompt": "prompt",
+        }
+        if self.vjepa_target_root is not None:
+            repack_mapping["vjepa_target"] = "vjepa_target"
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
 
         # The data transforms are applied to the data coming from the dataset *and* during inference.
         # Below, we define the transforms for data going into the model (``inputs``) and the transforms
@@ -352,6 +367,10 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            vjepa_target_root=self.vjepa_target_root,
+            vjepa_mmap_cache_size=self.vjepa_mmap_cache_size,
+            vjepa_future_offset=self.vjepa_future_offset,
+            vjepa_image_key=self.vjepa_image_key,
         )
 
 
@@ -760,6 +779,51 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    TrainConfig(
+        # Pi0.5 with a V-JEPA 2.1 future-representation auxiliary objective.
+        # Override data.vjepa_target_root on the command line if targets are stored elsewhere.
+        name="pi05_libero_vjepa_aux",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            vjepa_num_queries=64,
+            vjepa_query_grid_size=8,
+            vjepa_target_grid_size=24,
+            vjepa_target_dim=1408,
+            vjepa_aux_weight=0.1,
+            vjepa_aux_warmup_steps=1000,
+            vjepa_action_attends_queries=False,
+            vjepa_disable_geometric_augmentation=True,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            # Reuse normalization statistics produced by the baseline pi05_libero config.
+            assets=AssetsConfig(assets_dir="./assets/pi05_libero"),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            vjepa_target_root="./data/vjepa_targets/libero_vjepa2_1_vitg_384_offset31",
+            vjepa_mmap_cache_size=16,
+            vjepa_future_offset=31,
+            vjepa_image_key="image",
+        ),
+        batch_size=128,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*vjepa_.*",
+        ),
+        num_train_steps=30_000,
+        num_workers=2,
     ),
     #
     # Fine-tuning Aloha configs.

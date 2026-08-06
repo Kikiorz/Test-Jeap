@@ -67,6 +67,14 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.use_vjepa_aux = config.use_vjepa_aux
+        self.vjepa_num_queries = config.vjepa_num_queries
+        self.vjepa_query_grid_size = config.vjepa_query_grid_size
+        self.vjepa_target_grid_size = config.vjepa_target_grid_size
+        self.vjepa_target_dim = config.vjepa_target_dim
+        self.vjepa_aux_weight = config.vjepa_aux_weight
+        self.vjepa_action_attends_queries = config.vjepa_action_attends_queries
+        self.vjepa_disable_geometric_augmentation = config.vjepa_disable_geometric_augmentation
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -98,6 +106,15 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+
+        if self.use_vjepa_aux:
+            query_init = jax.random.normal(
+                rngs.params(), (self.vjepa_num_queries, paligemma_config.width), dtype=jnp.float32
+            )
+            self.vjepa_query_tokens = nnx.Param(query_init * 0.02)
+            self.vjepa_alignment_norm = nnx.LayerNorm(paligemma_config.width, rngs=rngs)
+            self.vjepa_alignment_in = nnx.Linear(paligemma_config.width, paligemma_config.width, rngs=rngs)
+            self.vjepa_alignment_out = nnx.Linear(paligemma_config.width, self.vjepa_target_dim, rngs=rngs)
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
@@ -131,6 +148,15 @@ class Pi0(_model.BaseModel):
             input_mask.append(obs.tokenized_prompt_mask)
             # full attention between image and language inputs
             ar_mask += [False] * tokenized_inputs.shape[1]
+        if self.use_vjepa_aux:
+            query_tokens = jnp.broadcast_to(
+                self.vjepa_query_tokens.value.astype(tokens[0].dtype),
+                (tokens[0].shape[0], self.vjepa_num_queries, self.vjepa_query_tokens.value.shape[-1]),
+            )
+            tokens.append(query_tokens)
+            input_mask.append(jnp.ones(query_tokens.shape[:2], dtype=jnp.bool_))
+            # Queries read image/language and one another. Earlier prefix tokens cannot read the queries.
+            ar_mask += [True] + ([False] * (self.vjepa_num_queries - 1))
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
@@ -185,12 +211,16 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
-    @override
-    def compute_loss(
+    def compute_loss_components(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
-    ) -> at.Float[at.Array, "*b ah"]:
+    ) -> tuple[at.Float[at.Array, "*b ah"], at.Float[at.Array, "*b"] | None]:
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
-        observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+        observation = _model.preprocess_observation(
+            preprocess_rng,
+            observation,
+            train=train,
+            geometric_augmentation=not (self.use_vjepa_aux and self.vjepa_disable_geometric_augmentation),
+        )
 
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
@@ -206,12 +236,56 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
+        if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
+            prefix_length = prefix_tokens.shape[1]
+            query_start = prefix_length - self.vjepa_num_queries
+            attn_mask = attn_mask.at[:, prefix_length:, query_start:prefix_length].set(False)
+            positions = positions.at[:, prefix_length:].add(-self.vjepa_num_queries)
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        if not self.use_vjepa_aux:
+            return flow_loss, None
+        if observation.vjepa_target is None:
+            raise ValueError("V-JEPA auxiliary training requires observation.vjepa_target")
+
+        query_out = prefix_out[:, -self.vjepa_num_queries :]
+        predicted_target = self.predict_vjepa_target(query_out)
+        target = jax.lax.stop_gradient(observation.vjepa_target.astype(jnp.float32))
+        if predicted_target.shape != target.shape:
+            raise ValueError(f"V-JEPA prediction/target shape mismatch: {predicted_target.shape} != {target.shape}")
+        predicted_target = predicted_target.astype(jnp.float32)
+        predicted_target /= jnp.maximum(jnp.linalg.norm(predicted_target, axis=-1, keepdims=True), 1e-6)
+        target /= jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
+        aux_loss = jnp.mean(1.0 - jnp.sum(predicted_target * target, axis=-1), axis=-1)
+        return flow_loss, aux_loss
+
+    def predict_vjepa_target(self, query_out: at.Float[at.Array, "b q emb"]) -> at.Float[at.Array, "b p d"]:
+        value = self.vjepa_alignment_norm(query_out)
+        value = nnx.gelu(self.vjepa_alignment_in(value))
+        value = self.vjepa_alignment_out(value)
+        value = value.reshape(
+            value.shape[0], self.vjepa_query_grid_size, self.vjepa_query_grid_size, self.vjepa_target_dim
+        )
+        value = jax.image.resize(
+            value,
+            (value.shape[0], self.vjepa_target_grid_size, self.vjepa_target_grid_size, self.vjepa_target_dim),
+            method="linear",
+        )
+        return value.reshape(value.shape[0], self.vjepa_target_grid_size**2, self.vjepa_target_dim)
+
+    @override
+    def compute_loss(
+        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
+    ) -> at.Float[at.Array, "*b ah"]:
+        flow_loss, aux_loss = self.compute_loss_components(rng, observation, actions, train=train)
+        if aux_loss is None:
+            return flow_loss
+
+        return flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
 
     @override
     def sample_actions(
@@ -247,6 +321,8 @@ class Pi0(_model.BaseModel):
             # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
             # prefix tokens
             prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
+                prefix_attn_mask = prefix_attn_mask.at[:, :, -self.vjepa_num_queries :].set(False)
             # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
             # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
             full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
@@ -257,6 +333,8 @@ class Pi0(_model.BaseModel):
             )
             # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
             positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+            if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
+                positions = positions - self.vjepa_num_queries
 
             (prefix_out, suffix_out), _ = self.PaliGemma.llm(
                 [None, suffix_tokens],

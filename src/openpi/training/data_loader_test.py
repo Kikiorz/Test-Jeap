@@ -1,10 +1,67 @@
 import dataclasses
+import json
 
 import jax
+import numpy as np
+import pytest
 
 from openpi.models import pi0_config
 from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
+
+
+class _ListDataset:
+    def __init__(self, items):
+        self._items = items
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+    def __len__(self):
+        return len(self._items)
+
+
+def test_vjepa_target_dataset(tmp_path):
+    target_root = tmp_path / "targets_root"
+    episode_dir = target_root / "targets" / "chunk-000"
+    episode_dir.mkdir(parents=True)
+    (target_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "target_shape": [6, 4],
+                "target_dtype": "float16",
+                "future_offset": 50,
+                "image_key": "observation.images.cam_high",
+            }
+        )
+    )
+    episode = np.arange(3 * 6 * 4, dtype=np.float16).reshape(3, 6, 4)
+    np.save(episode_dir / "episode_000007.npy", episode, allow_pickle=False)
+    dataset = _data_loader.VJepaTargetDataset(
+        _ListDataset(
+            [
+                {"episode_index": np.int64(7), "frame_index": np.int64(0)},
+                {"episode_index": np.int64(7), "frame_index": np.int64(2)},
+            ]
+        ),
+        target_root,
+        expected_shape=(6, 4),
+        expected_future_offset=50,
+        expected_image_key="observation.images.cam_high",
+        mmap_cache_size=1,
+    )
+
+    np.testing.assert_array_equal(dataset[0]["vjepa_target"], episode[0])
+    np.testing.assert_array_equal(dataset[1]["vjepa_target"], episode[2])
+    assert dataset[0]["vjepa_target"].dtype == np.float16
+
+    with pytest.raises(ValueError, match="future offset mismatch"):
+        _data_loader.VJepaTargetDataset(
+            _ListDataset([]),
+            target_root,
+            expected_shape=(6, 4),
+            expected_future_offset=31,
+        )
 
 
 def test_torch_data_loader():

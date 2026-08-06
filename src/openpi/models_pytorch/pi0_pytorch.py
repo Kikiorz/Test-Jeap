@@ -84,6 +84,8 @@ def make_att_2d_masks(pad_masks, att_masks):
 class PI0Pytorch(nn.Module):
     def __init__(self, config):
         super().__init__()
+        if getattr(config, "use_vjepa_aux", False):
+            raise NotImplementedError("V-JEPA auxiliary training is currently implemented in the JAX Pi0.5 trainer")
         self.config = config
         self.pi05 = config.pi05
 

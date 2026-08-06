@@ -32,6 +32,17 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # Optional future-representation objective. Disabled by default so existing Pi0/Pi0.5 models are unchanged.
+    use_vjepa_aux: bool = False
+    vjepa_num_queries: int = 64
+    vjepa_query_grid_size: int = 8
+    vjepa_target_grid_size: int = 24
+    vjepa_target_dim: int = 1408
+    vjepa_aux_weight: float = 0.1
+    vjepa_aux_warmup_steps: int = 1000
+    vjepa_action_attends_queries: bool = False
+    vjepa_disable_geometric_augmentation: bool = True
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
@@ -46,6 +57,15 @@ class Pi0Config(_model.BaseModelConfig):
                 "max-autotune",
                 "max-autotune-no-cudagraphs",
             ]
+        if self.use_vjepa_aux:
+            if not self.pi05:
+                raise ValueError("V-JEPA auxiliary training is only supported for Pi0.5")
+            if self.vjepa_num_queries != self.vjepa_query_grid_size**2:
+                raise ValueError("vjepa_num_queries must equal vjepa_query_grid_size squared")
+            if self.vjepa_target_grid_size < 1 or self.vjepa_target_dim < 1:
+                raise ValueError("V-JEPA target grid size and dimension must be positive")
+            if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
+                raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
 
     @property
     @override
@@ -80,6 +100,13 @@ class Pi0Config(_model.BaseModelConfig):
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                vjepa_target=(
+                    jax.ShapeDtypeStruct(
+                        [batch_size, self.vjepa_target_grid_size**2, self.vjepa_target_dim], jnp.float16
+                    )
+                    if self.use_vjepa_aux
+                    else None
+                ),
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 

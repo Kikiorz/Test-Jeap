@@ -80,6 +80,9 @@ class LiberoInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
+        if "vjepa_target" in data:
+            inputs["vjepa_target"] = data["vjepa_target"]
+
         return inputs
 
 

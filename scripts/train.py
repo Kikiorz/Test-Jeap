@@ -150,12 +150,43 @@ def train_step(
         chunked_loss = model.compute_loss(rng, observation, actions, train=True)
         return jnp.mean(chunked_loss)
 
+    def vjepa_loss_fn(
+        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+    ):
+        flow_loss, vjepa_loss = model.compute_loss_components(rng, observation, actions, train=True)
+        assert vjepa_loss is not None
+        if config.model.vjepa_aux_warmup_steps > 0:
+            warmup = jnp.minimum(
+                state.step.astype(jnp.float32) / config.model.vjepa_aux_warmup_steps,
+                1.0,
+            )
+        else:
+            warmup = jnp.asarray(1.0, dtype=jnp.float32)
+        vjepa_weight = warmup * config.model.vjepa_aux_weight
+        flow_loss = jnp.mean(flow_loss)
+        vjepa_loss = jnp.mean(vjepa_loss)
+        weighted_vjepa_loss = vjepa_weight * vjepa_loss
+        total_loss = flow_loss + weighted_vjepa_loss
+        return total_loss, {
+            "flow_loss": flow_loss,
+            "vjepa_loss": vjepa_loss,
+            "vjepa_cosine": 1.0 - vjepa_loss,
+            "vjepa_weight": vjepa_weight,
+            "weighted_vjepa_loss": weighted_vjepa_loss,
+        }
+
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    if getattr(config.model, "use_vjepa_aux", False):
+        (loss, loss_info), grads = nnx.value_and_grad(vjepa_loss_fn, argnums=diff_state, has_aux=True)(
+            model, train_rng, observation, actions
+        )
+    else:
+        loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+        loss_info = {}
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -187,6 +218,7 @@ def train_step(
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
+        **loss_info,
     }
     return new_state, info
 
