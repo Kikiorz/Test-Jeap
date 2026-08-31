@@ -142,4 +142,4 @@ def test_actr_freezes_every_released_checkpoint_parameter():
     trainable = nnx.state(model, nnx.All(nnx.Param, nnx.Not(config.get_freeze_filter()))).flat_state()
 
     assert trainable
-    assert all("actr" in path for path, _ in trainable)
+    assert all("actr" in str(path) for path in trainable)
