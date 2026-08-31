@@ -179,9 +179,12 @@ class _LocalLeRobotV3Metadata:
             raise ValueError(f"Expected a LeRobot v3.0 view at {self.root}")
         self.fps = float(self.info["fps"])
         task_table = pq.read_table(self.root / "meta" / "tasks.parquet")
+        task_column = "task" if "task" in task_table.column_names else "__index_level_0__"
         self.tasks = {
             int(index): task
-            for index, task in zip(task_table["task_index"].to_pylist(), task_table["task"].to_pylist(), strict=True)
+            for index, task in zip(
+                task_table["task_index"].to_pylist(), task_table[task_column].to_pylist(), strict=True
+            )
         }
 
 
