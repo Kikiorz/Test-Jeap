@@ -28,6 +28,15 @@ else
     ln -s "$stage1_params" "$stage1_link"
 fi
 
+# Stage 1 must establish the mechanism before Stage 2 is allowed to optimize
+# actions.  Matching actions should predict their realized transition target
+# more accurately than a batch-marginal-preserving action derangement.
+CUDA_VISIBLE_DEVICES="${ACTR_DIAGNOSTIC_GPU:-0}" \
+    "$PYTHON_BIN" scripts/evaluate_actr_action_sensitivity.py \
+    "$stage1_params" \
+    --require-gate \
+    --output /workspace/artifacts/logs/actr-stage1-action-sensitivity.json
+
 "$PYTHON_BIN" scripts/train.py pi05_libero_actr_stage2 --exp-name "$STAGE2_EXP"
 
 stage2_params="$ROOT/checkpoints/pi05_libero_actr_stage2/$STAGE2_EXP/19999/params"
