@@ -102,6 +102,9 @@ class DataConfig:
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    # Optional read-only local view of a LeRobot v3 sharded dataset.  This is
+    # used when the project-pinned LeRobot client predates the v3 shard reader.
+    local_lerobot_v3_root: str | None = None
 
 
 class GroupFactory(Protocol):
@@ -309,6 +312,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     # parquet/video shards instead of one embedded-image parquet per episode.
     # Values are identical; only source field names differ.
     use_v3_schema: bool = False
+    local_v3_root: str | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -386,6 +390,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             vjepa_future_offset=self.vjepa_future_offset,
             vjepa_image_key=self.vjepa_image_key,
             action_sequence_keys=("action",) if self.use_v3_schema else ("actions",),
+            local_lerobot_v3_root=self.local_v3_root,
         )
 
 
@@ -877,6 +882,7 @@ _CONFIGS = [
             vjepa_future_offset=31,
             vjepa_image_key="image",
             use_v3_schema=True,
+            local_v3_root="/workspace/artifacts/datasets/lerobot_libero_v3_view",
         ),
         batch_size=128,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -941,6 +947,7 @@ _CONFIGS = [
             vjepa_future_offset=31,
             vjepa_image_key="image",
             use_v3_schema=True,
+            local_v3_root="/workspace/artifacts/datasets/lerobot_libero_v3_view",
         ),
         batch_size=128,
         lr_schedule=_optimizer.CosineDecaySchedule(

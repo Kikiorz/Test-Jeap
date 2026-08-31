@@ -166,6 +166,119 @@ class VJepaTargetDataset(Dataset):
         return state
 
 
+class _LocalLeRobotV3Metadata:
+    """Minimal metadata surface needed by OpenPI's training transforms."""
+
+    def __init__(self, root: str | Path):
+        import pyarrow.parquet as pq
+
+        self.root = Path(root)
+        with (self.root / "meta" / "info.json").open() as f:
+            self.info = json.load(f)
+        if self.info.get("codebase_version") != "v3.0":
+            raise ValueError(f"Expected a LeRobot v3.0 view at {self.root}")
+        self.fps = float(self.info["fps"])
+        task_table = pq.read_table(self.root / "meta" / "tasks.parquet")
+        self.tasks = {
+            int(index): task
+            for index, task in zip(
+                task_table["task_index"].to_pylist(), task_table["task"].to_pylist(), strict=True
+            )
+        }
+
+
+class _LocalLeRobotV3Dataset(Dataset):
+    """Read-only random-access reader for the official LIBERO v3 shards.
+
+    The project pins a pre-v3 LeRobot client.  Rather than rewriting or
+    duplicating the trajectories, this adapter reads the existing parquet
+    shards and seeks the shared AV1 videos through TorchCodec.
+    """
+
+    def __init__(self, root: str | Path, *, action_horizon: int, decoder_cache_size: int = 16):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        if action_horizon < 1 or decoder_cache_size < 1:
+            raise ValueError("action_horizon and decoder_cache_size must be positive")
+        self.root = Path(root)
+        self.action_horizon = action_horizon
+        self.decoder_cache_size = decoder_cache_size
+        self._decoder_cache: OrderedDict[tuple[str, int], object] = OrderedDict()
+
+        with (self.root / "meta" / "info.json").open() as f:
+            self.info = json.load(f)
+        self.fps = float(self.info["fps"])
+        data_paths = sorted(self.root.glob("data/chunk-*/file-*.parquet"))
+        if not data_paths:
+            raise FileNotFoundError(f"No LeRobot v3 data shards under {self.root}")
+        table = pa.concat_tables([pq.read_table(path) for path in data_paths])
+        indices = np.asarray(table["index"].to_numpy(), dtype=np.int64)
+        if not np.array_equal(indices, np.arange(len(indices), dtype=np.int64)):
+            raise ValueError("LeRobot v3 data shards are not in contiguous global-index order")
+
+        self._state = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
+        self._action = np.asarray(table["action"].to_pylist(), dtype=np.float32)
+        self._timestamp = np.asarray(table["timestamp"].to_numpy(), dtype=np.float64)
+        self._frame_index = np.asarray(table["frame_index"].to_numpy(), dtype=np.int64)
+        self._episode_index = np.asarray(table["episode_index"].to_numpy(), dtype=np.int64)
+        self._task_index = np.asarray(table["task_index"].to_numpy(), dtype=np.int64)
+
+        episode_paths = sorted(self.root.glob("meta/episodes/chunk-*/file-*.parquet"))
+        episode_table = pa.concat_tables([pq.read_table(path) for path in episode_paths])
+        episodes = sorted(episode_table.to_pylist(), key=lambda row: int(row["episode_index"]))
+        if len(episodes) != int(self.info["total_episodes"]):
+            raise ValueError("LeRobot v3 episode metadata is incomplete")
+        self._episodes = episodes
+
+    def __len__(self) -> int:
+        return len(self._episode_index)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        index = int(index)
+        episode_index = int(self._episode_index[index])
+        episode = self._episodes[episode_index]
+        episode_end = int(episode["dataset_to_index"])
+        action_indices = np.minimum(np.arange(index, index + self.action_horizon), episode_end - 1)
+
+        return {
+            "observation.images.image": self._decode_frame("observation.images.image", episode, index),
+            "observation.images.image2": self._decode_frame("observation.images.image2", episode, index),
+            "observation.state": self._state[index],
+            "action": self._action[action_indices],
+            "timestamp": np.float32(self._timestamp[index]),
+            "frame_index": self._frame_index[index],
+            "episode_index": self._episode_index[index],
+            "index": np.int64(index),
+            "task_index": self._task_index[index],
+        }
+
+    def _decode_frame(self, video_key: str, episode: dict, index: int) -> np.ndarray:
+        from torchcodec.decoders import VideoDecoder
+
+        file_index = int(episode[f"videos/{video_key}/file_index"])
+        chunk_index = int(episode[f"videos/{video_key}/chunk_index"])
+        cache_key = (video_key, file_index)
+        decoder = self._decoder_cache.pop(cache_key, None)
+        if decoder is None:
+            path = self.root / self.info["video_path"].format(
+                video_key=video_key, chunk_index=chunk_index, file_index=file_index
+            )
+            decoder = VideoDecoder(path, dimension_order="NHWC", device="cpu", seek_mode="exact")
+        self._decoder_cache[cache_key] = decoder
+        while len(self._decoder_cache) > self.decoder_cache_size:
+            self._decoder_cache.popitem(last=False)
+
+        seconds = float(episode[f"videos/{video_key}/from_timestamp"]) + float(self._timestamp[index])
+        frame = decoder.get_frame_played_at(seconds).data
+        return np.asarray(frame, dtype=np.uint8)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_decoder_cache"] = OrderedDict()
+        return state
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -241,13 +354,18 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-    )
+    if data_config.local_lerobot_v3_root is not None:
+        dataset_meta = _LocalLeRobotV3Metadata(data_config.local_lerobot_v3_root)
+        dataset = _LocalLeRobotV3Dataset(data_config.local_lerobot_v3_root, action_horizon=action_horizon)
+    else:
+        dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+        dataset = lerobot_dataset.LeRobotDataset(
+            data_config.repo_id,
+            delta_timestamps={
+                key: [t / dataset_meta.fps for t in range(action_horizon)]
+                for key in data_config.action_sequence_keys
+            },
+        )
 
     use_vjepa_aux = bool(getattr(model_config, "use_vjepa_aux", False))
     if use_vjepa_aux and data_config.vjepa_target_root is None:
