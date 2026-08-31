@@ -135,9 +135,7 @@ class Pi0Config(_model.BaseModelConfig):
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
                 vjepa_target=(
-                    jax.ShapeDtypeStruct(
-                        [batch_size, *self.vjepa_supervision_shape], jnp.float16
-                    )
+                    jax.ShapeDtypeStruct([batch_size, *self.vjepa_supervision_shape], jnp.float16)
                     if self.use_vjepa_aux
                     else None
                 ),

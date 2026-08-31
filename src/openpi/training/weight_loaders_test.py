@@ -23,9 +23,7 @@ def test_merge_explicitly_allowed_new_vjepa_parameters():
 
 def test_split_scanned_layers_is_an_exact_axis_partition():
     layers = np.arange(18 * 3, dtype=np.float32).reshape(18, 3)
-    params = {
-        "PaliGemma": {"llm": {"layers": {"kernel": layers}, "embedder": {"input": np.ones(2)}}}
-    }
+    params = {"PaliGemma": {"llm": {"layers": {"kernel": layers}, "embedder": {"input": np.ones(2)}}}}
 
     split = weight_loaders._split_scanned_layers(params, 16)  # noqa: SLF001
     flat = flax.traverse_util.flatten_dict(split, sep="/")

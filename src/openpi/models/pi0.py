@@ -160,9 +160,7 @@ class ActionContingentTransitionRefiner(nnx.Module):
         transition_query = self._heads(self.transition_q_ar(transition_norm))
         action_key = self._heads(self.action_k_ar(action_norm))
         action_value = self._heads(self.action_v_ar(action_norm))
-        transition_message = self.transition_out_ar(
-            self._attention(transition_query, action_key, action_value)
-        )
+        transition_message = self.transition_out_ar(self._attention(transition_query, action_key, action_value))
         transition_update = transition_message + self.transition_ffn(
             self.transition_ffn_norm(transition_prior + transition_message)
         )
@@ -177,12 +175,10 @@ class ActionContingentTransitionRefiner(nnx.Module):
         transition_key = self._heads(self.transition_k_ra(transition_norm))
         transition_value = self._heads(self.transition_v_ra(transition_norm))
         action_message = self.action_out_ra(self._attention(action_query, transition_key, transition_value))
-        action_update = action_message + self.action_ffn(
-            self.action_ffn_norm(action_hidden + action_message)
+        action_update = action_message + self.action_ffn(self.action_ffn_norm(action_hidden + action_message))
+        action_work = (
+            action_hidden + late_weight.astype(action_hidden.dtype) * jnp.tanh(self.gate_ra.value) * action_update
         )
-        action_work = action_hidden + late_weight.astype(action_hidden.dtype) * jnp.tanh(
-            self.gate_ra.value
-        ) * action_update
         return transition_work, action_work
 
 
@@ -208,8 +204,7 @@ class Pi0(_model.BaseModel):
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         if self.use_actr and not 0 < self.actr_injection_layer < action_expert_config.depth:
             raise ValueError(
-                f"ACTR injection layer must be in (0, {action_expert_config.depth}), "
-                f"got {self.actr_injection_layer}"
+                f"ACTR injection layer must be in (0, {action_expert_config.depth}), got {self.actr_injection_layer}"
             )
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm_cls = _gemma.SplitModule if self.use_actr else _gemma.Module
@@ -537,9 +532,7 @@ class Pi0(_model.BaseModel):
         (prefix_out, _), kv_cache = self.PaliGemma.llm(
             [prefix_tokens, None], mask=prefix_attn_mask, positions=positions
         )
-        transition_prior = (
-            prefix_out[:, -self.vjepa_num_queries :] if self.use_actr else None
-        )
+        transition_prior = prefix_out[:, -self.vjepa_num_queries :] if self.use_actr else None
 
         def step(carry):
             x_t, time = carry
@@ -593,11 +586,11 @@ class Pi0(_model.BaseModel):
                 )
             else:
                 (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens],
-                mask=full_attn_mask,
-                positions=positions,
-                kv_cache=kv_cache,
-                adarms_cond=[None, adarms_cond],
+                    [None, suffix_tokens],
+                    mask=full_attn_mask,
+                    positions=positions,
+                    kv_cache=kv_cache,
+                    adarms_cond=[None, adarms_cond],
                 )
             assert prefix_out is None
             action_hidden = suffix_out[:, -self.action_horizon :]

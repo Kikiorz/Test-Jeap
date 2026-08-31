@@ -125,9 +125,7 @@ def _split_scanned_layers(params: at.Params, split_layer: int) -> at.Params:
             result[key] = value
             continue
         if value.ndim < 1 or value.shape[0] <= split_layer:
-            raise ValueError(
-                f"Cannot split scanned layer parameter {key} with shape {value.shape} at {split_layer}"
-            )
+            raise ValueError(f"Cannot split scanned layer parameter {key} with shape {value.shape} at {split_layer}")
         prefix, suffix = key.split(marker, maxsplit=1)
         result[f"{prefix}PaliGemma/llm/early_layers/{suffix}"] = value[:split_layer]
         result[f"{prefix}PaliGemma/llm/late_layers/{suffix}"] = value[split_layer:]

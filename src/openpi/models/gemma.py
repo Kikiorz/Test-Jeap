@@ -511,9 +511,7 @@ class SplitModule(nn.Module):
         deterministic: bool = True,
     ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
         embedded, mask, adarms_cond = self._prepare_inputs(embedded, mask, adarms_cond)
-        embedded, kv_cache = self.early_layers(
-            embedded, kv_cache, positions, mask, adarms_cond, deterministic
-        )
+        embedded, kv_cache = self.early_layers(embedded, kv_cache, positions, mask, adarms_cond, deterministic)
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
         return embedded, kv_cache
 
@@ -529,13 +527,10 @@ class SplitModule(nn.Module):
         deterministic: bool = True,
     ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
         embedded, mask, adarms_cond = self._prepare_inputs(embedded, mask, adarms_cond)
-        embedded, kv_cache = self.late_layers(
-            embedded, kv_cache, positions, mask, adarms_cond, deterministic
-        )
+        embedded, kv_cache = self.late_layers(embedded, kv_cache, positions, mask, adarms_cond, deterministic)
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
         return [
-            f(e, a)[0] if e is not None else e
-            for f, e, a in zip(self.final_norms, embedded, adarms_cond, strict=True)
+            f(e, a)[0] if e is not None else e for f, e, a in zip(self.final_norms, embedded, adarms_cond, strict=True)
         ], kv_cache
 
     @at.typecheck
