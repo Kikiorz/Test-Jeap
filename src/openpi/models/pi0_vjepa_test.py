@@ -48,6 +48,25 @@ def test_vjepa_aux_forward_and_inference_prefix():
     assert prefix_ar_mask[-config.vjepa_num_queries :].tolist() == [True, False, False, False]
 
 
+def test_compact_vjepa_supervision_uses_native_query_grid():
+    config = _dummy_config(
+        use_vjepa_aux=True,
+        vjepa_num_queries=4,
+        vjepa_query_grid_size=2,
+        vjepa_target_grid_size=6,
+        vjepa_target_dim=16,
+        vjepa_compact_target_dim=8,
+    )
+    model = config.create(jax.random.key(0))
+    query = jax.random.normal(jax.random.key(1), (2, 4, 64))
+    prediction = model.predict_vjepa_supervision(query)
+
+    assert config.vjepa_supervision_shape == (4, 8)
+    assert config.inputs_spec(batch_size=2)[0].vjepa_target.shape == (2, 4, 8)
+    assert prediction.shape == (2, 4, 8)
+    assert jnp.allclose(jnp.linalg.norm(prediction, axis=-1), 1.0, atol=1e-5)
+
+
 def test_masked_queries_do_not_change_flow_prediction():
     base_config = _dummy_config()
     aux_config = _dummy_config(

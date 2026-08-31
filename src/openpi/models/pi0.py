@@ -399,7 +399,7 @@ class Pi0(_model.BaseModel):
             query_out, action_hidden = self.actr(query_out, action_hidden, time)
         v_t = self.action_out_proj(action_hidden)
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
-        predicted_target = self.predict_vjepa_target(query_out)
+        predicted_target = self.predict_vjepa_supervision(query_out)
         target = jax.lax.stop_gradient(observation.vjepa_target.astype(jnp.float32))
         if predicted_target.shape != target.shape:
             raise ValueError(f"V-JEPA prediction/target shape mismatch: {predicted_target.shape} != {target.shape}")
@@ -410,18 +410,36 @@ class Pi0(_model.BaseModel):
         return flow_loss, aux_loss
 
     def predict_vjepa_target(self, query_out: at.Float[at.Array, "b q emb"]) -> at.Float[at.Array, "b p d"]:
-        value = self.vjepa_alignment_norm(query_out)
-        value = nnx.gelu(self.vjepa_alignment_in(value))
-        value = self.vjepa_alignment_out(value)
-        value = value.reshape(
-            value.shape[0], self.vjepa_query_grid_size, self.vjepa_query_grid_size, self.vjepa_target_dim
-        )
+        value = self.predict_vjepa_query_grid(query_out)
         value = jax.image.resize(
             value,
             (value.shape[0], self.vjepa_target_grid_size, self.vjepa_target_grid_size, self.vjepa_target_dim),
             method="linear",
         )
         return value.reshape(value.shape[0], self.vjepa_target_grid_size**2, self.vjepa_target_dim)
+
+    def predict_vjepa_query_grid(self, query_out: at.Float[at.Array, "b q emb"]) -> at.Float[at.Array, "b h w d"]:
+        value = self.vjepa_alignment_norm(query_out)
+        value = nnx.gelu(self.vjepa_alignment_in(value))
+        value = self.vjepa_alignment_out(value)
+        return value.reshape(
+            value.shape[0], self.vjepa_query_grid_size, self.vjepa_query_grid_size, self.vjepa_target_dim
+        )
+
+    def predict_vjepa_supervision(self, query_out: at.Float[at.Array, "b q emb"]) -> at.Float[at.Array, "b p d"]:
+        if not self.config.vjepa_compact_target_dim:
+            return self.predict_vjepa_target(query_out)
+
+        value = self.predict_vjepa_query_grid(query_out).astype(jnp.float32)
+        value /= jnp.maximum(jnp.linalg.norm(value, axis=-1, keepdims=True), 1e-6)
+        projection = jax.random.rademacher(
+            jax.random.key(self.config.vjepa_compact_projection_seed),
+            (self.vjepa_target_dim, self.config.vjepa_compact_target_dim),
+            dtype=jnp.float32,
+        ) * (self.config.vjepa_compact_target_dim**-0.5)
+        value = jnp.einsum("bhwd,dc->bhwc", value, projection)
+        value /= jnp.maximum(jnp.linalg.norm(value, axis=-1, keepdims=True), 1e-6)
+        return value.reshape(value.shape[0], self.vjepa_query_grid_size**2, self.config.vjepa_compact_target_dim)
 
     @override
     def compute_loss(

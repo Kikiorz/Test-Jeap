@@ -38,6 +38,11 @@ class Pi0Config(_model.BaseModelConfig):
     vjepa_query_grid_size: int = 8
     vjepa_target_grid_size: int = 24
     vjepa_target_dim: int = 1408
+    # Optional storage-efficient supervision for ACTR.  The released
+    # alignment head still predicts 1408-D features; only the loss target is
+    # pooled to the native query grid and projected with a fixed JL map.
+    vjepa_compact_target_dim: int = 0
+    vjepa_compact_projection_seed: int = 17
     vjepa_aux_weight: float = 0.1
     vjepa_aux_warmup_steps: int = 1000
     vjepa_action_attends_queries: bool = False
@@ -75,6 +80,8 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("vjepa_num_queries must equal vjepa_query_grid_size squared")
             if self.vjepa_target_grid_size < 1 or self.vjepa_target_dim < 1:
                 raise ValueError("V-JEPA target grid size and dimension must be positive")
+            if self.vjepa_compact_target_dim < 0:
+                raise ValueError("V-JEPA compact target dimension must be non-negative")
             if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
                 raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
         if self.use_actr:
@@ -126,7 +133,7 @@ class Pi0Config(_model.BaseModelConfig):
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
                 vjepa_target=(
                     jax.ShapeDtypeStruct(
-                        [batch_size, self.vjepa_target_grid_size**2, self.vjepa_target_dim], jnp.float16
+                        [batch_size, *self.vjepa_supervision_shape], jnp.float16
                     )
                     if self.use_vjepa_aux
                     else None
@@ -135,6 +142,12 @@ class Pi0Config(_model.BaseModelConfig):
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
         return observation_spec, action_spec
+
+    @property
+    def vjepa_supervision_shape(self) -> tuple[int, int]:
+        if self.vjepa_compact_target_dim:
+            return (self.vjepa_query_grid_size**2, self.vjepa_compact_target_dim)
+        return (self.vjepa_target_grid_size**2, self.vjepa_target_dim)
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Returns the freeze filter based on the model config."""

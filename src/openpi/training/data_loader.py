@@ -260,7 +260,7 @@ def create_torch_dataset(
         dataset = VJepaTargetDataset(
             dataset,
             data_config.vjepa_target_root,
-            expected_shape=(model_config.vjepa_target_grid_size**2, model_config.vjepa_target_dim),
+            expected_shape=model_config.vjepa_supervision_shape,
             expected_future_offset=data_config.vjepa_future_offset,
             expected_image_key=data_config.vjepa_image_key,
             expected_num_frames=len(dataset),
