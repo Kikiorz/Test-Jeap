@@ -874,7 +874,9 @@ _CONFIGS = [
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="lerobot/libero",
-            assets=AssetsConfig(assets_dir="./assets/pi05_libero"),
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_libero", asset_id="physical-intelligence/libero"
+            ),
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
             vjepa_target_root="./data/vjepa_targets/libero_vjepa2_1_vitg_384_offset31_compact256",
@@ -939,7 +941,9 @@ _CONFIGS = [
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="lerobot/libero",
-            assets=AssetsConfig(assets_dir="./assets/pi05_libero"),
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_libero", asset_id="physical-intelligence/libero"
+            ),
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
             vjepa_target_root="./data/vjepa_targets/libero_vjepa2_1_vitg_384_offset31_compact256",
