@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "benchmark_mode": "plus",
+  "suite": "libero_spatial",
+  "category": "Objects Layout",
+  "seed": 20260901,
+  "sampling": "difficulty_stratified_sha256_rank",
+  "difficulty_quotas": {"1": 5, "2": 5, "3": 5, "4": 5, "5": 5},
+  "candidate_counts": {"1": 6, "2": 40, "3": 141, "4": 153, "5": 45},
+  "task_ids": [1975, 1971, 1976, 1979, 1895, 2097, 2091, 1953, 1977, 1931, 1837, 2072, 1765, 1930, 1980, 1881, 1831, 1771, 2040, 1995, 1824, 2005, 1850, 1944, 1874]
+}

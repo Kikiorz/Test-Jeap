@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "benchmark_mode": "plus",
+  "suite": "libero_object",
+  "category": "Objects Layout",
+  "seed": 20260901,
+  "sampling": "difficulty_stratified_sha256_rank",
+  "difficulty_quotas": {"1": 5, "2": 5, "3": 5, "4": 5, "5": 5},
+  "candidate_counts": {"1": 76, "2": 78, "3": 63, "4": 33, "5": 153},
+  "task_ids": [1821, 2134, 2016, 1950, 1916, 1953, 1829, 2175, 1872, 2199, 2101, 2176, 2108, 2045, 1960, 2053, 2111, 1931, 1946, 1827, 2159, 2126, 2021, 2020, 1891]
+}
