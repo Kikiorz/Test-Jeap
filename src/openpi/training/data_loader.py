@@ -181,9 +181,7 @@ class _LocalLeRobotV3Metadata:
         task_table = pq.read_table(self.root / "meta" / "tasks.parquet")
         self.tasks = {
             int(index): task
-            for index, task in zip(
-                task_table["task_index"].to_pylist(), task_table["task"].to_pylist(), strict=True
-            )
+            for index, task in zip(task_table["task_index"].to_pylist(), task_table["task"].to_pylist(), strict=True)
         }
 
 
@@ -362,8 +360,7 @@ def create_torch_dataset(
         dataset = lerobot_dataset.LeRobotDataset(
             data_config.repo_id,
             delta_timestamps={
-                key: [t / dataset_meta.fps for t in range(action_horizon)]
-                for key in data_config.action_sequence_keys
+                key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
             },
         )
 
