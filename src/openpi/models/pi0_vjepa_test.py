@@ -139,6 +139,18 @@ def test_actr_zero_gate_is_exact_warm_start():
     assert base_aux is not None and actr_aux is not None
     assert jnp.array_equal(base_aux, actr_aux)
 
+    inference_observation = dataclasses.replace(observation, vjepa_target=None)
+    noise = jax.random.normal(
+        jax.random.key(2), (1, base_config.action_horizon, base_config.action_dim)
+    )
+    base_actions = base_model.sample_actions(
+        jax.random.key(3), inference_observation, num_steps=2, noise=noise
+    )
+    actr_actions = actr_model.sample_actions(
+        jax.random.key(3), inference_observation, num_steps=2, noise=noise
+    )
+    assert jnp.array_equal(base_actions, actr_actions)
+
 
 def test_actr_is_ordered_and_stage_one_does_not_modify_action():
     model = _actr_config(stage=1).create(jax.random.key(0))
