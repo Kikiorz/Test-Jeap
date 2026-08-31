@@ -105,6 +105,49 @@ def episode_data_path(root: Path, info: dict[str, Any], episode_index: int) -> P
     )
 
 
+def decode_video_episode(
+    dataset_root: Path,
+    info: dict[str, Any],
+    episode: dict[str, Any],
+    image_key: str,
+) -> list[Image.Image]:
+    import cv2
+
+    # The migrated LIBERO copy uses LeRobot v2 image names in its video
+    # metadata, while its embedded-image compatibility files use "image".
+    metadata_key = f"videos/observation.images.{image_key}"
+    if f"{metadata_key}/file_index" not in episode:
+        raise KeyError(f"Episode metadata does not define {metadata_key}")
+    chunk = int(episode[f"{metadata_key}/chunk_index"])
+    file_index = int(episode[f"{metadata_key}/file_index"])
+    fps = float(info["fps"])
+    start = round(float(episode[f"{metadata_key}/from_timestamp"]) * fps)
+    length = int(episode["length"])
+    path = (
+        dataset_root
+        / "videos"
+        / f"observation.images.{image_key}"
+        / f"chunk-{chunk:03d}"
+        / f"file-{file_index:03d}.mp4"
+    )
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Failed to open video: {path}")
+    images: list[Image.Image] = []
+    try:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, start)
+        for _ in range(length):
+            ok, frame = capture.read()
+            if not ok:
+                break
+            images.append(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+    finally:
+        capture.release()
+    if len(images) != length:
+        raise ValueError(f"Video segment {path} yielded {len(images)} frames, expected {length} from offset {start}")
+    return images
+
+
 def fixed_projection(dim: int, seed: int, path: Path | None) -> np.ndarray:
     if path is not None:
         value = np.load(path, allow_pickle=False)
@@ -220,15 +263,19 @@ def process_episode(args, info, episode, model, device, projection) -> None:
     if output_path.exists():
         raise RuntimeError(f"Refusing to overwrite invalid target: {output_path}")
 
-    table = pq.read_table(
-        episode_data_path(args.dataset_root, info, index),
-        columns=[args.image_key, "frame_index", "episode_index", "index"],
-    )
-    if table.num_rows != length:
-        raise ValueError(f"Episode {index} length mismatch: {table.num_rows} != {length}")
-    if not np.array_equal(table["frame_index"].to_numpy(), np.arange(length)):
-        raise ValueError(f"Episode {index} frame indices are not contiguous")
-    images = [decode_image(value, args.dataset_root) for value in table[args.image_key].to_pylist()]
+    parquet_path = episode_data_path(args.dataset_root, info, index)
+    if parquet_path.is_file() and args.image_key in pq.read_schema(parquet_path).names:
+        table = pq.read_table(
+            parquet_path,
+            columns=[args.image_key, "frame_index", "episode_index", "index"],
+        )
+        if table.num_rows != length:
+            raise ValueError(f"Episode {index} length mismatch: {table.num_rows} != {length}")
+        if not np.array_equal(table["frame_index"].to_numpy(), np.arange(length)):
+            raise ValueError(f"Episode {index} frame indices are not contiguous")
+        images = [decode_image(value, args.dataset_root) for value in table[args.image_key].to_pylist()]
+    else:
+        images = decode_video_episode(args.dataset_root, info, episode, args.image_key)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp = output_path.with_name(f".{output_path.name}.tmp-r{args.worker_rank}-p{os.getpid()}")
