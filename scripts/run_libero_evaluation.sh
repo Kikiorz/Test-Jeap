@@ -95,6 +95,7 @@ RESULTS_PATH="${RESULTS_PATH:-$RESULTS_ROOT/$MODE-$TASK_SUITE.jsonl}"
 VIDEO_ROOT="${VIDEO_ROOT:-$RESULTS_ROOT/videos}"
 TASK_START="${TASK_START:-0}"
 TASK_END="${TASK_END:-}"
+TASK_IDS_PATH="${TASK_IDS_PATH:-}"
 NUM_TASK_SHARDS="${NUM_TASK_SHARDS:-1}"
 TASK_SHARD_ID="${TASK_SHARD_ID:-0}"
 REPLAN_STEPS="${REPLAN_STEPS:-5}"
@@ -119,6 +120,9 @@ eval_args=(
 )
 if [[ -n "$TASK_END" ]]; then
     eval_args+=(--args.task-end "$TASK_END")
+fi
+if [[ -n "$TASK_IDS_PATH" ]]; then
+    eval_args+=(--args.task-ids-path "$TASK_IDS_PATH")
 fi
 if [[ "$SAVE_VIDEO" == "0" ]]; then
     eval_args+=(--args.no-save-video)
