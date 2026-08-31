@@ -53,6 +53,7 @@ class Pi0Config(_model.BaseModelConfig):
     # trees and inference behaviour.
     use_actr: bool = False
     actr_stage: int = 2
+    actr_injection_layer: int = 16
     actr_interaction_dim: int = 256
     actr_num_heads: int = 8
     actr_ffn_dim: int = 512
@@ -89,6 +90,8 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("ACTR requires a Pi0.5 model with the V-JEPA branch enabled")
             if self.actr_stage not in (1, 2):
                 raise ValueError("actr_stage must be 1 (A->R) or 2 (A->R->A)")
+            if self.actr_injection_layer < 1:
+                raise ValueError("actr_injection_layer must be positive")
             if self.actr_interaction_dim < 1 or self.actr_ffn_dim < 1:
                 raise ValueError("ACTR interaction and FFN dimensions must be positive")
             if self.actr_num_heads < 1 or self.actr_interaction_dim % self.actr_num_heads:

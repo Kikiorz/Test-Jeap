@@ -874,6 +874,7 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "./data/weights/pi05_jepawam_60k/59999/params",
             missing_regex=".*actr.*",
+            split_scanned_layers_at=16,
         ),
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,

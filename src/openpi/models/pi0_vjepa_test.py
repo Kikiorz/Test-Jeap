@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from openpi.models import pi0_config
+from openpi.training import weight_loaders
 
 
 def _dummy_config(**kwargs) -> pi0_config.Pi0Config:
@@ -99,6 +100,7 @@ def _actr_config(*, stage: int = 2) -> pi0_config.Pi0Config:
         vjepa_target_dim=16,
         use_actr=True,
         actr_stage=stage,
+        actr_injection_layer=2,
         actr_interaction_dim=16,
         actr_num_heads=4,
         actr_ffn_dim=32,
@@ -116,6 +118,18 @@ def test_actr_zero_gate_is_exact_warm_start():
     actr_config = _actr_config()
     base_model = base_config.create(jax.random.key(0))
     actr_model = actr_config.create(jax.random.key(0))
+    # The ACTR model stores the same scanned blocks as exact early/late axis
+    # slices.  Load the base parameters through the same lossless migration
+    # used by the released checkpoint warm-start.
+    split_base = weight_loaders._split_scanned_layers(  # noqa: SLF001
+        nnx.state(base_model).to_pure_dict(), actr_config.actr_injection_layer
+    )
+    merged = weight_loaders._merge_params(  # noqa: SLF001
+        split_base, nnx.state(actr_model).to_pure_dict(), missing_regex=".*actr.*"
+    )
+    graphdef, state = nnx.split(actr_model)
+    state.replace_by_pure_dict(merged)
+    actr_model = nnx.merge(graphdef, state)
     observation, actions = base_config.fake_obs(1), base_config.fake_act(1)
 
     base_flow, base_aux = base_model.compute_loss_components(jax.random.key(1), observation, actions)

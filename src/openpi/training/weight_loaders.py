@@ -48,10 +48,16 @@ class CheckpointWeightLoader(WeightLoader):
     params_path: str
     # Existing loaders only initialize missing LoRA weights. Specialized configs may explicitly allow other new params.
     missing_regex: str = ".*lora.*"
+    # ACTR introduces an intervention point into the scanned Gemma stack.
+    # Released JEPA-WAM checkpoints store all layers under one leading scan
+    # axis; split that axis losslessly when warm-starting the split module.
+    split_scanned_layers_at: int | None = None
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
         loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        if self.split_scanned_layers_at is not None:
+            loaded_params = _split_scanned_layers(loaded_params, self.split_scanned_layers_at)
         return _merge_params(loaded_params, params, missing_regex=self.missing_regex)
 
 
@@ -102,4 +108,32 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
         if k not in result:
             result[k] = flat_ref[k]
 
+    return flax.traverse_util.unflatten_dict(result, sep="/")
+
+
+def _split_scanned_layers(params: at.Params, split_layer: int) -> at.Params:
+    """Converts ``llm/layers`` into exact early/late scan parameter axes."""
+    if split_layer < 1:
+        raise ValueError("split_layer must be positive")
+
+    flat = flax.traverse_util.flatten_dict(params, sep="/")
+    result = {}
+    matched = 0
+    marker = "PaliGemma/llm/layers/"
+    for key, value in flat.items():
+        if marker not in key:
+            result[key] = value
+            continue
+        if value.ndim < 1 or value.shape[0] <= split_layer:
+            raise ValueError(
+                f"Cannot split scanned layer parameter {key} with shape {value.shape} at {split_layer}"
+            )
+        prefix, suffix = key.split(marker, maxsplit=1)
+        result[f"{prefix}PaliGemma/llm/early_layers/{suffix}"] = value[:split_layer]
+        result[f"{prefix}PaliGemma/llm/late_layers/{suffix}"] = value[split_layer:]
+        matched += 1
+
+    if matched == 0:
+        raise ValueError("No PaliGemma/llm/layers parameters found to split")
+    logger.info("Split %d scanned Gemma parameter leaves at layer %d", matched, split_layer)
     return flax.traverse_util.unflatten_dict(result, sep="/")

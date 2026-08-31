@@ -203,14 +203,23 @@ class Pi0(_model.BaseModel):
         self.use_actr = config.use_actr
         self.actr_stage = config.actr_stage
         self.actr_action_loss_weight = config.actr_action_loss_weight
+        self.actr_injection_layer = config.actr_injection_layer
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
+        if self.use_actr and not 0 < self.actr_injection_layer < action_expert_config.depth:
+            raise ValueError(
+                f"ACTR injection layer must be in (0, {action_expert_config.depth}), "
+                f"got {self.actr_injection_layer}"
+            )
         # TODO: rewrite gemma in NNX. For now, use bridge.
+        llm_cls = _gemma.SplitModule if self.use_actr else _gemma.Module
+        llm_kwargs = {"split_layer": self.actr_injection_layer} if self.use_actr else {}
         llm = nnx_bridge.ToNNX(
-            _gemma.Module(
+            llm_cls(
                 configs=[paligemma_config, action_expert_config],
                 embed_dtype=config.dtype,
                 adarms=config.pi05,
+                **llm_kwargs,
             )
         )
         llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True] if config.pi05 else [False, False])
@@ -373,22 +382,69 @@ class Pi0(_model.BaseModel):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        # one big forward pass of prefix + suffix at once
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
-        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
-        attn_mask = make_attn_mask(input_mask, ar_mask)
-        positions = jnp.cumsum(input_mask, axis=1) - 1
-        if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
-            prefix_length = prefix_tokens.shape[1]
-            query_start = prefix_length - self.vjepa_num_queries
-            attn_mask = attn_mask.at[:, prefix_length:, query_start:prefix_length].set(False)
-            positions = positions.at[:, prefix_length:].add(-self.vjepa_num_queries)
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-            [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
-        )
-        action_hidden = suffix_out[:, -self.action_horizon :]
+        if self.use_actr:
+            # ACTR needs a genuine intermediate Action Expert state.  Build
+            # the frozen transition prior once from the complete prefix, then
+            # run suffix blocks 1:injection, co-refine A->R->A, and finish the
+            # remaining frozen blocks.
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+            prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+            (prefix_out, _), kv_cache = self.PaliGemma.llm(
+                [prefix_tokens, None], mask=prefix_attn_mask, positions=prefix_positions
+            )
+            transition_prior = prefix_out[:, -self.vjepa_num_queries :]
+
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            suffix_to_prefix_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            if not self.vjepa_action_attends_queries:
+                suffix_to_prefix_mask = suffix_to_prefix_mask.at[:, :, -self.vjepa_num_queries :].set(False)
+            full_attn_mask = jnp.concatenate([suffix_to_prefix_mask, suffix_attn_mask], axis=-1)
+            suffix_positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+            if not self.vjepa_action_attends_queries:
+                suffix_positions = suffix_positions - self.vjepa_num_queries
+
+            early_cache, late_cache = self._split_actr_cache(kv_cache)
+            (_, suffix_draft), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=suffix_positions,
+                kv_cache=early_cache,
+                adarms_cond=[None, adarms_cond],
+                method="forward_early",
+            )
+            transition_work, action_grounded = self.actr(
+                transition_prior, suffix_draft[:, -self.action_horizon :], time
+            )
+            # Pi0.5 has only action tokens in the suffix, so the grounded
+            # action sequence is exactly the late-block input sequence.
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [None, action_grounded],
+                mask=full_attn_mask,
+                positions=suffix_positions,
+                kv_cache=late_cache,
+                adarms_cond=[None, adarms_cond],
+                method="forward_late",
+            )
+            query_out = transition_work
+            action_hidden = suffix_out[:, -self.action_horizon :]
+        else:
+            # Keep the released model's joint training forward unchanged.
+            input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+            attn_mask = make_attn_mask(input_mask, ar_mask)
+            positions = jnp.cumsum(input_mask, axis=1) - 1
+            if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
+                prefix_length = prefix_tokens.shape[1]
+                query_start = prefix_length - self.vjepa_num_queries
+                attn_mask = attn_mask.at[:, prefix_length:, query_start:prefix_length].set(False)
+                positions = positions.at[:, prefix_length:].add(-self.vjepa_num_queries)
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
+            )
+            query_out = prefix_out[:, -self.vjepa_num_queries :] if self.use_vjepa_aux else None
+            action_hidden = suffix_out[:, -self.action_horizon :]
         if not self.use_vjepa_aux:
             v_t = self.action_out_proj(action_hidden)
             flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
@@ -396,9 +452,7 @@ class Pi0(_model.BaseModel):
         if observation.vjepa_target is None:
             raise ValueError("V-JEPA auxiliary training requires observation.vjepa_target")
 
-        query_out = prefix_out[:, -self.vjepa_num_queries :]
-        if self.use_actr:
-            query_out, action_hidden = self.actr(query_out, action_hidden, time)
+        assert query_out is not None
         v_t = self.action_out_proj(action_hidden)
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
         predicted_target = self.predict_vjepa_supervision(query_out)
@@ -454,6 +508,11 @@ class Pi0(_model.BaseModel):
         action_weight = self.actr_action_loss_weight if self.use_actr else 1.0
         return action_weight * flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
 
+    def _split_actr_cache(self, kv_cache: _gemma.KVCache) -> tuple[_gemma.KVCache, _gemma.KVCache]:
+        keys, values = kv_cache
+        split = self.actr_injection_layer
+        return (keys[:split], values[:split]), (keys[split:], values[split:])
+
     @override
     def sample_actions(
         self,
@@ -508,22 +567,40 @@ class Pi0(_model.BaseModel):
             if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
                 positions = positions - self.vjepa_num_queries
 
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+            if self.use_actr:
+                early_cache, late_cache = self._split_actr_cache(kv_cache)
+                (prefix_out, suffix_draft), _ = self.PaliGemma.llm(
+                    [None, suffix_tokens],
+                    mask=full_attn_mask,
+                    positions=positions,
+                    kv_cache=early_cache,
+                    adarms_cond=[None, adarms_cond],
+                    method="forward_early",
+                )
+                assert prefix_out is None and transition_prior is not None
+                _, action_grounded = self.actr(
+                    transition_prior,
+                    suffix_draft[:, -self.action_horizon :],
+                    jnp.broadcast_to(time, (batch_size,)),
+                )
+                (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                    [None, action_grounded],
+                    mask=full_attn_mask,
+                    positions=positions,
+                    kv_cache=late_cache,
+                    adarms_cond=[None, adarms_cond],
+                    method="forward_late",
+                )
+            else:
+                (prefix_out, suffix_out), _ = self.PaliGemma.llm(
                 [None, suffix_tokens],
                 mask=full_attn_mask,
                 positions=positions,
                 kv_cache=kv_cache,
                 adarms_cond=[None, adarms_cond],
-            )
+                )
             assert prefix_out is None
             action_hidden = suffix_out[:, -self.action_horizon :]
-            if self.use_actr:
-                assert transition_prior is not None
-                _, action_hidden = self.actr(
-                    transition_prior,
-                    action_hidden,
-                    jnp.broadcast_to(time, (batch_size,)),
-                )
             v_t = self.action_out_proj(action_hidden)
 
             return x_t + dt * v_t, time + dt

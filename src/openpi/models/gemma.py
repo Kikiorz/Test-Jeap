@@ -421,6 +421,163 @@ class Module(nn.Module):
         )
 
 
+@at.typecheck
+class SplitModule(nn.Module):
+    """Gemma module with an exact intermediate-layer intervention point.
+
+    The released checkpoints store the transformer blocks as one scanned
+    parameter axis.  This module preserves the block implementation and only
+    splits that axis into two scans, allowing an external module to update the
+    action stream between them.  ``CheckpointWeightLoader`` performs the
+    corresponding lossless parameter-axis split.
+    """
+
+    configs: Sequence[Config]
+    embed_dtype: str
+    split_layer: int
+
+    dropout: float = 0.0
+    dropout_bdims: tuple[int, ...] = ()
+    adarms: bool = False
+
+    def setup(self):
+        assert all(config.depth == self.configs[0].depth for config in self.configs)
+        depth = self.configs[0].depth
+        if not 0 < self.split_layer < depth:
+            raise ValueError(f"split_layer must be in (0, {depth}), got {self.split_layer}")
+
+        self.embedder = Embedder(
+            vocab_size=PALIGEMMA_VOCAB_SIZE,
+            embed_dim=self.configs[0].width,
+            name="embedder",
+        )
+        block_cls = nn.remat(
+            Block,
+            prevent_cse=False,
+            static_argnums=(5,),
+            policy=jax.checkpoint_policies.nothing_saveable,
+        )
+        scan_kwargs = dict(
+            variable_axes={"params": 0},
+            split_rngs={"params": True, "dropout": True},
+            in_axes=(0, nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast),
+        )
+        self.early_layers = nn.scan(block_cls, length=self.split_layer, **scan_kwargs)(
+            configs=self.configs,
+            dropout=self.dropout,
+            dropout_bdims=self.dropout_bdims,
+        )
+        self.late_layers = nn.scan(block_cls, length=depth - self.split_layer, **scan_kwargs)(
+            configs=self.configs,
+            dropout=self.dropout,
+            dropout_bdims=self.dropout_bdims,
+        )
+        self.final_norms = [RMSNorm(name=_name("final_norm", i)) for i in range(len(self.configs))]
+
+    @at.typecheck
+    def embed(self, tokens: at.Int[at.Array, "b t"]) -> at.Float[at.Array, "b t d"]:
+        return self.embedder.encode(tokens).astype(self.embed_dtype)
+
+    def _prepare_inputs(self, embedded, mask, adarms_cond):
+        embedded = jax.tree.map(lambda e: e.astype(self.embed_dtype), embedded)
+        mask = jnp.asarray(mask)[:, None, :, :]
+        if adarms_cond is None:
+            adarms_cond = [None] * len(self.configs)
+        return embedded, mask, adarms_cond
+
+    @staticmethod
+    def _split_cache(kv_cache: KVCache | None, split_layer: int):
+        if kv_cache is None:
+            return None, None
+        keys, values = kv_cache
+        return (keys[:split_layer], values[:split_layer]), (keys[split_layer:], values[split_layer:])
+
+    @staticmethod
+    def _join_cache(early_cache: KVCache, late_cache: KVCache) -> KVCache:
+        return (
+            jnp.concatenate([early_cache[0], late_cache[0]], axis=0),
+            jnp.concatenate([early_cache[1], late_cache[1]], axis=0),
+        )
+
+    @at.typecheck
+    def forward_early(
+        self,
+        embedded: Sequence[at.Float[at.Array, "b _t _d"] | None],
+        positions: at.Int[at.Array, "b t"],
+        mask: at.Bool[at.Array, "b t s"],
+        adarms_cond: Sequence[at.Float[at.Array, "b _d"] | None] | None = None,
+        *,
+        kv_cache: KVCache | None = None,
+        deterministic: bool = True,
+    ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
+        embedded, mask, adarms_cond = self._prepare_inputs(embedded, mask, adarms_cond)
+        embedded, kv_cache = self.early_layers(
+            embedded, kv_cache, positions, mask, adarms_cond, deterministic
+        )
+        assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
+        return embedded, kv_cache
+
+    @at.typecheck
+    def forward_late(
+        self,
+        embedded: Sequence[at.Float[at.Array, "b _t _d"] | None],
+        positions: at.Int[at.Array, "b t"],
+        mask: at.Bool[at.Array, "b t s"],
+        adarms_cond: Sequence[at.Float[at.Array, "b _d"] | None] | None = None,
+        *,
+        kv_cache: KVCache | None = None,
+        deterministic: bool = True,
+    ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
+        embedded, mask, adarms_cond = self._prepare_inputs(embedded, mask, adarms_cond)
+        embedded, kv_cache = self.late_layers(
+            embedded, kv_cache, positions, mask, adarms_cond, deterministic
+        )
+        assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
+        return [
+            f(e, a)[0] if e is not None else e
+            for f, e, a in zip(self.final_norms, embedded, adarms_cond, strict=True)
+        ], kv_cache
+
+    @at.typecheck
+    def __call__(
+        self,
+        embedded: Sequence[at.Float[at.Array, "b _t _d"] | None],
+        positions: at.Int[at.Array, "b t"],
+        mask: at.Bool[at.Array, "b t s"],
+        adarms_cond: Sequence[at.Float[at.Array, "b _d"] | None] | None = None,
+        *,
+        kv_cache: KVCache | None = None,
+        deterministic: bool = True,
+    ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
+        early_cache, late_cache = self._split_cache(kv_cache, self.split_layer)
+        embedded, early_cache = self.forward_early(
+            embedded,
+            positions,
+            mask,
+            adarms_cond,
+            kv_cache=early_cache,
+            deterministic=deterministic,
+        )
+        embedded, late_cache = self.forward_late(
+            embedded,
+            positions,
+            mask,
+            adarms_cond,
+            kv_cache=late_cache,
+            deterministic=deterministic,
+        )
+        return embedded, self._join_cache(early_cache, late_cache)
+
+    def init(self, use_adarms: Sequence[bool]):
+        self.embed(jnp.zeros((1, 1), dtype=jnp.int32))
+        self(
+            [jnp.zeros((1, 1, c.width)) for c in self.configs],
+            jnp.zeros((1, len(self.configs)), dtype=jnp.int32),
+            jnp.zeros((1, len(self.configs), len(self.configs)), dtype=bool),
+            adarms_cond=[jnp.zeros((1, c.width)) if u else None for u, c in zip(use_adarms, self.configs, strict=True)],
+        )
+
+
 def _apply_rope(x, *, positions, max_wavelength=10_000):
     """Applies RoPE positions [B, L] to x [B, L, H, D]."""
     freq_exponents = (2.0 / x.shape[-1]) * jnp.arange(x.shape[-1] // 2, dtype=jnp.float32)
