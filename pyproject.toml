@@ -64,7 +64,10 @@ rlds = [
 ]
 
 [tool.uv]
-override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
+# NCCL 2.26.2 (pulled by torch 2.7.1) crashes JAX collectives on the
+# Blackwell RTX 5090 cluster used for ACTR training.  NCCL keeps a stable ABI;
+# 2.31.2 passes both the four-device collective and full FSDP optimizer gates.
+override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74", "nvidia-nccl-cu12==2.31.2"]
 
 [tool.uv.sources]
 openpi-client = { workspace = true }
