@@ -305,6 +305,10 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    # The official lerobot/libero v3 snapshot stores trajectories in shared
+    # parquet/video shards instead of one embedded-image parquet per episode.
+    # Values are identical; only source field names differ.
+    use_v3_schema: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -316,13 +320,23 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # For your own dataset, first figure out what keys your environment passes to the policy server
         # and then modify the mappings below so your dataset's keys get matched to those target keys.
         # The repack transform simply remaps key names here.
-        repack_mapping = {
-            "observation/image": "image",
-            "observation/wrist_image": "wrist_image",
-            "observation/state": "state",
-            "actions": "actions",
-            "prompt": "prompt",
-        }
+        repack_mapping = (
+            {
+                "observation/image": "observation.images.image",
+                "observation/wrist_image": "observation.images.image2",
+                "observation/state": "observation.state",
+                "actions": "action",
+                "prompt": "prompt",
+            }
+            if self.use_v3_schema
+            else {
+                "observation/image": "image",
+                "observation/wrist_image": "wrist_image",
+                "observation/state": "state",
+                "actions": "actions",
+                "prompt": "prompt",
+            }
+        )
         if self.vjepa_target_root is not None:
             repack_mapping["vjepa_target"] = "vjepa_target"
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
@@ -371,6 +385,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             vjepa_mmap_cache_size=self.vjepa_mmap_cache_size,
             vjepa_future_offset=self.vjepa_future_offset,
             vjepa_image_key=self.vjepa_image_key,
+            action_sequence_keys=("action",) if self.use_v3_schema else ("actions",),
         )
 
 
@@ -853,7 +868,7 @@ _CONFIGS = [
             actr_action_loss_weight=0.0,
         ),
         data=LeRobotLiberoDataConfig(
-            repo_id="physical-intelligence/libero",
+            repo_id="lerobot/libero",
             assets=AssetsConfig(assets_dir="./assets/pi05_libero"),
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
@@ -861,6 +876,7 @@ _CONFIGS = [
             vjepa_mmap_cache_size=16,
             vjepa_future_offset=31,
             vjepa_image_key="image",
+            use_v3_schema=True,
         ),
         batch_size=128,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -916,7 +932,7 @@ _CONFIGS = [
             actr_action_loss_weight=1.0,
         ),
         data=LeRobotLiberoDataConfig(
-            repo_id="physical-intelligence/libero",
+            repo_id="lerobot/libero",
             assets=AssetsConfig(assets_dir="./assets/pi05_libero"),
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
@@ -924,6 +940,7 @@ _CONFIGS = [
             vjepa_mmap_cache_size=16,
             vjepa_future_offset=31,
             vjepa_image_key="image",
+            use_v3_schema=True,
         ),
         batch_size=128,
         lr_schedule=_optimizer.CosineDecaySchedule(
