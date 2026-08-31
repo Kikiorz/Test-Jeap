@@ -115,7 +115,7 @@ def decode_video_episode(
     episode: dict[str, Any],
     image_key: str,
 ) -> list[Image.Image]:
-    import cv2
+    import av
 
     # The migrated LIBERO copy uses LeRobot v2 image names in its video
     # metadata, while its embedded-image compatibility files use "image".
@@ -134,22 +134,31 @@ def decode_video_episode(
         / f"chunk-{chunk:03d}"
         / f"file-{file_index:03d}.mp4"
     )
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Failed to open video: {path}")
-    images: list[Image.Image] = []
-    try:
-        capture.set(cv2.CAP_PROP_POS_FRAMES, start)
-        for _ in range(length):
-            ok, frame = capture.read()
-            if not ok:
+    decoded: dict[int, Image.Image] = {}
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        if stream.time_base is None:
+            raise ValueError(f"Video stream has no time base: {path}")
+        seek_pts = int((start / fps) / float(stream.time_base))
+        container.seek(seek_pts, stream=stream, backward=True, any_frame=False)
+        for frame in container.decode(stream):
+            if frame.pts is None:
+                continue
+            frame_index = round(float(frame.pts * stream.time_base) * fps)
+            if frame_index < start:
+                continue
+            if frame_index >= start + length:
                 break
-            images.append(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-    finally:
-        capture.release()
-    if len(images) != length:
-        raise ValueError(f"Video segment {path} yielded {len(images)} frames, expected {length} from offset {start}")
-    return images
+            decoded.setdefault(frame_index, Image.fromarray(frame.to_ndarray(format="rgb24")))
+    expected = list(range(start, start + length))
+    missing = [frame_index for frame_index in expected if frame_index not in decoded]
+    if missing:
+        raise ValueError(
+            f"Video segment {path} is missing {len(missing)} frames; first={missing[:8]}, "
+            f"expected range=[{start},{start + length})"
+        )
+    return [decoded[frame_index] for frame_index in expected]
 
 
 def fixed_projection(dim: int, seed: int, path: Path | None) -> np.ndarray:
