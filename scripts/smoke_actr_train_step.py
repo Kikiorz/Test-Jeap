@@ -23,14 +23,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="pi05_libero_actr_stage1")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--steps", type=int, default=2)
+    parser.add_argument("--fsdp-devices", type=int, help="Override the training config's FSDP mesh width")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    base_config = _config.get_config(args.config)
     config = dataclasses.replace(
-        _config.get_config(args.config),
+        base_config,
         batch_size=args.batch_size,
+        fsdp_devices=args.fsdp_devices or base_config.fsdp_devices,
         num_workers=0,
         wandb_enabled=False,
     )
