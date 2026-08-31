@@ -43,6 +43,17 @@ class Pi0Config(_model.BaseModelConfig):
     vjepa_action_attends_queries: bool = False
     vjepa_disable_geometric_augmentation: bool = True
 
+    # Action-contingent transition co-refinement (Con1).  This is opt-in so
+    # released Pi0/Pi0.5 and JEPA-WAM checkpoints keep their exact parameter
+    # trees and inference behaviour.
+    use_actr: bool = False
+    actr_stage: int = 2
+    actr_interaction_dim: int = 256
+    actr_num_heads: int = 8
+    actr_ffn_dim: int = 512
+    actr_flow_onset: float = 0.5
+    actr_action_loss_weight: float = 1.0
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
@@ -66,6 +77,19 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("V-JEPA target grid size and dimension must be positive")
             if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
                 raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
+        if self.use_actr:
+            if not self.use_vjepa_aux or not self.pi05:
+                raise ValueError("ACTR requires a Pi0.5 model with the V-JEPA branch enabled")
+            if self.actr_stage not in (1, 2):
+                raise ValueError("actr_stage must be 1 (A->R) or 2 (A->R->A)")
+            if self.actr_interaction_dim < 1 or self.actr_ffn_dim < 1:
+                raise ValueError("ACTR interaction and FFN dimensions must be positive")
+            if self.actr_num_heads < 1 or self.actr_interaction_dim % self.actr_num_heads:
+                raise ValueError("ACTR interaction dimension must be divisible by the number of heads")
+            if not 0.0 < self.actr_flow_onset <= 1.0:
+                raise ValueError("actr_flow_onset must be in (0, 1]")
+            if self.actr_action_loss_weight < 0:
+                raise ValueError("actr_action_loss_weight must be non-negative")
 
     @property
     @override
@@ -114,6 +138,11 @@ class Pi0Config(_model.BaseModelConfig):
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Returns the freeze filter based on the model config."""
+        if self.use_actr:
+            # Con1 deliberately freezes the released JEPA-WAM policy.  Only
+            # parameters in the new ordered reciprocal bridge are trainable.
+            return nnx.Not(nnx_utils.PathRegex(".*actr.*"))
+
         filters = []
         has_lora = False
         gemma_params_filter = nnx_utils.PathRegex(".*llm.*")

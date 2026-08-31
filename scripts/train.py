@@ -165,10 +165,14 @@ def train_step(
         vjepa_weight = warmup * config.model.vjepa_aux_weight
         flow_loss = jnp.mean(flow_loss)
         vjepa_loss = jnp.mean(vjepa_loss)
+        action_weight = getattr(config.model, "actr_action_loss_weight", 1.0)
+        weighted_flow_loss = action_weight * flow_loss
         weighted_vjepa_loss = vjepa_weight * vjepa_loss
-        total_loss = flow_loss + weighted_vjepa_loss
+        total_loss = weighted_flow_loss + weighted_vjepa_loss
         return total_loss, {
             "flow_loss": flow_loss,
+            "action_weight": jnp.asarray(action_weight, dtype=jnp.float32),
+            "weighted_flow_loss": weighted_flow_loss,
             "vjepa_loss": vjepa_loss,
             "vjepa_cosine": 1.0 - vjepa_loss,
             "vjepa_weight": vjepa_weight,

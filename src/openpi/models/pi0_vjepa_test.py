@@ -69,3 +69,77 @@ def test_masked_queries_do_not_change_flow_prediction():
     base_flow, _ = base_model.compute_loss_components(jax.random.key(1), base_observation, actions)
     aux_flow, _ = aux_model.compute_loss_components(jax.random.key(1), aux_observation, actions)
     assert jnp.allclose(base_flow, aux_flow, atol=2e-3, rtol=2e-3)
+
+
+def _actr_config(*, stage: int = 2) -> pi0_config.Pi0Config:
+    return _dummy_config(
+        use_vjepa_aux=True,
+        vjepa_num_queries=4,
+        vjepa_query_grid_size=2,
+        vjepa_target_grid_size=3,
+        vjepa_target_dim=16,
+        use_actr=True,
+        actr_stage=stage,
+        actr_interaction_dim=16,
+        actr_num_heads=4,
+        actr_ffn_dim=32,
+    )
+
+
+def test_actr_zero_gate_is_exact_warm_start():
+    base_config = _dummy_config(
+        use_vjepa_aux=True,
+        vjepa_num_queries=4,
+        vjepa_query_grid_size=2,
+        vjepa_target_grid_size=3,
+        vjepa_target_dim=16,
+    )
+    actr_config = _actr_config()
+    base_model = base_config.create(jax.random.key(0))
+    actr_model = actr_config.create(jax.random.key(0))
+    observation, actions = base_config.fake_obs(1), base_config.fake_act(1)
+
+    base_flow, base_aux = base_model.compute_loss_components(jax.random.key(1), observation, actions)
+    actr_flow, actr_aux = actr_model.compute_loss_components(jax.random.key(1), observation, actions)
+
+    assert jnp.array_equal(base_flow, actr_flow)
+    assert base_aux is not None and actr_aux is not None
+    assert jnp.array_equal(base_aux, actr_aux)
+
+
+def test_actr_is_ordered_and_stage_one_does_not_modify_action():
+    model = _actr_config(stage=1).create(jax.random.key(0))
+    transition = jax.random.normal(jax.random.key(1), (2, 4, 64))
+    action = jax.random.normal(jax.random.key(2), (2, 2, 64))
+    time = jnp.full((2,), 0.25)
+    model.actr.gate_ar.value = jnp.asarray(1.0)
+
+    refined_transition, refined_action = model.actr(transition, action, time)
+    shuffled_transition, _ = model.actr(transition, action[::-1], time)
+
+    assert not jnp.allclose(refined_transition, transition)
+    assert not jnp.allclose(refined_transition, shuffled_transition)
+    assert jnp.array_equal(refined_action, action)
+
+
+def test_actr_stage_two_feeds_refined_transition_back_to_action():
+    model = _actr_config(stage=2).create(jax.random.key(0))
+    transition = jax.random.normal(jax.random.key(1), (2, 4, 64))
+    action = jax.random.normal(jax.random.key(2), (2, 2, 64))
+    time = jnp.full((2,), 0.25)
+    model.actr.gate_ar.value = jnp.asarray(1.0)
+    model.actr.gate_ra.value = jnp.asarray(1.0)
+
+    refined_transition, refined_action = model.actr(transition, action, time)
+
+    assert not jnp.allclose(refined_transition, transition)
+    assert not jnp.allclose(refined_action, action)
+
+
+def test_actr_freezes_every_released_checkpoint_parameter():
+    config = _actr_config(stage=2)
+    model = nnx.eval_shape(config.create, jax.random.key(0))
+    trainable = nnx.state(model, nnx.All(nnx.Param, nnx.Not(config.get_freeze_filter()))).flat_state()
+
+    assert trainable
+    assert all("actr" in path for path, _ in trainable)

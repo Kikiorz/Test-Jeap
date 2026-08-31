@@ -63,6 +63,129 @@ def posemb_sincos(
     return jnp.concatenate([jnp.sin(sinusoid_input), jnp.cos(sinusoid_input)], axis=-1)
 
 
+class _SwiGLUUpdate(nnx.Module):
+    """A compact, modality-specific nonlinear update used inside ACTR."""
+
+    def __init__(self, width: int, hidden_dim: int, *, rngs: nnx.Rngs):
+        self.gate = nnx.Linear(width, hidden_dim, use_bias=False, rngs=rngs)
+        self.value = nnx.Linear(width, hidden_dim, use_bias=False, rngs=rngs)
+        self.output = nnx.Linear(hidden_dim, width, use_bias=False, rngs=rngs)
+
+    def __call__(self, x: at.Float[at.Array, "b n d"]) -> at.Float[at.Array, "b n d"]:
+        return self.output(nnx.swish(self.gate(x)) * self.value(x))
+
+
+class ActionContingentTransitionRefiner(nnx.Module):
+    """Ordered A->R->A co-refinement over pretrained JEPA-WAM tokens.
+
+    The two streams retain their native widths and receive independent norms,
+    projections and FFNs.  They only meet in a low-dimensional QK-normalized
+    attention space.  Zero-initialized scalar gates make the module an exact
+    identity at warm start.
+    """
+
+    def __init__(
+        self,
+        transition_width: int,
+        action_width: int,
+        interaction_dim: int,
+        num_heads: int,
+        ffn_dim: int,
+        flow_onset: float,
+        stage: int,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        if interaction_dim % num_heads:
+            raise ValueError("interaction_dim must be divisible by num_heads")
+        self.num_heads = num_heads
+        self.head_dim = interaction_dim // num_heads
+        self.flow_onset = flow_onset
+        self.stage = stage
+
+        self.transition_norm_ar = nnx.RMSNorm(transition_width, rngs=rngs)
+        self.action_norm_ar = nnx.RMSNorm(action_width, rngs=rngs)
+        self.transition_q_ar = nnx.Linear(transition_width, interaction_dim, use_bias=False, rngs=rngs)
+        self.action_k_ar = nnx.Linear(action_width, interaction_dim, use_bias=False, rngs=rngs)
+        self.action_v_ar = nnx.Linear(action_width, interaction_dim, use_bias=False, rngs=rngs)
+        self.transition_out_ar = nnx.Linear(interaction_dim, transition_width, use_bias=False, rngs=rngs)
+        self.transition_ffn_norm = nnx.RMSNorm(transition_width, rngs=rngs)
+        self.transition_ffn = _SwiGLUUpdate(transition_width, ffn_dim, rngs=rngs)
+        self.gate_ar = nnx.Param(jnp.zeros((), dtype=jnp.float32))
+
+        self.action_norm_ra = nnx.RMSNorm(action_width, rngs=rngs)
+        self.transition_norm_ra = nnx.RMSNorm(transition_width, rngs=rngs)
+        self.action_q_ra = nnx.Linear(action_width, interaction_dim, use_bias=False, rngs=rngs)
+        self.transition_k_ra = nnx.Linear(transition_width, interaction_dim, use_bias=False, rngs=rngs)
+        self.transition_v_ra = nnx.Linear(transition_width, interaction_dim, use_bias=False, rngs=rngs)
+        self.action_out_ra = nnx.Linear(interaction_dim, action_width, use_bias=False, rngs=rngs)
+        self.action_ffn_norm = nnx.RMSNorm(action_width, rngs=rngs)
+        self.action_ffn = _SwiGLUUpdate(action_width, ffn_dim, rngs=rngs)
+        self.gate_ra = nnx.Param(jnp.zeros((), dtype=jnp.float32))
+
+    def _heads(self, x: at.Float[at.Array, "b n d"]) -> at.Float[at.Array, "b n h dh"]:
+        return x.reshape(x.shape[0], x.shape[1], self.num_heads, self.head_dim)
+
+    @staticmethod
+    def _qk_norm(x: at.Float[at.Array, "b n h d"]) -> at.Float[at.Array, "b n h d"]:
+        variance = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)
+        return (x * jax.lax.rsqrt(variance + 1e-6)).astype(x.dtype)
+
+    def _attention(
+        self,
+        query: at.Float[at.Array, "b q h d"],
+        key: at.Float[at.Array, "b k h d"],
+        value: at.Float[at.Array, "b k h d"],
+    ) -> at.Float[at.Array, "b q i"]:
+        query = self._qk_norm(query)
+        key = self._qk_norm(key)
+        logits = jnp.einsum("bqhd,bkhd->bhqk", query, key, preferred_element_type=jnp.float32)
+        logits *= self.head_dim**-0.5
+        weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+        output = jnp.einsum("bhqk,bkhd->bqhd", weights, value)
+        return output.reshape(output.shape[0], output.shape[1], self.num_heads * self.head_dim)
+
+    def __call__(
+        self,
+        transition_prior: at.Float[at.Array, "b r dr"],
+        action_hidden: at.Float[at.Array, "b a da"],
+        time: at.Float[at.Array, " b"],
+    ) -> tuple[at.Float[at.Array, "b r dr"], at.Float[at.Array, "b a da"]]:
+        late_weight = (time <= self.flow_onset).astype(transition_prior.dtype)[:, None, None]
+
+        transition_norm = self.transition_norm_ar(transition_prior)
+        # The action values condition the transition working copy, but the
+        # transition objective must not reshape the pretrained action stream.
+        action_norm = jax.lax.stop_gradient(self.action_norm_ar(action_hidden))
+        transition_query = self._heads(self.transition_q_ar(transition_norm))
+        action_key = self._heads(self.action_k_ar(action_norm))
+        action_value = self._heads(self.action_v_ar(action_norm))
+        transition_message = self.transition_out_ar(
+            self._attention(transition_query, action_key, action_value)
+        )
+        transition_update = transition_message + self.transition_ffn(
+            self.transition_ffn_norm(transition_prior + transition_message)
+        )
+        transition_work = transition_prior + late_weight * jnp.tanh(self.gate_ar.value) * transition_update
+
+        if self.stage == 1:
+            return transition_work, action_hidden
+
+        action_norm = self.action_norm_ra(action_hidden)
+        transition_norm = self.transition_norm_ra(transition_work)
+        action_query = self._heads(self.action_q_ra(action_norm))
+        transition_key = self._heads(self.transition_k_ra(transition_norm))
+        transition_value = self._heads(self.transition_v_ra(transition_norm))
+        action_message = self.action_out_ra(self._attention(action_query, transition_key, transition_value))
+        action_update = action_message + self.action_ffn(
+            self.action_ffn_norm(action_hidden + action_message)
+        )
+        action_work = action_hidden + late_weight.astype(action_hidden.dtype) * jnp.tanh(
+            self.gate_ra.value
+        ) * action_update
+        return transition_work, action_work
+
+
 class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
@@ -75,6 +198,9 @@ class Pi0(_model.BaseModel):
         self.vjepa_aux_weight = config.vjepa_aux_weight
         self.vjepa_action_attends_queries = config.vjepa_action_attends_queries
         self.vjepa_disable_geometric_augmentation = config.vjepa_disable_geometric_augmentation
+        self.use_actr = config.use_actr
+        self.actr_stage = config.actr_stage
+        self.actr_action_loss_weight = config.actr_action_loss_weight
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -115,6 +241,17 @@ class Pi0(_model.BaseModel):
             self.vjepa_alignment_norm = nnx.LayerNorm(paligemma_config.width, rngs=rngs)
             self.vjepa_alignment_in = nnx.Linear(paligemma_config.width, paligemma_config.width, rngs=rngs)
             self.vjepa_alignment_out = nnx.Linear(paligemma_config.width, self.vjepa_target_dim, rngs=rngs)
+        if self.use_actr:
+            self.actr = ActionContingentTransitionRefiner(
+                transition_width=paligemma_config.width,
+                action_width=action_expert_config.width,
+                interaction_dim=config.actr_interaction_dim,
+                num_heads=config.actr_num_heads,
+                ffn_dim=config.actr_ffn_dim,
+                flow_onset=config.actr_flow_onset,
+                stage=config.actr_stage,
+                rngs=rngs,
+            )
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
@@ -224,7 +361,12 @@ class Pi0(_model.BaseModel):
 
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
-        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
+        if self.use_actr and self.actr_stage == 1:
+            # Stage 1 explicitly studies whether a meaningful partial action
+            # disambiguates the frozen transition prior.
+            time = jax.random.uniform(time_rng, batch_shape, minval=0.001, maxval=self.actr.flow_onset)
+        else:
+            time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
         time_expanded = time[..., None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
@@ -244,15 +386,19 @@ class Pi0(_model.BaseModel):
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-
-        flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        action_hidden = suffix_out[:, -self.action_horizon :]
         if not self.use_vjepa_aux:
+            v_t = self.action_out_proj(action_hidden)
+            flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
             return flow_loss, None
         if observation.vjepa_target is None:
             raise ValueError("V-JEPA auxiliary training requires observation.vjepa_target")
 
         query_out = prefix_out[:, -self.vjepa_num_queries :]
+        if self.use_actr:
+            query_out, action_hidden = self.actr(query_out, action_hidden, time)
+        v_t = self.action_out_proj(action_hidden)
+        flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
         predicted_target = self.predict_vjepa_target(query_out)
         target = jax.lax.stop_gradient(observation.vjepa_target.astype(jnp.float32))
         if predicted_target.shape != target.shape:
@@ -285,7 +431,8 @@ class Pi0(_model.BaseModel):
         if aux_loss is None:
             return flow_loss
 
-        return flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
+        action_weight = self.actr_action_loss_weight if self.use_actr else 1.0
+        return action_weight * flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
 
     @override
     def sample_actions(
@@ -308,7 +455,12 @@ class Pi0(_model.BaseModel):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        (prefix_out, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None], mask=prefix_attn_mask, positions=positions
+        )
+        transition_prior = (
+            prefix_out[:, -self.vjepa_num_queries :] if self.use_actr else None
+        )
 
         def step(carry):
             x_t, time = carry
@@ -344,7 +496,15 @@ class Pi0(_model.BaseModel):
                 adarms_cond=[None, adarms_cond],
             )
             assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            action_hidden = suffix_out[:, -self.action_horizon :]
+            if self.use_actr:
+                assert transition_prior is not None
+                _, action_hidden = self.actr(
+                    transition_prior,
+                    action_hidden,
+                    jnp.broadcast_to(time, (batch_size,)),
+                )
+            v_t = self.action_out_proj(action_hidden)
 
             return x_t + dt * v_t, time + dt
 
