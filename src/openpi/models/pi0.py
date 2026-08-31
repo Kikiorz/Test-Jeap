@@ -195,6 +195,8 @@ class Pi0(_model.BaseModel):
         self.vjepa_query_grid_size = config.vjepa_query_grid_size
         self.vjepa_target_grid_size = config.vjepa_target_grid_size
         self.vjepa_target_dim = config.vjepa_target_dim
+        self.vjepa_compact_target_dim = config.vjepa_compact_target_dim
+        self.vjepa_compact_projection_seed = config.vjepa_compact_projection_seed
         self.vjepa_aux_weight = config.vjepa_aux_weight
         self.vjepa_action_attends_queries = config.vjepa_action_attends_queries
         self.vjepa_disable_geometric_augmentation = config.vjepa_disable_geometric_augmentation
@@ -427,19 +429,19 @@ class Pi0(_model.BaseModel):
         )
 
     def predict_vjepa_supervision(self, query_out: at.Float[at.Array, "b q emb"]) -> at.Float[at.Array, "b p d"]:
-        if not self.config.vjepa_compact_target_dim:
+        if not self.vjepa_compact_target_dim:
             return self.predict_vjepa_target(query_out)
 
         value = self.predict_vjepa_query_grid(query_out).astype(jnp.float32)
         value /= jnp.maximum(jnp.linalg.norm(value, axis=-1, keepdims=True), 1e-6)
         projection = jax.random.rademacher(
-            jax.random.key(self.config.vjepa_compact_projection_seed),
-            (self.vjepa_target_dim, self.config.vjepa_compact_target_dim),
+            jax.random.key(self.vjepa_compact_projection_seed),
+            (self.vjepa_target_dim, self.vjepa_compact_target_dim),
             dtype=jnp.float32,
-        ) * (self.config.vjepa_compact_target_dim**-0.5)
+        ) * (self.vjepa_compact_target_dim**-0.5)
         value = jnp.einsum("bhwd,dc->bhwc", value, projection)
         value /= jnp.maximum(jnp.linalg.norm(value, axis=-1, keepdims=True), 1e-6)
-        return value.reshape(value.shape[0], self.vjepa_query_grid_size**2, self.config.vjepa_compact_target_dim)
+        return value.reshape(value.shape[0], self.vjepa_query_grid_size**2, self.vjepa_compact_target_dim)
 
     @override
     def compute_loss(
