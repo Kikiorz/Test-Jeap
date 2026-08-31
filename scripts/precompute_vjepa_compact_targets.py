@@ -60,6 +60,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_episodes(root: Path) -> list[dict[str, Any]]:
+    # Prefer the migrated parquet metadata because it contains the shared
+    # video file and timestamp ranges needed by episodes not materialized as
+    # embedded-image parquet files.
+    paths = sorted((root / "meta" / "episodes").rglob("*.parquet"))
+    if paths:
+        table = pa.concat_tables([pq.read_table(path) for path in paths])
+        episodes = sorted(table.to_pylist(), key=lambda row: int(row["episode_index"]))
+        for row in episodes:
+            row["global_start"] = int(row.get("dataset_from_index", 0))
+        return episodes
+
     jsonl = root / "meta" / "episodes.jsonl"
     if jsonl.is_file():
         episodes = []
@@ -72,14 +83,7 @@ def read_episodes(root: Path) -> list[dict[str, Any]]:
                 episodes.append(row)
         return episodes
 
-    paths = sorted((root / "meta" / "episodes").rglob("*.parquet"))
-    if not paths:
-        raise FileNotFoundError("Dataset has neither meta/episodes.jsonl nor meta/episodes/*.parquet")
-    table = pa.concat_tables([pq.read_table(path) for path in paths])
-    episodes = sorted(table.to_pylist(), key=lambda row: int(row["episode_index"]))
-    for row in episodes:
-        row["global_start"] = int(row.get("dataset_from_index", 0))
-    return episodes
+    raise FileNotFoundError("Dataset has neither meta/episodes/*.parquet nor meta/episodes.jsonl")
 
 
 def target_path(root: Path, episode_index: int, chunks_size: int) -> Path:
