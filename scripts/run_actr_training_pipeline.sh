@@ -7,7 +7,28 @@ PYTHON_BIN="${PYTHON_BIN:-$ROOT/.venv/bin/python}"
 STAGE1_EXP="${STAGE1_EXP:-actr_stage1_seed42}"
 STAGE2_EXP="${STAGE2_EXP:-actr_stage2_seed42}"
 
-"$PYTHON_BIN" scripts/train.py pi05_libero_actr_stage1 --exp-name "$STAGE1_EXP"
+run_training_stage() {
+    local config_name="$1"
+    local exp_name="$2"
+    local final_step="$3"
+    local checkpoint_root="$ROOT/checkpoints/$config_name/$exp_name"
+    local final_params="$checkpoint_root/$final_step/params"
+    local train_args=(scripts/train.py "$config_name" --exp-name "$exp_name")
+
+    if [[ -d "$final_params" ]]; then
+        echo "$config_name is already complete: $final_params"
+        return
+    fi
+    if [[ -d "$checkpoint_root" ]]; then
+        # The checkpoint manager also handles a directory that exists but has
+        # not reached its first save yet: --resume then restarts from the
+        # configured warm-start instead of rejecting the directory.
+        train_args+=(--resume)
+    fi
+    "$PYTHON_BIN" "${train_args[@]}"
+}
+
+run_training_stage pi05_libero_actr_stage1 "$STAGE1_EXP" 7999
 
 stage1_params="$ROOT/checkpoints/pi05_libero_actr_stage1/$STAGE1_EXP/7999/params"
 if [[ ! -d "$stage1_params" ]]; then
@@ -37,7 +58,7 @@ CUDA_VISIBLE_DEVICES="${ACTR_DIAGNOSTIC_GPU:-0}" \
     --require-gate \
     --output /workspace/artifacts/logs/actr-stage1-action-sensitivity.json
 
-"$PYTHON_BIN" scripts/train.py pi05_libero_actr_stage2 --exp-name "$STAGE2_EXP"
+run_training_stage pi05_libero_actr_stage2 "$STAGE2_EXP" 19999
 
 stage2_params="$ROOT/checkpoints/pi05_libero_actr_stage2/$STAGE2_EXP/19999/params"
 if [[ ! -d "$stage2_params" ]]; then
