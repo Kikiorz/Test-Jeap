@@ -90,6 +90,7 @@ class Args:
     num_trials_per_task: int = 50  # Number of rollouts per task
     task_start: int = 0  # Inclusive global task index
     task_end: Optional[int] = None  # Exclusive global task index; defaults to the end of the suite
+    task_ids_path: Optional[str] = None  # Optional JSON list/dict selecting an explicit sealed task manifest
     num_task_shards: int = 1  # Split selected task IDs into this many stable, strided shards
     task_shard_id: int = 0  # Zero-based shard to evaluate
 
@@ -277,13 +278,20 @@ def eval_libero(args: Args) -> None:
     num_tasks_in_suite = task_suite.n_tasks
     _validate_benchmark_protocol(args, benchmark_mode, num_tasks_in_suite)
     task_infos = _build_task_infos(args, benchmark_mode, task_suite, num_tasks_in_suite)
-    task_ids = _select_task_ids(
-        num_tasks_in_suite,
-        args.task_start,
-        args.task_end,
-        args.num_task_shards,
-        args.task_shard_id,
-    )
+    if args.task_ids_path is not None:
+        selected_task_ids = _load_explicit_task_ids(args.task_ids_path, num_tasks_in_suite)
+        task_ids = selected_task_ids[args.task_shard_id :: args.num_task_shards]
+        explicit_task_ids = selected_task_ids
+    else:
+        selected_task_ids = _select_task_ids(num_tasks_in_suite, args.task_start, args.task_end, 1, 0)
+        task_ids = _select_task_ids(
+            num_tasks_in_suite,
+            args.task_start,
+            args.task_end,
+            args.num_task_shards,
+            args.task_shard_id,
+        )
+        explicit_task_ids = None
     max_steps = _get_max_steps(args.task_suite_name)
     run_header = _make_run_header(
         args,
@@ -291,6 +299,7 @@ def eval_libero(args: Args) -> None:
         task_infos,
         num_tasks_in_suite,
         max_steps,
+        explicit_task_ids,
     )
     results_path = _resolve_shard_results_path(args.results_path, args.num_task_shards, args.task_shard_id)
 
@@ -760,6 +769,7 @@ def _make_run_header(
     task_infos: Sequence[_TaskInfo],
     num_tasks: int,
     max_steps: int,
+    selected_task_ids: Optional[Sequence[int]] = None,
 ) -> Dict[str, Any]:
     run_id = args.run_id.strip() if args.run_id else (f"anonymous-{os.getpid()}-{time.time_ns()}")
     benchmark_revision = args.benchmark_revision.strip() if args.benchmark_revision else None
@@ -797,6 +807,7 @@ def _make_run_header(
         "num_tasks": num_tasks,
         "task_start": args.task_start,
         "task_end": resolved_end,
+        **({"task_ids": list(selected_task_ids)} if selected_task_ids is not None else {}),
         "max_steps": max_steps,
         "task_manifest_fingerprint": _fingerprint(task_manifest),
         "task_group_metadata": (
@@ -1093,6 +1104,22 @@ def _select_task_ids(
     return [task_id for task_id in range(task_start, resolved_end) if task_id % num_task_shards == task_shard_id]
 
 
+def _load_explicit_task_ids(path: str, num_tasks: int) -> List[int]:
+    manifest_path = pathlib.Path(path).expanduser()
+    with manifest_path.open() as f:
+        payload = json.load(f)
+    task_ids = payload.get("task_ids") if isinstance(payload, dict) else payload
+    if not isinstance(task_ids, list) or not task_ids:
+        raise ValueError(f"Explicit task manifest must contain a non-empty task_ids list: {manifest_path}")
+    if any(isinstance(task_id, bool) or not isinstance(task_id, int) for task_id in task_ids):
+        raise ValueError(f"Explicit task manifest contains a non-integer task ID: {manifest_path}")
+    if len(set(task_ids)) != len(task_ids):
+        raise ValueError(f"Explicit task manifest contains duplicate task IDs: {manifest_path}")
+    if any(task_id < 0 or task_id >= num_tasks for task_id in task_ids):
+        raise ValueError(f"Explicit task manifest has IDs outside [0, {num_tasks}): {manifest_path}")
+    return task_ids
+
+
 def _episode_key(record: Dict[str, Any]) -> Optional[Tuple[str, int, int]]:
     if (
         record.get("schema_version") != _RESULT_SCHEMA_VERSION
@@ -1215,6 +1242,15 @@ def _validate_run_header(header: Dict[str, Any]) -> Dict[str, Any]:
         or run_config["max_consecutive_policy_errors"] <= 0
     ):
         raise ValueError("Run header contains an out-of-range protocol field")
+    task_ids = run_config.get("task_ids")
+    if task_ids is not None and (
+        not isinstance(task_ids, list)
+        or not task_ids
+        or any(isinstance(task_id, bool) or not isinstance(task_id, int) for task_id in task_ids)
+        or len(set(task_ids)) != len(task_ids)
+        or any(task_id < 0 or task_id >= run_config["num_tasks"] for task_id in task_ids)
+    ):
+        raise ValueError("Run header contains an invalid explicit task manifest")
     float_fields = (
         "policy_reconnect_backoff_seconds",
         "policy_connect_timeout_seconds",
@@ -1318,7 +1354,10 @@ def _validate_episode_record(record: Dict[str, Any], run_header: Dict[str, Any])
         raise ValueError(f"Episode {key} has a different run_fingerprint")
     if key[0] != run_config["task_suite_name"]:
         raise ValueError(f"Episode {key} has the wrong task suite")
-    if not (run_config["task_start"] <= key[1] < run_config["task_end"]):
+    selected_task_ids = run_config.get("task_ids")
+    if selected_task_ids is not None and key[1] not in selected_task_ids:
+        raise ValueError(f"Episode {key} is outside the explicit task manifest")
+    if selected_task_ids is None and not (run_config["task_start"] <= key[1] < run_config["task_end"]):
         raise ValueError(f"Episode {key} is outside the configured task range")
     if key[2] >= run_config["num_trials_per_task"]:
         raise ValueError(f"Episode {key} exceeds num_trials_per_task")
@@ -2022,7 +2061,7 @@ def _summarize_result_journals_locked(input_paths: Sequence[pathlib.Path]) -> Di
     suite_summaries = {}
     for suite_name, header in headers_by_suite.items():
         config = header["run_config"]
-        task_ids = list(range(config["task_start"], config["task_end"]))
+        task_ids = config.get("task_ids") or list(range(config["task_start"], config["task_end"]))
         summary = _summarize_records(
             records,
             suite_name,
@@ -2030,7 +2069,7 @@ def _summarize_result_journals_locked(input_paths: Sequence[pathlib.Path]) -> Di
             config["num_trials_per_task"],
             config["task_group_metadata"],
         )
-        full_suite = config["task_start"] == 0 and config["task_end"] == config["num_tasks"]
+        full_suite = task_ids == list(range(config["num_tasks"]))
         suite_official = (
             full_suite
             and summary["pending"] == 0
