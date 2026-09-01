@@ -107,6 +107,26 @@ def _actr_config(*, stage: int = 2) -> pi0_config.Pi0Config:
     )
 
 
+def test_actr_checkpoint_load_restores_serialized_none_bias_leaves():
+    config = _actr_config(stage=1)
+    model = config.create(jax.random.key(0))
+    params = nnx.state(model, nnx.Param).to_pure_dict()
+    flat = flax.traverse_util.flatten_dict(params)
+    assert any(value is None for value in flat.values())
+
+    # Orbax omits optional None leaves such as the bias of a bias-free NNX
+    # Linear.  Loading must restore those structural leaves without inventing
+    # any numerical parameter.
+    serialized = flax.traverse_util.unflatten_dict(
+        {key: value for key, value in flat.items() if value is not None}
+    )
+    restored = config.load(serialized)
+
+    assert restored.actr is not None
+    assert restored.actr.action_k_ar.bias.value is None
+    assert restored.actr.transition_q_ar.bias.value is None
+
+
 def test_actr_zero_gate_is_exact_warm_start():
     base_config = _dummy_config(
         use_vjepa_aux=True,

@@ -215,6 +215,25 @@ def preprocess_observation(
     )
 
 
+def _restore_missing_none_leaves(expected: object, restored: object) -> object:
+    """Reinsert optional ``None`` leaves omitted by checkpoint serialization.
+
+    This deliberately does not synthesize missing arrays or subtrees.  The
+    strict PyTree equality check in ``BaseModelConfig.load`` remains
+    responsible for rejecting every numerically meaningful mismatch.
+    """
+    if not isinstance(expected, dict) or not isinstance(restored, dict):
+        return restored
+
+    result = dict(restored)
+    for key, expected_value in expected.items():
+        if key in result:
+            result[key] = _restore_missing_none_leaves(expected_value, result[key])
+        elif expected_value is None:
+            result[key] = None
+    return result
+
+
 @dataclasses.dataclass(frozen=True)
 class BaseModelConfig(abc.ABC):
     """Configuration shared by all models. Specific models should inherit from this class, and implement the `create`
@@ -241,9 +260,16 @@ class BaseModelConfig(abc.ABC):
         """Create a model with the given parameters."""
         model = nnx.eval_shape(self.create, jax.random.key(0))
         graphdef, state = nnx.split(model)
+        expected = state.to_pure_dict()
         if remove_extra_params:
-            params = ocp.transform_utils.intersect_trees(state.to_pure_dict(), params)
-        at.check_pytree_equality(expected=state.to_pure_dict(), got=params, check_shapes=True, check_dtypes=False)
+            params = ocp.transform_utils.intersect_trees(expected, params)
+        # Orbax intentionally omits ``None`` leaves.  NNX nevertheless keeps a
+        # ``bias: None`` entry for ``Linear(use_bias=False)``, so a checkpoint
+        # round trip otherwise looks structurally different even though no
+        # numerical parameter is missing.  Restore only those optional leaves;
+        # missing array-valued parameters must still fail the strict check.
+        params = _restore_missing_none_leaves(expected, params)
+        at.check_pytree_equality(expected=expected, got=params, check_shapes=True, check_dtypes=False)
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 
