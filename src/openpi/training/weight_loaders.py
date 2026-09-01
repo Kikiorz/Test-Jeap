@@ -98,7 +98,13 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
     result = {}
     for k, v in flat_loaded.items():
         if k in flat_ref:
-            result[k] = v.astype(flat_ref[k].dtype) if v.dtype != flat_ref[k].dtype else v
+            reference_value = flat_ref[k]
+            if v is None or reference_value is None:
+                if v is not None or reference_value is not None:
+                    raise ValueError(f"Optional parameter mismatch at {k}: loaded={v}, reference={reference_value}")
+                result[k] = None
+            else:
+                result[k] = v.astype(reference_value.dtype) if v.dtype != reference_value.dtype else v
 
     flat_loaded.clear()
 

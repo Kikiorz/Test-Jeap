@@ -1,5 +1,6 @@
 import flax.traverse_util
 import numpy as np
+import pytest
 
 from openpi.training import weight_loaders
 
@@ -19,6 +20,24 @@ def test_merge_explicitly_allowed_new_vjepa_parameters():
     assert flat["base/kernel"] == 4.0
     assert flat["vjepa_query_tokens/value"] == 2.0
     assert flat["vjepa_alignment_out/kernel"] == 3.0
+
+
+def test_merge_preserves_optional_none_parameter_leaves():
+    reference = {"projection": {"kernel": np.ones((2, 2)), "bias": None}}
+    loaded = {"projection": {"kernel": np.zeros((2, 2)), "bias": None}}
+
+    merged = weight_loaders._merge_params(loaded, reference, missing_regex="")  # noqa: SLF001
+
+    assert merged["projection"]["bias"] is None
+    np.testing.assert_array_equal(merged["projection"]["kernel"], np.zeros((2, 2)))
+
+
+def test_merge_rejects_optional_and_numerical_parameter_mismatch():
+    reference = {"projection": {"bias": np.zeros(2)}}
+    loaded = {"projection": {"bias": None}}
+
+    with pytest.raises(ValueError, match="Optional parameter mismatch"):
+        weight_loaders._merge_params(loaded, reference, missing_regex="")  # noqa: SLF001
 
 
 def test_split_scanned_layers_is_an_exact_axis_partition():
