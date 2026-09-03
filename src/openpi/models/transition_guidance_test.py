@@ -41,7 +41,7 @@ def test_transition_path_receives_gradient_after_output_opens():
         action_dim=32, state_dim=32, width=64, depth=1, num_heads=4
     )
     variables = model.init(jax.random.key(6), *inputs)
-    params = variables["params"].unfreeze()
+    params = jax.tree.map(lambda value: value, variables["params"])
     params["guidance_output"]["kernel"] = jnp.ones_like(
         params["guidance_output"]["kernel"]
     ) * 0.01
