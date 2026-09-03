@@ -119,9 +119,9 @@ class PointFlowPlanner(nnx.Module):
         self.transition_projection = nnx.Linear(transition_width, hidden_width, rngs=rngs)
         self.transition_position = nnx.Linear(coordinate_width, hidden_width, use_bias=False, rngs=rngs)
         self.point_projection = nnx.Linear(coordinate_width, hidden_width, rngs=rngs)
-        self.blocks = nnx.List(
-            [_PointFlowBlock(hidden_width, num_heads, ffn_width, rngs=rngs) for _ in range(num_layers)]
-        )
+        # Plain Python containers are traversed as graph nodes by the NNX
+        # version pinned in openpi.  ``nnx.List`` only exists in newer Flax.
+        self.blocks = [_PointFlowBlock(hidden_width, num_heads, ffn_width, rngs=rngs) for _ in range(num_layers)]
         self.output_norm = nnx.RMSNorm(hidden_width, rngs=rngs)
         self.track_head = nnx.Linear(hidden_width, horizon * 2, rngs=rngs)
         self.visibility_head = nnx.Linear(hidden_width, horizon, rngs=rngs)
