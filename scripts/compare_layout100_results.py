@@ -32,8 +32,8 @@ def _load_run(root: pathlib.Path) -> dict[tuple[str, int, int], dict[str, Any]]:
                 if record["status"] == "error":
                     raise ValueError(f"Evaluation error for {key}: {record.get('error')}")
                 records[key] = record
-    if len(records) != 100:
-        raise ValueError(f"Expected exactly 100 Layout episodes in {root}, found {len(records)}")
+    if not records:
+        raise ValueError(f"No evaluation episodes found in {root}")
     return records
 
 
@@ -103,9 +103,11 @@ def main() -> None:
 
     by_suite: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
     by_difficulty: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
+    by_category: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
     for pair in pairs:
         by_suite[pair[0]["task_suite_name"]].append(pair)
         by_difficulty[str(pair[0]["difficulty_level"])].append(pair)
+        by_category[str(pair[0].get("category", "unknown"))].append(pair)
 
     report = {
         "baseline_root": str(args.baseline_root.resolve()),
@@ -117,6 +119,7 @@ def main() -> None:
         "bootstrap_replicates": args.bootstrap_replicates,
         "by_suite": {name: _group_summary(group) for name, group in sorted(by_suite.items())},
         "by_difficulty": {name: _group_summary(group) for name, group in sorted(by_difficulty.items())},
+        "by_category": {name: _group_summary(group) for name, group in sorted(by_category.items())},
     }
     rendered = json.dumps(report, indent=2, sort_keys=True)
     print(rendered)

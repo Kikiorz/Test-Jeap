@@ -12,6 +12,7 @@ CONFIG_NAME="$2"
 CHECKPOINT_DIR="$3"
 PLUS_ROOT="${LIBERO_PLUS_ROOT:-/workspace/Test-Jeap/third_party/LIBERO-plus}"
 RESULTS_ROOT="${RESULTS_ROOT:-/workspace/artifacts/evals/layout100/$RUN_ID}"
+MANIFEST_ROOT="${MANIFEST_ROOT:-$ROOT/eval_manifests/libero_plus_layout100}"
 BASE_PORT="${BASE_PORT:-8100}"
 REPLAN_STEPS="${REPLAN_STEPS:-5}"
 SUITES=(libero_spatial libero_object libero_goal libero_10)
@@ -36,6 +37,17 @@ cleanup() {
     done
 }
 trap cleanup EXIT INT TERM
+
+# Refuse to connect to a server left behind by another run. Without this
+# preflight, a failed bind can be hidden by the existing listener and the
+# evaluation may silently query the wrong checkpoint.
+for gpu in 0 1 2 3; do
+    port=$((BASE_PORT + gpu))
+    if (echo >/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1; then
+        echo "Port $port is already occupied; refusing to start an ambiguous evaluation." >&2
+        exit 1
+    fi
+done
 
 for gpu in 0 1 2 3; do
     port=$((BASE_PORT + gpu))
@@ -73,7 +85,7 @@ done
 for gpu in 0 1 2 3; do
     suite="${SUITES[$gpu]}"
     port=$((BASE_PORT + gpu))
-    manifest="$ROOT/eval_manifests/libero_plus_layout100/${suite}.json"
+    manifest="$MANIFEST_ROOT/${suite}.json"
     RUN_ID="$RUN_ID" \
     HOST=127.0.0.1 \
     PORT="$port" \

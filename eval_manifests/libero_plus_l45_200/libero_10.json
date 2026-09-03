@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "benchmark_mode": "plus",
+  "suite": "libero_10",
+  "categories": [
+    "Background Textures",
+    "Camera Viewpoints",
+    "Language Instructions",
+    "Light Conditions",
+    "Objects Layout",
+    "Robot Initial States",
+    "Sensor Noise"
+  ],
+  "difficulties": [
+    4,
+    5
+  ],
+  "seed": 20260901,
+  "sampling": "suite_category_difficulty_stratified_sha256_rank",
+  "quotas": {
+    "4": {
+      "Background Textures": 3,
+      "Camera Viewpoints": 3,
+      "Language Instructions": 3,
+      "Light Conditions": 3,
+      "Objects Layout": 3,
+      "Robot Initial States": 5,
+      "Sensor Noise": 5
+    },
+    "5": {
+      "Background Textures": 7,
+      "Camera Viewpoints": 3,
+      "Language Instructions": 3,
+      "Light Conditions": 3,
+      "Objects Layout": 3,
+      "Robot Initial States": 3,
+      "Sensor Noise": 3
+    }
+  },
+  "candidate_counts": {
+    "4": {
+      "Background Textures": 61,
+      "Camera Viewpoints": 58,
+      "Language Instructions": 104,
+      "Light Conditions": 73,
+      "Objects Layout": 20,
+      "Robot Initial States": 83,
+      "Sensor Noise": 124
+    },
+    "5": {
+      "Background Textures": 95,
+      "Camera Viewpoints": 243,
+      "Language Instructions": 73,
+      "Light Conditions": 102,
+      "Objects Layout": 3,
+      "Robot Initial States": 69,
+      "Sensor Noise": 120
+    }
+  },
+  "task_ids": [
+    318,
+    68,
+    128,
+    679,
+    623,
+    1338,
+    317,
+    1880,
+    2092,
+    1652,
+    837,
+    148,
+    118,
+    1753,
+    106,
+    2345,
+    1346,
+    953,
+    1435,
+    85,
+    2051,
+    4,
+    736,
+    357,
+    518,
+    1432,
+    2206,
+    1607,
+    2352,
+    287,
+    2377,
+    49,
+    1480,
+    2493,
+    1624,
+    1112,
+    2243,
+    1874,
+    1866,
+    1956,
+    16,
+    994,
+    2074,
+    487,
+    516,
+    2309,
+    827,
+    1492,
+    813,
+    2289
+  ]
+}

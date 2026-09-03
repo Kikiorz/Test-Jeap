@@ -1,0 +1,132 @@
+{
+  "baseline_root": "/workspace/artifacts/evals/l45_200/jepawam60k-seed42-l45-200-v2",
+  "bootstrap_replicates": 20000,
+  "by_category": {
+    "Background Textures": {
+      "baseline_success_rate": 1.0,
+      "baseline_successes": 29,
+      "episodes": 29,
+      "method_success_rate": 0.9310344827586207,
+      "method_successes": 27,
+      "paired_difference": -0.06896551724137931
+    },
+    "Camera Viewpoints": {
+      "baseline_success_rate": 0.5357142857142857,
+      "baseline_successes": 15,
+      "episodes": 28,
+      "method_success_rate": 0.6428571428571429,
+      "method_successes": 18,
+      "paired_difference": 0.10714285714285714
+    },
+    "Language Instructions": {
+      "baseline_success_rate": 0.8620689655172413,
+      "baseline_successes": 25,
+      "episodes": 29,
+      "method_success_rate": 0.8275862068965517,
+      "method_successes": 24,
+      "paired_difference": -0.034482758620689655
+    },
+    "Light Conditions": {
+      "baseline_success_rate": 0.9642857142857143,
+      "baseline_successes": 27,
+      "episodes": 28,
+      "method_success_rate": 0.8571428571428571,
+      "method_successes": 24,
+      "paired_difference": -0.10714285714285714
+    },
+    "Objects Layout": {
+      "baseline_success_rate": 0.8928571428571429,
+      "baseline_successes": 25,
+      "episodes": 28,
+      "method_success_rate": 0.8571428571428571,
+      "method_successes": 24,
+      "paired_difference": -0.03571428571428571
+    },
+    "Robot Initial States": {
+      "baseline_success_rate": 0.7241379310344828,
+      "baseline_successes": 21,
+      "episodes": 29,
+      "method_success_rate": 0.7241379310344828,
+      "method_successes": 21,
+      "paired_difference": 0.0
+    },
+    "Sensor Noise": {
+      "baseline_success_rate": 0.8275862068965517,
+      "baseline_successes": 24,
+      "episodes": 29,
+      "method_success_rate": 0.8275862068965517,
+      "method_successes": 24,
+      "paired_difference": 0.0
+    }
+  },
+  "by_difficulty": {
+    "4": {
+      "baseline_success_rate": 0.87,
+      "baseline_successes": 87,
+      "episodes": 100,
+      "method_success_rate": 0.88,
+      "method_successes": 88,
+      "paired_difference": 0.01
+    },
+    "5": {
+      "baseline_success_rate": 0.79,
+      "baseline_successes": 79,
+      "episodes": 100,
+      "method_success_rate": 0.74,
+      "method_successes": 74,
+      "paired_difference": -0.05
+    }
+  },
+  "by_suite": {
+    "libero_10": {
+      "baseline_success_rate": 0.76,
+      "baseline_successes": 38,
+      "episodes": 50,
+      "method_success_rate": 0.7,
+      "method_successes": 35,
+      "paired_difference": -0.06
+    },
+    "libero_goal": {
+      "baseline_success_rate": 0.74,
+      "baseline_successes": 37,
+      "episodes": 50,
+      "method_success_rate": 0.72,
+      "method_successes": 36,
+      "paired_difference": -0.02
+    },
+    "libero_object": {
+      "baseline_success_rate": 0.84,
+      "baseline_successes": 42,
+      "episodes": 50,
+      "method_success_rate": 0.84,
+      "method_successes": 42,
+      "paired_difference": 0.0
+    },
+    "libero_spatial": {
+      "baseline_success_rate": 0.98,
+      "baseline_successes": 49,
+      "episodes": 50,
+      "method_success_rate": 0.98,
+      "method_successes": 49,
+      "paired_difference": 0.0
+    }
+  },
+  "discordant_pairs": {
+    "baseline_only": 10,
+    "method_only": 6
+  },
+  "mcnemar_exact_two_sided_p": 0.454498291015625,
+  "method_root": "/workspace/artifacts/evals/l45_200/actr-step10000-seed42-l45-200-v2",
+  "overall": {
+    "baseline_success_rate": 0.83,
+    "baseline_successes": 166,
+    "episodes": 200,
+    "method_success_rate": 0.81,
+    "method_successes": 162,
+    "paired_difference": -0.02
+  },
+  "paired_bootstrap_95_ci": [
+    -0.06,
+    0.02
+  ]
+}
