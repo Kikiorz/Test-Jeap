@@ -71,7 +71,7 @@ IMAGE_RESOLUTION = (224, 224)
 #     "vjepa_target": float16[*b, p, d],  # Optional, frozen future-pair target used only during training
 #     "point_flow_queries": float32[*b, k, 2],  # Optional normalized tracker query coordinates
 #     "point_flow_target": float32[*b, k, h, 2],  # Optional normalized future point tracks
-#     "point_flow_visibility": bool[*b, k, h],  # Optional point visibility labels
+#     "point_flow_visibility": float32[*b, k, h],  # Optional soft correspondence confidence
 #
 #      # Actions data.
 #      "actions": float32[*b ah ad]
@@ -113,14 +113,14 @@ class Observation(Generic[ArrayT]):
     # Optional frozen visual target used by the Pi0.5 V-JEPA auxiliary objective.
     vjepa_target: at.Float[ArrayT, "*b p d"] | None = None
 
-    # Optional observable-motion supervision.  These fields are produced from
-    # expert videos by a frozen point tracker and are never required at
-    # deployment time.
+    # Optional observable-motion supervision.  These fields are deterministically
+    # induced from the model's own frozen spatial features and are never required
+    # at deployment time.
     point_flow_queries: at.Float[ArrayT, "*b k xy"] | None = None
     # ``ph`` is deliberately distinct from the image-height axis ``h`` in
     # jaxtyping's shared dataclass shape context.
     point_flow_target: at.Float[ArrayT, "*b k ph xy"] | None = None
-    point_flow_visibility: at.Bool[ArrayT, "*b k ph"] | None = None
+    point_flow_visibility: at.Float[ArrayT, "*b k ph"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":

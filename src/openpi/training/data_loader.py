@@ -167,10 +167,10 @@ class VJepaTargetDataset(Dataset):
 
 
 class PointFlowTargetDataset(Dataset):
-    """Adds frozen tracker trajectories to every LeRobot frame.
+    """Adds cached self-supervised semantic transport to every LeRobot frame.
 
     Each episode file stores ``[frames, points, horizon, 3]`` float16 rows;
-    the last dimension is normalized ``x, y, visibility``.  Initial query
+    the last dimension is normalized ``x, y, confidence``.  Initial query
     coordinates are shared in the manifest so the dataset does not duplicate
     them for every frame.
     """
@@ -243,7 +243,7 @@ class PointFlowTargetDataset(Dataset):
         row = np.asarray(episode[frame_index], dtype=np.float32)
         sample["point_flow_queries"] = self._query_points.copy()
         sample["point_flow_target"] = row[..., :2].copy()
-        sample["point_flow_visibility"] = (row[..., 2] > 0.5).copy()
+        sample["point_flow_visibility"] = np.clip(row[..., 2], 0.0, 1.0).copy()
         return sample
 
     def _get_episode(self, episode_index: int) -> np.memmap:

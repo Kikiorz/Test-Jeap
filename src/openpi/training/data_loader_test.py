@@ -98,7 +98,7 @@ def test_point_flow_target_dataset(tmp_path):
     np.testing.assert_allclose(item["point_flow_queries"], query_points)
     np.testing.assert_allclose(item["point_flow_target"], 0.5)
     assert item["point_flow_target"].dtype == np.float32
-    assert item["point_flow_visibility"].dtype == np.bool_
+    assert item["point_flow_visibility"].dtype == np.float32
     assert not item["point_flow_visibility"][1].any()
 
 

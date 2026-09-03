@@ -19,6 +19,32 @@ def _planner() -> point_flow.PointFlowPlanner:
     )
 
 
+def test_semantic_transport_recovers_feature_permutation():
+    current = jnp.eye(4, dtype=jnp.float32)[None]
+    # The feature initially at index 0 appears at future index 2, index 1 at
+    # index 3, and vice versa.
+    future = current[:, jnp.asarray([2, 3, 0, 1])]
+
+    endpoints, confidence = point_flow.semantic_transport_flow(
+        current,
+        future,
+        grid_size=2,
+        temperature=0.01,
+        spatial_sigma=10.0,
+    )
+
+    coordinates = point_flow._grid_coordinates(2)  # noqa: SLF001
+    expected = coordinates[jnp.asarray([2, 3, 0, 1])]
+    np.testing.assert_allclose(endpoints[0], expected, atol=1e-4)
+    assert np.all(np.asarray(confidence) > 0.99)
+
+
+def test_semantic_transport_preserves_static_spatial_grid():
+    features = jnp.eye(4, dtype=jnp.float32)[None]
+    endpoints, _ = point_flow.semantic_transport_flow(features, features, grid_size=2)
+    np.testing.assert_allclose(endpoints[0], point_flow._grid_coordinates(2), atol=1e-4)  # noqa: SLF001
+
+
 def test_planner_starts_as_visible_persistence_predictor():
     planner = _planner()
     transition = jax.random.normal(jax.random.key(1), (2, 4, 16))

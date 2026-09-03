@@ -149,7 +149,7 @@ class Pi0Config(_model.BaseModelConfig):
                 ),
                 point_flow_visibility=(
                     jax.ShapeDtypeStruct(
-                        [batch_size, self.point_flow_num_points, self.point_flow_horizon], jnp.bool_
+                        [batch_size, self.point_flow_num_points, self.point_flow_horizon], jnp.float32
                     )
                     if self.use_point_flow
                     else None

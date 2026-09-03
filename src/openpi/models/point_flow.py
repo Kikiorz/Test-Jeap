@@ -1,9 +1,11 @@
 """Observable point-flow interface for predictive robot control.
 
 The modules in this file deliberately stay independent of the Pi0 transformer
-implementation.  ``PointFlowPlanner`` turns JEPA-WAM future-query states into
-short-horizon 2-D tracks.  ``PointFlowConditioner`` turns either predicted or
-observed tracks into a residual that can be inserted inside an action expert.
+implementation.  ``semantic_transport_flow`` derives self-supervised motion
+from the policy's own spatial visual features, without an external tracker.
+``PointFlowPlanner`` turns JEPA-WAM future-query states into short-horizon 2-D
+tracks.  ``PointFlowConditioner`` turns either predicted or observed tracks
+into a residual that can be inserted inside an action expert.
 
 Coordinates are normalized to ``[0, 1]``.  A zero-initialized conditioner
 output makes the untrained interface an exact identity without adding a
@@ -17,6 +19,61 @@ import jax
 import jax.numpy as jnp
 
 from openpi.shared import array_typing as at
+
+
+def _grid_coordinates(grid_size: int, dtype: jnp.dtype = jnp.float32) -> jax.Array:
+    axis = (jnp.arange(grid_size, dtype=jnp.float32) + 0.5) / grid_size
+    yy, xx = jnp.meshgrid(axis, axis, indexing="ij")
+    return jnp.stack([xx, yy], axis=-1).reshape(-1, 2).astype(dtype)
+
+
+def semantic_transport_flow(
+    current_tokens: at.Float[at.Array, "b q d"],
+    future_tokens: at.Float[at.Array, "b q d"],
+    *,
+    grid_size: int,
+    temperature: float = 0.07,
+    spatial_sigma: float = 0.35,
+) -> tuple[at.Float[at.Array, "b q xy"], at.Float[at.Array, "b q"]]:
+    """Derive a semantic 2-D transport field from two feature grids.
+
+    The same frozen visual encoder produces both grids.  A dual-softmax
+    correspondence converts semantic similarity into displacement while a
+    weak spatial prior resolves repeated textures.  This deterministic
+    observer is used both for offline self-supervision and for measuring
+    achieved motion after deployment; it is not a separately trained tracker.
+
+    Returns future endpoint coordinates and a soft mutual-match confidence.
+    """
+    if current_tokens.shape != future_tokens.shape:
+        raise ValueError(f"Current/future feature shapes differ: {current_tokens.shape}, {future_tokens.shape}")
+    expected_tokens = grid_size**2
+    if current_tokens.shape[1] != expected_tokens:
+        raise ValueError(f"Expected {expected_tokens} tokens for a {grid_size}x{grid_size} grid")
+    if temperature <= 0 or spatial_sigma <= 0:
+        raise ValueError("temperature and spatial_sigma must be positive")
+
+    current = current_tokens.astype(jnp.float32)
+    future = future_tokens.astype(jnp.float32)
+    current /= jnp.maximum(jnp.linalg.norm(current, axis=-1, keepdims=True), 1e-6)
+    future /= jnp.maximum(jnp.linalg.norm(future, axis=-1, keepdims=True), 1e-6)
+    similarity = jnp.einsum("bqd,brd->bqr", current, future)
+
+    coordinates = _grid_coordinates(grid_size)
+    squared_distance = jnp.sum(
+        jnp.square(coordinates[:, None, :] - coordinates[None, :, :]), axis=-1
+    )
+    logits = similarity / temperature - squared_distance[None] / (2.0 * spatial_sigma**2)
+
+    # Reciprocal (dual-softmax) matching suppresses one-to-many assignments
+    # without introducing a learned observer or an iterative tracker.
+    row_probability = jax.nn.softmax(logits, axis=-1)
+    column_probability = jax.nn.softmax(logits, axis=-2)
+    mutual = row_probability * column_probability
+    transport = mutual / jnp.maximum(jnp.sum(mutual, axis=-1, keepdims=True), 1e-8)
+    endpoints = jnp.einsum("bqr,rd->bqd", transport, coordinates)
+    confidence = jnp.sqrt(jnp.max(mutual, axis=-1))
+    return endpoints, confidence
 
 
 def _fourier_features(x: jax.Array, num_frequencies: int = 4) -> jax.Array:
@@ -133,9 +190,7 @@ class PointFlowPlanner(nnx.Module):
         self.visibility_head.bias.value = jnp.full_like(self.visibility_head.bias.value, 4.0)
 
     def _transition_coordinates(self, dtype: jnp.dtype) -> jax.Array:
-        axis = (jnp.arange(self.query_grid_size, dtype=jnp.float32) + 0.5) / self.query_grid_size
-        yy, xx = jnp.meshgrid(axis, axis, indexing="ij")
-        return jnp.stack([xx, yy], axis=-1).reshape(-1, 2).astype(dtype)
+        return _grid_coordinates(self.query_grid_size, dtype)
 
     def __call__(
         self,
@@ -282,7 +337,7 @@ def point_flow_loss(
     final_count = jnp.maximum(jnp.sum(final_visible, axis=1), 1.0)
     fde = jnp.sum(euclidean[:, :, -1] * final_visible, axis=1) / final_count
     visibility_accuracy = jnp.mean(
-        (predicted_visibility_logits >= 0) == target_visibility.astype(jnp.bool_), axis=(1, 2)
+        (predicted_visibility_logits >= 0) == (target_visibility >= 0.5), axis=(1, 2)
     )
     metrics = {
         "track_loss": track_loss,
