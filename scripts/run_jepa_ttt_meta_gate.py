@@ -24,7 +24,7 @@ from openpi.models import pi0
 from openpi.policies import policy_config
 from openpi.shared import nnx_utils
 from openpi.training import config as config_lib
-from scripts import run_jepa_ttt_gradient_gate as gate
+import run_jepa_ttt_gradient_gate as gate
 
 
 def parse_args() -> argparse.Namespace:
