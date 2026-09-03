@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=Path, required=True)
     parser.add_argument("--prediction", type=Path, required=True)
     parser.add_argument("--observed-transition", type=Path, required=True)
+    parser.add_argument("--nochange-transition", type=Path, required=True)
     parser.add_argument("--policy-checkpoint", type=Path, required=True)
     parser.add_argument("--config", default="pi05_libero_vjepa_aux")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -135,13 +136,15 @@ class TransitionInverseDecoder(nn.Module):
 
 
 def _train(
-    mode: InverseMode,
+    name: str,
+    decoder_mode: InverseMode,
     observed: jax.Array,
     predicted: jax.Array,
     states: jax.Array,
     actions: jax.Array,
     train_indices: np.ndarray,
     validation_indices: np.ndarray,
+    task_indices: np.ndarray,
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], Any]:
     model = TransitionInverseDecoder(
@@ -149,7 +152,7 @@ def _train(
         action_dim=actions.shape[2],
         width=args.width,
         num_heads=args.num_heads,
-        mode=mode,
+        mode=decoder_mode,
     )
     params = model.init(jax.random.key(args.seed), observed[:1], states[:1])["params"]
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(args.learning_rate, 1e-4))
@@ -182,10 +185,15 @@ def _train(
         if step == 0 or (step + 1) % max(args.steps // 10, 1) == 0:
             record = {"step": step + 1, "loss": float(loss)}
             history.append(record)
-            print(json.dumps({"mode": mode, **record}), flush=True)
+            print(json.dumps({"mode": name, **record}), flush=True)
 
     validation = jnp.asarray(validation_indices)
-    shuffled = jnp.roll(validation, 1)
+    shuffled_numpy = validation_indices.copy()
+    for task in np.unique(task_indices[validation_indices]):
+        positions = np.flatnonzero(task_indices[validation_indices] == task)
+        if len(positions) > 1:
+            shuffled_numpy[positions] = np.roll(validation_indices[positions], 1)
+    shuffled = jnp.asarray(shuffled_numpy)
     observed_mse, observed_per_dim = error(
         params, observed[validation], states[validation], actions[validation]
     )
@@ -199,7 +207,7 @@ def _train(
         params, predicted[shuffled], states[validation], actions[validation]
     )
     return {
-        "mode": mode,
+        "mode": name,
         "observed_mse": float(observed_mse),
         "predicted_mse": float(predicted_mse),
         "shuffled_observed_mse": float(shuffled_observed_mse),
@@ -233,6 +241,9 @@ def main() -> None:
     observed = coflow.normalize_transition(
         jnp.asarray(_pool_24_to_8(np.asarray(np.load(args.observed_transition, mmap_mode="r"))))
     )
+    nochange = coflow.normalize_transition(
+        jnp.asarray(_pool_24_to_8(np.asarray(np.load(args.nochange_transition, mmap_mode="r"))))
+    )
     policy = policy_config.create_trained_policy(config_lib.get_config(args.config), args.policy_checkpoint)
     states_numpy, actions_numpy = _policy_arrays(policy, samples)
     states = jnp.asarray(states_numpy)
@@ -255,25 +266,37 @@ def main() -> None:
         "modes": {},
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    for mode in ("state", "transition"):
+    mode_inputs = (
+        ("state", "state", observed, predicted),
+        ("nochange", "transition", nochange, nochange),
+        ("transition", "transition", observed, predicted),
+    )
+    for name, decoder_mode, teacher_input, predicted_input in mode_inputs:
         result, params = _train(
-            mode,
-            observed,
-            predicted,
+            name,
+            decoder_mode,
+            teacher_input,
+            predicted_input,
             states,
             actions,
             train_indices,
             validation_indices,
+            samples["task_indices"],
             args,
         )
-        metrics["modes"][mode] = result
-        with (args.output_dir / f"{mode}_params.msgpack").open("wb") as handle:
+        metrics["modes"][name] = result
+        with (args.output_dir / f"{name}_params.msgpack").open("wb") as handle:
             handle.write(serialization.to_bytes(params))
     metrics["transition_minus_state"] = {
         "observed_mse": metrics["modes"]["transition"]["observed_mse"]
         - metrics["modes"]["state"]["observed_mse"],
         "predicted_mse": metrics["modes"]["transition"]["predicted_mse"]
         - metrics["modes"]["state"]["predicted_mse"],
+    }
+    metrics["transition_minus_nochange"] = {
+        "teacher_input_mse": metrics["modes"]["transition"]["observed_mse"]
+        - metrics["modes"]["nochange"]["observed_mse"],
+        "within_task_shuffle_delta": metrics["modes"]["transition"]["observed_shuffle_delta"],
     }
     _write_json(args.output_dir / "metrics.json", metrics)
     print(json.dumps(metrics, indent=2), flush=True)
