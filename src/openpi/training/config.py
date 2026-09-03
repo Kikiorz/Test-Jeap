@@ -102,6 +102,11 @@ class DataConfig:
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    # Optional frozen point tracks extracted from expert videos.
+    point_flow_target_root: str | None = None
+    point_flow_mmap_cache_size: int = 16
+    point_flow_horizon: int | None = None
+    point_flow_image_key: str | None = None
 
 
 class GroupFactory(Protocol):
@@ -305,6 +310,10 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    point_flow_target_root: str | None = None
+    point_flow_mmap_cache_size: int = 16
+    point_flow_horizon: int | None = None
+    point_flow_image_key: str | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -325,6 +334,9 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         }
         if self.vjepa_target_root is not None:
             repack_mapping["vjepa_target"] = "vjepa_target"
+        if self.point_flow_target_root is not None:
+            for key in ("point_flow_queries", "point_flow_target", "point_flow_visibility"):
+                repack_mapping[key] = key
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
 
         # The data transforms are applied to the data coming from the dataset *and* during inference.
@@ -371,6 +383,10 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             vjepa_mmap_cache_size=self.vjepa_mmap_cache_size,
             vjepa_future_offset=self.vjepa_future_offset,
             vjepa_image_key=self.vjepa_image_key,
+            point_flow_target_root=self.point_flow_target_root,
+            point_flow_mmap_cache_size=self.point_flow_mmap_cache_size,
+            point_flow_horizon=self.point_flow_horizon,
+            point_flow_image_key=self.point_flow_image_key,
         )
 
 

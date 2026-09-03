@@ -9,6 +9,7 @@ from typing_extensions import override
 
 from openpi.models import model as _model
 from openpi.models import pi0_config
+from openpi.models import point_flow as _point_flow
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -75,6 +76,10 @@ class Pi0(_model.BaseModel):
         self.vjepa_aux_weight = config.vjepa_aux_weight
         self.vjepa_action_attends_queries = config.vjepa_action_attends_queries
         self.vjepa_disable_geometric_augmentation = config.vjepa_disable_geometric_augmentation
+        self.use_point_flow = config.use_point_flow
+        self.point_flow_loss_weight = config.point_flow_loss_weight
+        self.point_flow_visibility_weight = config.point_flow_visibility_weight
+        self.point_flow_smoothness_weight = config.point_flow_smoothness_weight
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -115,6 +120,17 @@ class Pi0(_model.BaseModel):
             self.vjepa_alignment_norm = nnx.LayerNorm(paligemma_config.width, rngs=rngs)
             self.vjepa_alignment_in = nnx.Linear(paligemma_config.width, paligemma_config.width, rngs=rngs)
             self.vjepa_alignment_out = nnx.Linear(paligemma_config.width, self.vjepa_target_dim, rngs=rngs)
+            if self.use_point_flow:
+                self.point_flow_planner = _point_flow.PointFlowPlanner(
+                    transition_width=paligemma_config.width,
+                    query_grid_size=self.vjepa_query_grid_size,
+                    horizon=config.point_flow_horizon,
+                    hidden_width=config.point_flow_hidden_dim,
+                    num_layers=config.point_flow_num_layers,
+                    num_heads=config.point_flow_num_heads,
+                    ffn_width=4 * config.point_flow_hidden_dim,
+                    rngs=rngs,
+                )
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
@@ -211,9 +227,14 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
-    def compute_loss_components(
+    def compute_all_loss_components(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
-    ) -> tuple[at.Float[at.Array, "*b ah"], at.Float[at.Array, "*b"] | None]:
+    ) -> tuple[
+        at.Float[at.Array, "*b ah"],
+        at.Float[at.Array, "*b"] | None,
+        at.Float[at.Array, "*b"] | None,
+        dict[str, at.Float[at.Array, "*b"]],
+    ]:
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(
             preprocess_rng,
@@ -248,7 +269,7 @@ class Pi0(_model.BaseModel):
 
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
         if not self.use_vjepa_aux:
-            return flow_loss, None
+            return flow_loss, None, None, {}
         if observation.vjepa_target is None:
             raise ValueError("V-JEPA auxiliary training requires observation.vjepa_target")
 
@@ -261,6 +282,33 @@ class Pi0(_model.BaseModel):
         predicted_target /= jnp.maximum(jnp.linalg.norm(predicted_target, axis=-1, keepdims=True), 1e-6)
         target /= jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
         aux_loss = jnp.mean(1.0 - jnp.sum(predicted_target * target, axis=-1), axis=-1)
+
+        if not self.use_point_flow:
+            return flow_loss, aux_loss, None, {}
+        if (
+            observation.point_flow_queries is None
+            or observation.point_flow_target is None
+            or observation.point_flow_visibility is None
+        ):
+            raise ValueError("Point-flow training requires queries, target tracks, and visibility labels")
+        predicted_tracks, predicted_visibility_logits = self.point_flow_planner(
+            jax.lax.stop_gradient(query_out), observation.point_flow_queries.astype(jnp.float32)
+        )
+        point_loss, point_metrics = _point_flow.point_flow_loss(
+            predicted_tracks,
+            predicted_visibility_logits,
+            jax.lax.stop_gradient(observation.point_flow_target.astype(jnp.float32)),
+            jax.lax.stop_gradient(observation.point_flow_visibility),
+            visibility_weight=self.point_flow_visibility_weight,
+            smoothness_weight=self.point_flow_smoothness_weight,
+        )
+        return flow_loss, aux_loss, point_loss, point_metrics
+
+    def compute_loss_components(
+        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
+    ) -> tuple[at.Float[at.Array, "*b ah"], at.Float[at.Array, "*b"] | None]:
+        """Backward-compatible action and JEPA losses used by existing configs."""
+        flow_loss, aux_loss, _, _ = self.compute_all_loss_components(rng, observation, actions, train=train)
         return flow_loss, aux_loss
 
     def predict_vjepa_target(self, query_out: at.Float[at.Array, "b q emb"]) -> at.Float[at.Array, "b p d"]:
@@ -281,11 +329,13 @@ class Pi0(_model.BaseModel):
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
-        flow_loss, aux_loss = self.compute_loss_components(rng, observation, actions, train=train)
+        flow_loss, aux_loss, point_loss, _ = self.compute_all_loss_components(rng, observation, actions, train=train)
         if aux_loss is None:
             return flow_loss
-
-        return flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
+        total_loss = flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
+        if point_loss is not None:
+            total_loss = total_loss + self.point_flow_loss_weight * point_loss[..., None]
+        return total_loss
 
     @override
     def sample_actions(

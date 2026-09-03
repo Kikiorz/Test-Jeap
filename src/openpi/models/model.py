@@ -69,6 +69,9 @@ IMAGE_RESOLUTION = (224, 224)
 #     "token_ar_mask": int32[*b, l],  # Optional, autoregressive mask for FAST model
 #     "token_loss_mask": bool[*b, l],  # Optional, loss mask for FAST model
 #     "vjepa_target": float16[*b, p, d],  # Optional, frozen future-pair target used only during training
+#     "point_flow_queries": float32[*b, k, 2],  # Optional normalized tracker query coordinates
+#     "point_flow_target": float32[*b, k, h, 2],  # Optional normalized future point tracks
+#     "point_flow_visibility": bool[*b, k, h],  # Optional point visibility labels
 #
 #      # Actions data.
 #      "actions": float32[*b ah ad]
@@ -110,6 +113,13 @@ class Observation(Generic[ArrayT]):
     # Optional frozen visual target used by the Pi0.5 V-JEPA auxiliary objective.
     vjepa_target: at.Float[ArrayT, "*b p d"] | None = None
 
+    # Optional observable-motion supervision.  These fields are produced from
+    # expert videos by a frozen point tracker and are never required at
+    # deployment time.
+    point_flow_queries: at.Float[ArrayT, "*b k xy"] | None = None
+    point_flow_target: at.Float[ArrayT, "*b k h xy"] | None = None
+    point_flow_visibility: at.Bool[ArrayT, "*b k h"] | None = None
+
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
@@ -131,6 +141,9 @@ class Observation(Generic[ArrayT]):
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             vjepa_target=data.get("vjepa_target"),
+            point_flow_queries=data.get("point_flow_queries"),
+            point_flow_target=data.get("point_flow_target"),
+            point_flow_visibility=data.get("point_flow_visibility"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -212,6 +225,9 @@ def preprocess_observation(
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
         vjepa_target=observation.vjepa_target,
+        point_flow_queries=observation.point_flow_queries,
+        point_flow_target=observation.point_flow_target,
+        point_flow_visibility=observation.point_flow_visibility,
     )
 
 

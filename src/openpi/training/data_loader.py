@@ -166,6 +166,113 @@ class VJepaTargetDataset(Dataset):
         return state
 
 
+class PointFlowTargetDataset(Dataset):
+    """Adds frozen tracker trajectories to every LeRobot frame.
+
+    Each episode file stores ``[frames, points, horizon, 3]`` float16 rows;
+    the last dimension is normalized ``x, y, visibility``.  Initial query
+    coordinates are shared in the manifest so the dataset does not duplicate
+    them for every frame.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        target_root: str | Path,
+        *,
+        expected_num_points: int,
+        expected_horizon: int,
+        expected_image_key: str | None = None,
+        expected_num_frames: int | None = None,
+        mmap_cache_size: int = 16,
+    ):
+        if mmap_cache_size < 1:
+            raise ValueError("Point-flow mmap cache size must be positive")
+        self._dataset = dataset
+        self._target_root = Path(target_root)
+        self._expected_shape = (expected_num_points, expected_horizon, 3)
+        self._mmap_cache_size = mmap_cache_size
+        self._cache: OrderedDict[int, np.memmap] = OrderedDict()
+
+        manifest_path = self._target_root / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Point-flow target manifest not found: {manifest_path}")
+        with manifest_path.open() as file:
+            manifest = json.load(file)
+        if tuple(manifest.get("target_shape", ())) != self._expected_shape:
+            raise ValueError(
+                f"Point-flow target shape mismatch: expected {self._expected_shape}, "
+                f"manifest has {manifest.get('target_shape')}"
+            )
+        if manifest.get("target_dtype") != "float16":
+            raise ValueError(f"Expected float16 point-flow targets, got {manifest.get('target_dtype')}")
+        if expected_image_key is not None and manifest.get("image_key") != expected_image_key:
+            raise ValueError(
+                f"Point-flow image key mismatch: expected {expected_image_key!r}, "
+                f"manifest has {manifest.get('image_key')!r}"
+            )
+        if expected_num_frames is not None and manifest.get("dataset_total_frames") != expected_num_frames:
+            raise ValueError(
+                "Point-flow frame count mismatch: "
+                f"expected {expected_num_frames}, manifest has {manifest.get('dataset_total_frames')}"
+            )
+        query_points = np.asarray(manifest.get("query_points"), dtype=np.float32)
+        if query_points.shape != (expected_num_points, 2):
+            raise ValueError(
+                f"Point-flow query shape mismatch: expected {(expected_num_points, 2)}, got {query_points.shape}"
+            )
+        if not np.isfinite(query_points).all() or np.any((query_points < 0) | (query_points > 1)):
+            raise ValueError("Point-flow query coordinates must be finite and normalized to [0, 1]")
+        self._query_points = query_points
+        self._chunks_size = int(manifest.get("chunks_size", 1000))
+        if self._chunks_size < 1:
+            raise ValueError("Point-flow target manifest chunks_size must be positive")
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        sample = dict(self._dataset[index])
+        episode_index = int(np.asarray(sample["episode_index"]).item())
+        frame_index = int(np.asarray(sample["frame_index"]).item())
+        episode = self._get_episode(episode_index)
+        if not 0 <= frame_index < episode.shape[0]:
+            raise IndexError(
+                f"Frame {frame_index} is outside point-flow episode {episode_index} with {episode.shape[0]} rows"
+            )
+        row = np.asarray(episode[frame_index], dtype=np.float32)
+        sample["point_flow_queries"] = self._query_points.copy()
+        sample["point_flow_target"] = row[..., :2].copy()
+        sample["point_flow_visibility"] = (row[..., 2] > 0.5).copy()
+        return sample
+
+    def _get_episode(self, episode_index: int) -> np.memmap:
+        if episode_index in self._cache:
+            target = self._cache.pop(episode_index)
+            self._cache[episode_index] = target
+            return target
+        path = (
+            self._target_root
+            / "targets"
+            / f"chunk-{episode_index // self._chunks_size:03d}"
+            / f"episode_{episode_index:06d}.npy"
+        )
+        target = np.load(path, mmap_mode="r", allow_pickle=False)
+        if target.ndim != 4 or tuple(target.shape[1:]) != self._expected_shape or target.dtype != np.float16:
+            VJepaTargetDataset._close_mmap(target)
+            raise ValueError(f"Invalid point-flow target array: {path}, shape={target.shape}, dtype={target.dtype}")
+        self._cache[episode_index] = target
+        while len(self._cache) > self._mmap_cache_size:
+            _, evicted = self._cache.popitem(last=False)
+            VJepaTargetDataset._close_mmap(evicted)
+        return target
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_cache"] = OrderedDict()
+        return state
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -265,6 +372,24 @@ def create_torch_dataset(
             expected_image_key=data_config.vjepa_image_key,
             expected_num_frames=len(dataset),
             mmap_cache_size=data_config.vjepa_mmap_cache_size,
+        )
+
+    use_point_flow = bool(getattr(model_config, "use_point_flow", False))
+    if use_point_flow and data_config.point_flow_target_root is None:
+        raise ValueError("Point-flow training requires data.point_flow_target_root")
+    if data_config.point_flow_target_root is not None:
+        if not use_point_flow:
+            raise ValueError("Point-flow targets were configured for a model with use_point_flow=False")
+        if data_config.point_flow_horizon is None or data_config.point_flow_image_key is None:
+            raise ValueError("Point-flow targets require an expected horizon and image key")
+        dataset = PointFlowTargetDataset(
+            dataset,
+            data_config.point_flow_target_root,
+            expected_num_points=model_config.point_flow_num_points,
+            expected_horizon=data_config.point_flow_horizon,
+            expected_image_key=data_config.point_flow_image_key,
+            expected_num_frames=len(dataset),
+            mmap_cache_size=data_config.point_flow_mmap_cache_size,
         )
 
     if data_config.prompt_from_task:

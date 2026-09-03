@@ -153,7 +153,15 @@ def train_step(
     def vjepa_loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
-        flow_loss, vjepa_loss = model.compute_loss_components(rng, observation, actions, train=True)
+        if getattr(config.model, "use_point_flow", False):
+            flow_loss, vjepa_loss, point_loss, point_metrics = model.compute_all_loss_components(
+                rng, observation, actions, train=True
+            )
+            assert point_loss is not None
+        else:
+            flow_loss, vjepa_loss = model.compute_loss_components(rng, observation, actions, train=True)
+            point_loss = None
+            point_metrics = {}
         assert vjepa_loss is not None
         if config.model.vjepa_aux_warmup_steps > 0:
             warmup = jnp.minimum(
@@ -166,14 +174,28 @@ def train_step(
         flow_loss = jnp.mean(flow_loss)
         vjepa_loss = jnp.mean(vjepa_loss)
         weighted_vjepa_loss = vjepa_weight * vjepa_loss
-        total_loss = flow_loss + weighted_vjepa_loss
-        return total_loss, {
+        action_weight = getattr(config.model, "point_flow_action_loss_weight", 1.0)
+        total_loss = action_weight * flow_loss + weighted_vjepa_loss
+        loss_info = {
             "flow_loss": flow_loss,
+            "action_loss_weight": action_weight,
             "vjepa_loss": vjepa_loss,
             "vjepa_cosine": 1.0 - vjepa_loss,
             "vjepa_weight": vjepa_weight,
             "weighted_vjepa_loss": weighted_vjepa_loss,
         }
+        if point_loss is not None:
+            point_loss = jnp.mean(point_loss)
+            weighted_point_loss = config.model.point_flow_loss_weight * point_loss
+            total_loss = total_loss + weighted_point_loss
+            loss_info.update(
+                {
+                    "point_flow_loss": point_loss,
+                    "weighted_point_flow_loss": weighted_point_loss,
+                    **{f"point_flow_{name}": jnp.mean(value) for name, value in point_metrics.items()},
+                }
+            )
+        return total_loss, loss_info
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch

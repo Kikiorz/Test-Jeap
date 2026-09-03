@@ -64,6 +64,44 @@ def test_vjepa_target_dataset(tmp_path):
         )
 
 
+def test_point_flow_target_dataset(tmp_path):
+    target_root = tmp_path / "point_flow_root"
+    episode_dir = target_root / "targets" / "chunk-000"
+    episode_dir.mkdir(parents=True)
+    query_points = [[0.25, 0.25], [0.75, 0.75]]
+    (target_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "target_shape": [2, 3, 3],
+                "target_dtype": "float16",
+                "horizon": 3,
+                "image_key": "image",
+                "query_points": query_points,
+            }
+        )
+    )
+    episode = np.zeros((4, 2, 3, 3), dtype=np.float16)
+    episode[..., :2] = 0.5
+    episode[..., 2] = 1.0
+    episode[2, 1, :, 2] = 0.0
+    np.save(episode_dir / "episode_000009.npy", episode, allow_pickle=False)
+    dataset = _data_loader.PointFlowTargetDataset(
+        _ListDataset([{"episode_index": np.int64(9), "frame_index": np.int64(2)}]),
+        target_root,
+        expected_num_points=2,
+        expected_horizon=3,
+        expected_image_key="image",
+        mmap_cache_size=1,
+    )
+
+    item = dataset[0]
+    np.testing.assert_allclose(item["point_flow_queries"], query_points)
+    np.testing.assert_allclose(item["point_flow_target"], 0.5)
+    assert item["point_flow_target"].dtype == np.float32
+    assert item["point_flow_visibility"].dtype == np.bool_
+    assert not item["point_flow_visibility"][1].any()
+
+
 def test_torch_data_loader():
     config = pi0_config.Pi0Config(action_dim=24, action_horizon=50, max_token_len=48)
     dataset = _data_loader.FakeDataset(config, 16)

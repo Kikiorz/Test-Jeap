@@ -43,6 +43,19 @@ class Pi0Config(_model.BaseModelConfig):
     vjepa_action_attends_queries: bool = False
     vjepa_disable_geometric_augmentation: bool = True
 
+    # Observable point-flow interface.  Stage 1 decodes the already learned
+    # JEPA future-query representation into short, image-plane trajectories.
+    use_point_flow: bool = False
+    point_flow_num_points: int = 32
+    point_flow_horizon: int = 10
+    point_flow_hidden_dim: int = 256
+    point_flow_num_layers: int = 3
+    point_flow_num_heads: int = 4
+    point_flow_action_loss_weight: float = 1.0
+    point_flow_loss_weight: float = 1.0
+    point_flow_visibility_weight: float = 0.1
+    point_flow_smoothness_weight: float = 0.05
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
@@ -66,6 +79,21 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("V-JEPA target grid size and dimension must be positive")
             if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
                 raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
+        if self.use_point_flow:
+            if not self.use_vjepa_aux:
+                raise ValueError("Point-flow prediction requires the JEPA-WAM future-query branch")
+            if self.point_flow_num_points < 1 or self.point_flow_horizon < 1:
+                raise ValueError("Point-flow point count and horizon must be positive")
+            if self.point_flow_horizon != self.action_horizon:
+                raise ValueError("The first point-flow experiment requires point and action horizons to match")
+            if self.point_flow_hidden_dim % self.point_flow_num_heads:
+                raise ValueError("point_flow_hidden_dim must be divisible by point_flow_num_heads")
+            if (
+                self.point_flow_num_layers < 1
+                or self.point_flow_action_loss_weight < 0
+                or self.point_flow_loss_weight < 0
+            ):
+                raise ValueError("Point-flow layer count must be positive and loss weight non-negative")
 
     @property
     @override
@@ -105,6 +133,25 @@ class Pi0Config(_model.BaseModelConfig):
                         [batch_size, self.vjepa_target_grid_size**2, self.vjepa_target_dim], jnp.float16
                     )
                     if self.use_vjepa_aux
+                    else None
+                ),
+                point_flow_queries=(
+                    jax.ShapeDtypeStruct([batch_size, self.point_flow_num_points, 2], jnp.float32)
+                    if self.use_point_flow
+                    else None
+                ),
+                point_flow_target=(
+                    jax.ShapeDtypeStruct(
+                        [batch_size, self.point_flow_num_points, self.point_flow_horizon, 2], jnp.float32
+                    )
+                    if self.use_point_flow
+                    else None
+                ),
+                point_flow_visibility=(
+                    jax.ShapeDtypeStruct(
+                        [batch_size, self.point_flow_num_points, self.point_flow_horizon], jnp.bool_
+                    )
+                    if self.use_point_flow
                     else None
                 ),
             )

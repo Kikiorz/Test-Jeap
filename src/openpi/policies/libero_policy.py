@@ -82,6 +82,9 @@ class LiberoInputs(transforms.DataTransformFn):
 
         if "vjepa_target" in data:
             inputs["vjepa_target"] = data["vjepa_target"]
+        for key in ("point_flow_queries", "point_flow_target", "point_flow_visibility"):
+            if key in data:
+                inputs[key] = data[key]
 
         return inputs
 

@@ -69,3 +69,38 @@ def test_masked_queries_do_not_change_flow_prediction():
     base_flow, _ = base_model.compute_loss_components(jax.random.key(1), base_observation, actions)
     aux_flow, _ = aux_model.compute_loss_components(jax.random.key(1), aux_observation, actions)
     assert jnp.allclose(base_flow, aux_flow, atol=2e-3, rtol=2e-3)
+
+
+def test_point_flow_stage_one_loss_uses_jepa_queries():
+    config = _dummy_config(
+        use_vjepa_aux=True,
+        vjepa_num_queries=4,
+        vjepa_query_grid_size=2,
+        vjepa_target_grid_size=3,
+        vjepa_target_dim=16,
+        use_point_flow=True,
+        point_flow_num_points=3,
+        point_flow_horizon=2,
+        point_flow_hidden_dim=16,
+        point_flow_num_layers=1,
+        point_flow_num_heads=4,
+    )
+    model = config.create(jax.random.key(0))
+    observation, actions = config.fake_obs(1), config.fake_act(1)
+
+    flow_loss, aux_loss, track_loss, metrics = model.compute_all_loss_components(
+        jax.random.key(1), observation, actions
+    )
+
+    assert flow_loss.shape == (1, 2)
+    assert aux_loss is not None and aux_loss.shape == (1,)
+    assert track_loss is not None and track_loss.shape == (1,)
+    assert set(metrics) == {
+        "track_loss",
+        "visibility_loss",
+        "smoothness_loss",
+        "ade",
+        "fde",
+        "visibility_accuracy",
+    }
+    assert all(jnp.all(jnp.isfinite(value)) for value in metrics.values())
