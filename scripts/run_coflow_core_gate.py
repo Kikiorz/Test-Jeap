@@ -94,6 +94,7 @@ def _train_mode(
     observed: jax.Array,
     train_indices: np.ndarray,
     validation_indices: np.ndarray,
+    reported_action_dim: int,
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], Any]:
     model = coflow.CoFlowCore(
@@ -142,7 +143,22 @@ def _train_mode(
         noise_key, time_key = jax.random.split(key)
         noise = jax.random.normal(noise_key, batch_actions.shape)
         time = jax.random.beta(time_key, 1.5, 1.0, (batch_actions.shape[0],)) * 0.999 + 0.001
-        return losses(parameters, batch_actions, batch_prior, batch_observed, noise, time)[1]
+        expanded_time = time[:, None, None]
+        action_tau = expanded_time * noise + (1.0 - expanded_time) * batch_actions
+        action_velocity = noise - batch_actions
+        transition_tau, transition_velocity = coflow.transition_interpolant(
+            batch_prior, batch_observed, time
+        )
+        predicted_action, predicted_transition = model.apply(
+            {"params": parameters}, action_tau, transition_tau, batch_prior, time
+        )
+        action_error = jnp.square(predicted_action - action_velocity)
+        transition_error = jnp.square(predicted_transition - transition_velocity)
+        return (
+            jnp.mean(action_error),
+            jnp.mean(action_error[..., :reported_action_dim]),
+            jnp.mean(transition_error),
+        )
 
     @jax.jit
     def integrate(parameters, batch_prior, noise):
@@ -187,12 +203,18 @@ def _train_mode(
 
     validation = jnp.asarray(validation_indices)
     eval_key = jax.random.key(args.seed + 100)
-    action_loss, transition_loss = heldout_loss(
+    action_loss, active_action_loss, transition_loss = heldout_loss(
         params, actions[validation], prior[validation], observed[validation], eval_key
     )
     noise = jax.random.normal(jax.random.key(args.seed + 200), actions[validation].shape)
     generated_action, generated_transition = integrate(params, prior[validation], noise)
     action_mse = jnp.mean(jnp.square(generated_action - actions[validation]))
+    active_action_mse = jnp.mean(
+        jnp.square(
+            generated_action[..., :reported_action_dim]
+            - actions[validation, ..., :reported_action_dim]
+        )
+    )
     matched_transition = jnp.mean(
         1.0 - jnp.sum(coflow.normalize_transition(generated_transition) * observed[validation], axis=-1)
     )
@@ -203,6 +225,12 @@ def _train_mode(
     shuffled_prior = prior[jnp.roll(validation, 1)]
     shuffled_action, _ = integrate(params, shuffled_prior, noise)
     shuffled_prior_action_mse = jnp.mean(jnp.square(shuffled_action - actions[validation]))
+    active_shuffled_prior_action_mse = jnp.mean(
+        jnp.square(
+            shuffled_action[..., :reported_action_dim]
+            - actions[validation, ..., :reported_action_dim]
+        )
+    )
 
     second_noise = jax.random.normal(jax.random.key(args.seed + 201), actions[validation].shape)
     _, second_transition = integrate(params, prior[validation], second_noise)
@@ -212,10 +240,16 @@ def _train_mode(
     metrics = {
         "mode": mode,
         "heldout_action_flow_loss": float(action_loss),
+        "heldout_active_action_flow_loss": float(active_action_loss),
         "heldout_transition_flow_loss": float(transition_loss),
         "integrated_action_mse": float(action_mse),
+        "integrated_active_action_mse": float(active_action_mse),
         "shuffled_prior_action_mse": float(shuffled_prior_action_mse),
+        "shuffled_prior_active_action_mse": float(active_shuffled_prior_action_mse),
         "prior_shuffle_delta": float(shuffled_prior_action_mse - action_mse),
+        "active_prior_shuffle_delta": float(
+            active_shuffled_prior_action_mse - active_action_mse
+        ),
         "generated_to_matched_transition": float(matched_transition),
         "generated_to_shuffled_transition": float(shuffled_target_distance),
         "matched_transition_margin": float(shuffled_target_distance - matched_transition),
@@ -249,6 +283,11 @@ def main() -> None:
     actions = _normalized_actions(policy, samples)
     if actions.shape[1] != 10:
         raise ValueError(f"Expected a 10-step action chunk, got {actions.shape}")
+    reported_action_dim = int(samples["action_chunks"].shape[-1])
+    if not 0 < reported_action_dim <= actions.shape[-1]:
+        raise ValueError(
+            f"Invalid executable action width {reported_action_dim} for transformed actions {actions.shape}"
+        )
     train_indices, validation_indices = _episode_split(
         samples["episode_indices"], samples["task_indices"]
     )
@@ -266,6 +305,7 @@ def main() -> None:
             observed_array,
             train_indices,
             validation_indices,
+            reported_action_dim,
             args,
         )
         mode_metrics[mode] = metrics
@@ -275,6 +315,7 @@ def main() -> None:
         "sample_count": int(len(actions)),
         "train_count": int(len(train_indices)),
         "validation_count": int(len(validation_indices)),
+        "reported_action_dim": reported_action_dim,
         "steps": args.steps,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
@@ -287,8 +328,16 @@ def main() -> None:
         "coflow_minus_fixed": {
             "heldout_action_flow_loss": mode_metrics["coflow"]["heldout_action_flow_loss"]
             - mode_metrics["fixed"]["heldout_action_flow_loss"],
+            "heldout_active_action_flow_loss": mode_metrics["coflow"][
+                "heldout_active_action_flow_loss"
+            ]
+            - mode_metrics["fixed"]["heldout_active_action_flow_loss"],
             "integrated_action_mse": mode_metrics["coflow"]["integrated_action_mse"]
             - mode_metrics["fixed"]["integrated_action_mse"],
+            "integrated_active_action_mse": mode_metrics["coflow"][
+                "integrated_active_action_mse"
+            ]
+            - mode_metrics["fixed"]["integrated_active_action_mse"],
         },
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
