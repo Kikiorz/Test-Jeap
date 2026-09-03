@@ -37,6 +37,14 @@ def test_coflow_core_shapes_are_joint():
     assert np.isfinite(np.asarray(transition_velocity)).all()
 
 
+def test_transition_velocity_head_starts_as_identity_transport():
+    action, prior, _, transition, _, time = _inputs()
+    model = coflow.CoFlowCore(action_dim=7, transition_dim=32, width=64, depth=2, num_heads=4)
+    variables = model.init(jax.random.key(33), action, transition, prior, time)
+    _, transition_velocity = model.apply(variables, action, transition, prior, time)
+    np.testing.assert_allclose(transition_velocity, 0.0, atol=0.0)
+
+
 def test_pure_noise_action_cannot_change_transition_stream():
     _, prior, _, transition, _, _ = _inputs()
     action = jax.random.normal(jax.random.key(41), (2, 10, 32))

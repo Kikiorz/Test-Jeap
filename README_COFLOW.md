@@ -126,10 +126,15 @@ with the minimal objective
 
 ```text
 L_CoFlow = mean_square(Vhat_A - V*_A)
-         + lambda_U * mean_square(Vhat_U - V*_U),
+         + lambda_U * mean_tokens(||Vhat_U - V*_U||_2^2),
 
 lambda_U = 0.1  # first falsification run
 ```
+
+The transition term sums over the `d_J` feature axis before averaging tokens and batches. Since `U` is tokenwise
+unit-normalized, averaging over `d_J=1408` would artificially suppress this objective by the representation width.
+The new transition-velocity output head is zero-initialized, so its initial ODE leaves the JEPA prior unchanged rather
+than applying a random high-dimensional drift.
 
 ### Two-stream blocks
 

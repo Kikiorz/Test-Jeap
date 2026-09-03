@@ -209,6 +209,10 @@ class CoFlowCore(nn.Module):
         action = nn.RMSNorm(name="action_output_norm")(action)
         transition = nn.RMSNorm(name="transition_output_norm")(transition)
         action_velocity = nn.Dense(self.action_dim, name="action_output")(action)
-        transition_velocity = nn.Dense(self.transition_dim, name="transition_output")(transition)
+        transition_velocity = nn.Dense(
+            self.transition_dim,
+            kernel_init=nn.initializers.zeros_init(),
+            bias_init=nn.initializers.zeros_init(),
+            name="transition_output",
+        )(transition)
         return action_velocity, transition_velocity
-

@@ -124,7 +124,12 @@ def _train_mode(
             {"params": parameters}, action_tau, transition_tau, batch_prior, time
         )
         action_loss = jnp.mean(jnp.square(predicted_action - action_velocity))
-        transition_loss = jnp.mean(jnp.square(predicted_transition - transition_velocity))
+        # U^P/U^R are unit-norm tokens.  Averaging their error over the 1408
+        # feature channels would shrink the transition objective by O(d_J).
+        # A per-token squared vector norm preserves the cosine-scale geometry.
+        transition_loss = jnp.mean(
+            jnp.sum(jnp.square(predicted_transition - transition_velocity), axis=-1)
+        )
         return action_loss + args.transition_weight * transition_loss, (action_loss, transition_loss)
 
     @jax.jit
@@ -153,7 +158,9 @@ def _train_mode(
             {"params": parameters}, action_tau, transition_tau, batch_prior, time
         )
         action_error = jnp.square(predicted_action - action_velocity)
-        transition_error = jnp.square(predicted_transition - transition_velocity)
+        transition_error = jnp.sum(
+            jnp.square(predicted_transition - transition_velocity), axis=-1
+        )
         return (
             jnp.mean(action_error),
             jnp.mean(action_error[..., :reported_action_dim]),
