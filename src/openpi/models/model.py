@@ -117,8 +117,10 @@ class Observation(Generic[ArrayT]):
     # expert videos by a frozen point tracker and are never required at
     # deployment time.
     point_flow_queries: at.Float[ArrayT, "*b k xy"] | None = None
-    point_flow_target: at.Float[ArrayT, "*b k h xy"] | None = None
-    point_flow_visibility: at.Bool[ArrayT, "*b k h"] | None = None
+    # ``ph`` is deliberately distinct from the image-height axis ``h`` in
+    # jaxtyping's shared dataclass shape context.
+    point_flow_target: at.Float[ArrayT, "*b k ph xy"] | None = None
+    point_flow_visibility: at.Bool[ArrayT, "*b k ph"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
