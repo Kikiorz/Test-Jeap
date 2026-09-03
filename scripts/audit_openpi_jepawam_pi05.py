@@ -195,6 +195,7 @@ def sample_expert_pairs(args: argparse.Namespace) -> None:
     future_base_requests: list[tuple[Path, int]] = []
     current_wrist_requests: list[tuple[Path, int]] = []
     states: list[np.ndarray] = []
+    action_chunks: list[np.ndarray] = []
 
     for episode_index in selected:
         row = episode_rows[episode_index]
@@ -209,7 +210,7 @@ def sample_expert_pairs(args: argparse.Namespace) -> None:
         if data_key not in data_cache:
             data_cache[data_key] = pq.read_table(
                 root / "data" / f"chunk-{data_key[0]:03d}" / f"file-{data_key[1]:03d}.parquet",
-                columns=["observation.state", "episode_index", "frame_index"],
+                columns=["observation.state", "action", "episode_index", "frame_index"],
             )
         data_table = data_cache[data_key]
         episode_mask = np.asarray(data_table["episode_index"].to_numpy()) == episode_index
@@ -228,12 +229,14 @@ def sample_expert_pairs(args: argparse.Namespace) -> None:
         wrist_path = _video_path(root, "observation.images.image2", wrist_chunk, wrist_file)
 
         state_values = np.asarray(episode_data["observation.state"].to_pylist(), dtype=np.float32)
+        action_values = np.asarray(episode_data["action"].to_pylist(), dtype=np.float32)
         for local_index in positions.tolist():
             future_index = local_index + args.future_offset
             current_base_requests.append((base_path, base_start + local_index))
             future_base_requests.append((base_path, base_start + future_index))
             current_wrist_requests.append((wrist_path, wrist_start + local_index))
             states.append(state_values[local_index])
+            action_chunks.append(action_values[local_index:future_index])
             records.append(
                 {
                     "task_index": task_index,
@@ -261,6 +264,7 @@ def sample_expert_pairs(args: argparse.Namespace) -> None:
         future_base=np.stack(future_base).astype(np.uint8),
         current_wrist=np.stack(current_wrist).astype(np.uint8),
         states=np.stack(states).astype(np.float32),
+        action_chunks=np.stack(action_chunks).astype(np.float32),
         task_indices=task_values,
         episode_indices=episode_values,
         frame_indices=np.asarray([record["frame_index"] for record in records], dtype=np.int64),
