@@ -1,6 +1,7 @@
-# 当前方案：JEPA Transition–Action Guidance
+# 负结果归档：JEPA Transition–Action Guidance
 
-> 状态：`feat/point` 当前研究与实现合同（分支名仅为历史遗留）。  
+> 状态：该参数化已被最小实验否定，仅保留用于复现与论文负结果记录。当前主线见
+> [`README_JEPA_TTT.md`](README_JEPA_TTT.md)。
 > 基座：作者发布的 π0.5 JEPA-WAM step `59999`。  
 > 数据：原始 LIBERO 专家轨迹；不使用 tracker、point flow、光流、成功图像或奖励。
 
@@ -222,4 +223,3 @@ guidance，并用动作执行后自然获得的同一 transition 对该 guidance
 - `scripts/run_transition_inverse_gate.py`：无 tracker 的 transition→action 信息检验；
 - `src/openpi/models/coflow.py` 与 `scripts/run_coflow_core_gate.py`：失败 joint-flow 假设的可复现原型；
 - 新的 `g_phi` 尚未接入完整 π0.5；上表不能被写成 rollout 或最终 Con1 成果。
-

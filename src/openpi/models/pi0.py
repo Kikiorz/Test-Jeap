@@ -17,6 +17,27 @@ from openpi.shared import array_typing as at
 logger = logging.getLogger("openpi")
 
 
+class JepaTTTAdapter(nnx.Module):
+    """Zero-initialized low-rank residual shared by JEPA and action paths."""
+
+    def __init__(self, width: int, rank: int, *, rngs: nnx.Rngs):
+        self.down = nnx.Linear(width, rank, use_bias=False, rngs=rngs)
+        self.up = nnx.Linear(
+            rank,
+            width,
+            use_bias=False,
+            kernel_init=nnx.initializers.zeros_init(),
+            rngs=rngs,
+        )
+
+    def __call__(self, tokens: jax.Array) -> jax.Array:
+        dtype = tokens.dtype
+        value = tokens.astype(jnp.float32)
+        value = value * jax.lax.rsqrt(jnp.mean(jnp.square(value), axis=-1, keepdims=True) + 1e-6)
+        residual = self.up(nnx.silu(self.down(value)))
+        return tokens + residual.astype(dtype)
+
+
 def make_attn_mask(input_mask, mask_ar):
     """Adapted from big_vision.
 
@@ -76,6 +97,7 @@ class Pi0(_model.BaseModel):
         self.vjepa_aux_weight = config.vjepa_aux_weight
         self.vjepa_action_attends_queries = config.vjepa_action_attends_queries
         self.vjepa_disable_geometric_augmentation = config.vjepa_disable_geometric_augmentation
+        self.use_jepa_ttt_adapter = config.use_jepa_ttt_adapter
         self.use_point_flow = config.use_point_flow
         self.point_flow_loss_weight = config.point_flow_loss_weight
         self.point_flow_visibility_weight = config.point_flow_visibility_weight
@@ -102,6 +124,10 @@ class Pi0(_model.BaseModel):
         )
         img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)
         self.PaliGemma = nnx.Dict(llm=llm, img=img)
+        if self.use_jepa_ttt_adapter:
+            self.jepa_ttt_adapter = JepaTTTAdapter(
+                paligemma_config.width, config.jepa_ttt_adapter_rank, rngs=rngs
+            )
         self.action_in_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
         if config.pi05:
             self.time_mlp_in = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
@@ -145,6 +171,8 @@ class Pi0(_model.BaseModel):
         # embed images
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+            if self.use_jepa_ttt_adapter:
+                image_tokens = self.jepa_ttt_adapter(image_tokens)
 
             tokens.append(image_tokens)
             input_mask.append(
@@ -271,6 +299,23 @@ class Pi0(_model.BaseModel):
             observation, noisy_actions, timestep
         )
         return velocity
+
+    def predict_vjepa_from_observation(
+        self, observation: _model.Observation
+    ) -> at.Float[at.Array, "b p d"]:
+        """Predict a JEPA target from deploy-time prefix inputs only."""
+        if not self.use_vjepa_aux:
+            raise ValueError("V-JEPA prediction requires use_vjepa_aux=True")
+        observation = _model.preprocess_observation(None, observation, train=False)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        (prefix_out, _), _ = self.PaliGemma.llm(
+            [prefix_tokens, None], mask=prefix_attn_mask, positions=positions
+        )
+        assert prefix_out is not None
+        query_out = prefix_out[:, -self.vjepa_num_queries :]
+        return self.predict_vjepa_target(query_out)
 
     def compute_all_loss_components(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False

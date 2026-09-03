@@ -43,6 +43,11 @@ class Pi0Config(_model.BaseModelConfig):
     vjepa_action_attends_queries: bool = False
     vjepa_disable_geometric_augmentation: bool = True
 
+    # Low-rank residual shared by the JEPA future-query and action paths.
+    # The first control-aligned TTT experiment updates only this adapter.
+    use_jepa_ttt_adapter: bool = False
+    jepa_ttt_adapter_rank: int = 8
+
     # Observable point-flow interface.  Stage 1 decodes the already learned
     # JEPA future-query representation into short, image-plane trajectories.
     use_point_flow: bool = False
@@ -94,6 +99,11 @@ class Pi0Config(_model.BaseModelConfig):
                 or self.point_flow_loss_weight < 0
             ):
                 raise ValueError("Point-flow layer count must be positive and loss weight non-negative")
+        if self.use_jepa_ttt_adapter:
+            if not self.use_vjepa_aux:
+                raise ValueError("JEPA TTT adapter requires the JEPA-WAM future-query branch")
+            if self.jepa_ttt_adapter_rank < 1:
+                raise ValueError("jepa_ttt_adapter_rank must be positive")
 
     @property
     @override
