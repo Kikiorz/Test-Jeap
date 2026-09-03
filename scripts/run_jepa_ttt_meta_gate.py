@@ -263,11 +263,13 @@ def main() -> None:
         "meta_aligned": evaluate(adapter_state, "meta_aligned_adapter"),
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    with (args.output_dir / "adapter_params.msgpack").open("wb") as handle:
-        handle.write(serialization.to_bytes(adapter_state))
-    with (args.output_dir / "metrics.json").open("w") as handle:
+    temporary_metrics = args.output_dir / ".metrics.json.tmp"
+    with temporary_metrics.open("w") as handle:
         json.dump(result, handle, indent=2, sort_keys=True)
         handle.write("\n")
+    temporary_metrics.replace(args.output_dir / "metrics.json")
+    with (args.output_dir / "adapter_params.msgpack").open("wb") as handle:
+        handle.write(serialization.to_bytes(adapter_state.to_pure_dict()))
     print(json.dumps({key: value["summary"] for key, value in result.items() if key in ("untrained", "meta_aligned")}, indent=2), flush=True)
 
 
