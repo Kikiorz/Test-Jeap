@@ -34,7 +34,8 @@ def test_planner_starts_as_visible_persistence_predictor():
 
     assert tracks.shape == (2, 2, 3, 2)
     assert visibility_logits.shape == (2, 2, 3)
-    np.testing.assert_allclose(tracks, points[:, :, None, :], atol=2e-5)
+    expected_tracks = jnp.broadcast_to(points[:, :, None, :], tracks.shape)
+    np.testing.assert_allclose(tracks, expected_tracks, atol=2e-5)
     np.testing.assert_allclose(visibility_logits, 4.0)
     assert np.isfinite(np.asarray(tracks)).all()
 
