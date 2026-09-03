@@ -1,4 +1,9 @@
-# CoFlow-JEPA
+# CoFlow-JEPA（负结果归档）
+
+> **状态更新（2026-09-04）：该 joint-flow 参数化停止作为当前主线。** 300-step、episode-disjoint 小规模
+> 实验中，它降低了 held-out flow-matching loss，但没有降低 ODE 采样后的可执行动作 MSE，且动作对打乱的
+> JEPA prior 基本不敏感。本文保留用于复现这一反证。当前无 tracker 的共享 transition→action guidance
+> 方案见 [`README_TRANSITION_GUIDANCE.md`](README_TRANSITION_GUIDANCE.md)。
 
 ## Joint Transition–Action Flow with Online Sparse Inverse Adaptation
 
