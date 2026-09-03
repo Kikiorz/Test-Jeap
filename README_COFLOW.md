@@ -15,8 +15,8 @@ sensitivity or unchanged closed-loop control.
 CoFlow-JEPA tests one claim:
 
 > A JEPA transition hypothesis should not be used as a fixed condition for action generation. The transition and action
-> hypotheses should be transported together, and their shared coupling should be recalibrated from action-labelled
-> transitions observed during deployment.
+> hypotheses should be transported together, and their shared coupling should be recalibrated from naturally paired
+> executed actions and JEPA transitions observed during deployment.
 
 The complete loop is:
 
@@ -70,6 +70,11 @@ The frozen V-JEPA target encoder observes the real pair during training or after
 Y^R_t = E_J([o_t, o_(t+H)])                   # [B, 24*24, d_J]
 ```
 
+`Y^R_t` is not a tracker-generated label. It is the JEPA target representation of the same temporal interval that
+contains the executed action chunk. Before execution, the current-only predictor supplies `Y^P_t`; after execution,
+the target encoder supplies `Y^R_t`. This predict--act--observe symmetry is the common interface between the offline
+joint-flow objective and online adaptation.
+
 Both sides undergo the *same* non-learned spatial reduction and token normalization:
 
 ```text
@@ -81,7 +86,7 @@ U^R_t = Normalize(Pool_3x3(Y^R_t))            # [B, 64, d_J]
 original auxiliary objective constrains cosine direction rather than raw feature norm; rectified interpolation between
 unmatched feature scales would not have a stable meaning.
 
-`U^R` is called an **observed expert transition representation**. Demonstrations do not provide counterfactual actions,
+`U^R` is called an **observed expert transition representation**, not point flow or optical flow. Demonstrations do not provide counterfactual actions,
 so it must not be described as a causal transition for arbitrary candidate actions.
 
 ### Horizon correction
@@ -338,4 +343,3 @@ The implementation should touch only:
 
 No tracker target generator or point-flow dataset is part of the final method. Existing experimental artifacts are kept
 read-only for provenance, but new CoFlow checkpoints and logs use separate directories.
-
