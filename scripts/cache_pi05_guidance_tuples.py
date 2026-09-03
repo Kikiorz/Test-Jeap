@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--draws-per-sample", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--max-samples", type=int)
     parser.add_argument("--seed", type=int, default=59)
     return parser.parse_args()
 
@@ -50,7 +51,10 @@ def main() -> None:
         raise ValueError("draws-per-sample and batch-size must be positive")
     samples = np.load(args.samples, allow_pickle=False)
     policy = policy_config.create_trained_policy(config_lib.get_config(args.config), args.policy_checkpoint)
-    transformed = [policy._input_transform(_raw_sample(samples, index)) for index in range(len(samples["states"]))]
+    sample_count = len(samples["states"])
+    if args.max_samples is not None:
+        sample_count = min(sample_count, args.max_samples)
+    transformed = [policy._input_transform(_raw_sample(samples, index)) for index in range(sample_count)]
     actions = np.stack([np.asarray(item["actions"], dtype=np.float32) for item in transformed])
     states = np.stack([np.asarray(item["state"], dtype=np.float32) for item in transformed])
     observation_items = [
@@ -85,8 +89,8 @@ def main() -> None:
 
     output = {
         "sample_indices": sample_indices.astype(np.int32),
-        "episode_indices": samples["episode_indices"][sample_indices],
-        "task_indices": samples["task_indices"][sample_indices],
+        "episode_indices": samples["episode_indices"][:sample_count][sample_indices],
+        "task_indices": samples["task_indices"][:sample_count][sample_indices],
         "states": states[sample_indices],
         "actions": selected_actions,
         "action_tau": action_tau.astype(np.float32),
