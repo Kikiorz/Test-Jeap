@@ -120,8 +120,9 @@ def main() -> None:
         error = velocity[..., : args.active_action_dim] - target_velocity[..., : args.active_action_dim]
         return jnp.mean(jnp.square(error))
 
-    def inner_update(parameters, gradients):
+    def inner_update(parameters, gradients, scale):
         updates, _ = inner_optimizer.update(gradients, inner_optimizer_state, parameters)
+        updates = jax.tree.map(lambda value: scale * value, updates)
         return optax.apply_updates(parameters, updates)
 
     @jax.jit
@@ -134,6 +135,7 @@ def main() -> None:
         query_action_tau,
         query_time,
         query_target_velocity,
+        inner_scale,
     ):
         def meta_objective(value):
             support_value, support_gradients = jax.value_and_grad(support_loss)(
@@ -142,7 +144,7 @@ def main() -> None:
             # First-order MAML: deployment still uses the exact JEPA gradient,
             # while the outer graph avoids a full second-order 2B-model Hessian.
             support_gradients = jax.tree.map(jax.lax.stop_gradient, support_gradients)
-            adapted = inner_update(value, support_gradients)
+            adapted = inner_update(value, support_gradients, inner_scale)
             query_value = query_loss(
                 adapted, query_observation, query_action_tau, query_time, query_target_velocity
             )
@@ -154,16 +156,6 @@ def main() -> None:
         updates, optimizer_state = outer_optimizer.update(gradients, optimizer_state, parameters)
         parameters = optax.apply_updates(parameters, updates)
         return parameters, optimizer_state, loss, support_value, inner_grad_norm, optax.global_norm(gradients)
-
-    @jax.jit
-    def evaluate_one(parameters, support_observation, support_target, query_observation, action_tau, time, target):
-        before = query_loss(parameters, query_observation, action_tau, time, target)
-        support_value, gradients = jax.value_and_grad(support_loss)(
-            parameters, support_observation, support_target
-        )
-        adapted = inner_update(parameters, gradients)
-        after = query_loss(adapted, query_observation, action_tau, time, target)
-        return before, after, support_value, support_loss(adapted, support_observation, support_target)
 
     history: list[dict[str, float | int]] = []
     for step in range(args.steps):
@@ -180,6 +172,7 @@ def main() -> None:
             jnp.asarray(cache["action_tau"][query_tuple : query_tuple + 1]),
             jnp.asarray(cache["time"][query_tuple : query_tuple + 1]),
             jnp.asarray(cache["target_velocity"][query_tuple : query_tuple + 1]),
+            jnp.asarray(1.0, dtype=jnp.float32),
         )
         record = {
             "step": step + 1,
@@ -219,21 +212,33 @@ def main() -> None:
                 ("nochange", nochange[support_index : support_index + 1]),
                 ("within_task_shuffled", teacher[wrong_index : wrong_index + 1]),
             ):
-                before, after, jepa_before, jepa_after = evaluate_one(
+                _, _, before, jepa_before, _, _ = meta_step(
                     parameters,
+                    outer_optimizer_state,
                     support_observation,
                     jnp.asarray(support_target),
                     query_observation,
                     action_tau,
                     time,
                     target,
+                    jnp.asarray(0.0, dtype=jnp.float32),
+                )
+                _, _, after, _, _, _ = meta_step(
+                    parameters,
+                    outer_optimizer_state,
+                    support_observation,
+                    jnp.asarray(support_target),
+                    query_observation,
+                    action_tau,
+                    time,
+                    target,
+                    jnp.asarray(1.0, dtype=jnp.float32),
                 )
                 item[target_name] = {
                     "query_before": float(before),
                     "query_after": float(after),
                     "query_delta": float(after - before),
                     "support_jepa_before": float(jepa_before),
-                    "support_jepa_after": float(jepa_after),
                 }
             records.append(item)
 
