@@ -227,6 +227,51 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
+    def _predict_action_velocity_from_preprocessed(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        timestep: at.Float[at.Array, " b"],
+    ) -> tuple[_model.Actions, at.Float[at.Array, "b q emb"] | None]:
+        """Run the training-style joint forward without constructing a loss."""
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation, noisy_actions, timestep
+        )
+        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+        attn_mask = make_attn_mask(input_mask, ar_mask)
+        positions = jnp.cumsum(input_mask, axis=1) - 1
+        if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
+            prefix_length = prefix_tokens.shape[1]
+            query_start = prefix_length - self.vjepa_num_queries
+            attn_mask = attn_mask.at[:, prefix_length:, query_start:prefix_length].set(False)
+            positions = positions.at[:, prefix_length:].add(-self.vjepa_num_queries)
+        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+            [prefix_tokens, suffix_tokens],
+            mask=attn_mask,
+            positions=positions,
+            adarms_cond=[None, adarms_cond],
+        )
+        velocity = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        query_out = None
+        if self.use_vjepa_aux:
+            query_out = prefix_out[:, -self.vjepa_num_queries :]
+        return velocity, query_out
+
+    def predict_action_velocity(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        timestep: at.Float[at.Array, " b"],
+    ) -> _model.Actions:
+        """Return the frozen policy velocity for an explicit flow state."""
+        observation = _model.preprocess_observation(None, observation, train=False)
+        velocity, _ = self._predict_action_velocity_from_preprocessed(
+            observation, noisy_actions, timestep
+        )
+        return velocity
+
     def compute_all_loss_components(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> tuple[
@@ -250,22 +295,7 @@ class Pi0(_model.BaseModel):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        # one big forward pass of prefix + suffix at once
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
-        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
-        attn_mask = make_attn_mask(input_mask, ar_mask)
-        positions = jnp.cumsum(input_mask, axis=1) - 1
-        if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
-            prefix_length = prefix_tokens.shape[1]
-            query_start = prefix_length - self.vjepa_num_queries
-            attn_mask = attn_mask.at[:, prefix_length:, query_start:prefix_length].set(False)
-            positions = positions.at[:, prefix_length:].add(-self.vjepa_num_queries)
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-            [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
-        )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        v_t, query_out = self._predict_action_velocity_from_preprocessed(observation, x_t, time)
 
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
         if not self.use_vjepa_aux:
@@ -273,7 +303,7 @@ class Pi0(_model.BaseModel):
         if observation.vjepa_target is None:
             raise ValueError("V-JEPA auxiliary training requires observation.vjepa_target")
 
-        query_out = prefix_out[:, -self.vjepa_num_queries :]
+        assert query_out is not None
         predicted_target = self.predict_vjepa_target(query_out)
         target = jax.lax.stop_gradient(observation.vjepa_target.astype(jnp.float32))
         if predicted_target.shape != target.shape:
