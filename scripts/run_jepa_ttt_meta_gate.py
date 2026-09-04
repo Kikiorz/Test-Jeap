@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outer-learning-rate", type=float, default=3e-3)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--max-validation-pairs", type=int, default=8)
+    parser.add_argument(
+        "--validation-query-draws",
+        type=int,
+        default=4,
+        help="Average each validation comparison over this many cached pi0.5 flow draws.",
+    )
     parser.add_argument("--seed", type=int, default=113)
     return parser.parse_args()
 
@@ -77,8 +83,8 @@ def _copy_state(state: Any) -> Any:
 
 def main() -> None:
     args = parse_args()
-    if args.steps < 1 or args.max_validation_pairs < 1:
-        raise ValueError("steps and max-validation-pairs must be positive")
+    if args.steps < 1 or args.max_validation_pairs < 1 or args.validation_query_draws < 1:
+        raise ValueError("steps, max-validation-pairs, and validation-query-draws must be positive")
 
     samples = np.load(args.samples, allow_pickle=False)
     cache = np.load(args.cache, allow_pickle=False)
@@ -90,9 +96,9 @@ def main() -> None:
     rng.shuffle(validation_pairs)
     validation_pairs = validation_pairs[: args.max_validation_pairs]
 
-    first_tuple_for_sample: dict[int, int] = {}
+    tuples_for_sample: dict[int, list[int]] = {}
     for tuple_index, sample_index in enumerate(np.asarray(cache["sample_indices"])):
-        first_tuple_for_sample.setdefault(int(sample_index), tuple_index)
+        tuples_for_sample.setdefault(int(sample_index), []).append(tuple_index)
 
     policy = policy_config.create_trained_policy(config_lib.get_config(args.config), args.policy_checkpoint)
     model = policy._model
@@ -162,7 +168,12 @@ def main() -> None:
         support_index, query_index = train_pairs[step % len(train_pairs)]
         support_observation = gate._observation(policy, samples, support_index)
         query_observation = gate._observation(policy, samples, query_index)
-        query_tuple = first_tuple_for_sample[query_index]
+        # Each cached tuple contains an independent flow time/noise draw.  Cycle
+        # through them across visits so the meta-objective is not tied to an
+        # arbitrary first draw while preserving the batch-one memory footprint.
+        query_tuples = tuples_for_sample[query_index]
+        visit = step // len(train_pairs)
+        query_tuple = query_tuples[(step + visit) % len(query_tuples)]
         adapter_state, outer_optimizer_state, loss, support_value, inner_grad_norm, outer_grad_norm = meta_step(
             adapter_state,
             outer_optimizer_state,
@@ -192,12 +203,9 @@ def main() -> None:
     def evaluate(parameters, name: str) -> dict[str, Any]:
         records = []
         for support_index, query_index in validation_pairs:
-            query_tuple = first_tuple_for_sample[query_index]
             support_observation = gate._observation(policy, samples, support_index)
             query_observation = gate._observation(policy, samples, query_index)
-            action_tau = jnp.asarray(cache["action_tau"][query_tuple : query_tuple + 1])
-            time = jnp.asarray(cache["time"][query_tuple : query_tuple + 1])
-            target = jnp.asarray(cache["target_velocity"][query_tuple : query_tuple + 1])
+            query_tuples = tuples_for_sample[query_index][: args.validation_query_draws]
             candidates = np.flatnonzero(
                 (tasks == tasks[support_index]) & (episodes != episodes[support_index])
             )
@@ -212,33 +220,49 @@ def main() -> None:
                 ("nochange", nochange[support_index : support_index + 1]),
                 ("within_task_shuffled", teacher[wrong_index : wrong_index + 1]),
             ):
-                _, _, before, jepa_before, _, _ = meta_step(
-                    parameters,
-                    outer_optimizer_state,
-                    support_observation,
-                    jnp.asarray(support_target),
-                    query_observation,
-                    action_tau,
-                    time,
-                    target,
-                    jnp.asarray(0.0, dtype=jnp.float32),
-                )
-                _, _, after, _, _, _ = meta_step(
-                    parameters,
-                    outer_optimizer_state,
-                    support_observation,
-                    jnp.asarray(support_target),
-                    query_observation,
-                    action_tau,
-                    time,
-                    target,
-                    jnp.asarray(1.0, dtype=jnp.float32),
-                )
+                draw_records = []
+                for query_tuple in query_tuples:
+                    action_tau = jnp.asarray(cache["action_tau"][query_tuple : query_tuple + 1])
+                    time = jnp.asarray(cache["time"][query_tuple : query_tuple + 1])
+                    target = jnp.asarray(cache["target_velocity"][query_tuple : query_tuple + 1])
+                    _, _, before, jepa_before, _, _ = meta_step(
+                        parameters,
+                        outer_optimizer_state,
+                        support_observation,
+                        jnp.asarray(support_target),
+                        query_observation,
+                        action_tau,
+                        time,
+                        target,
+                        jnp.asarray(0.0, dtype=jnp.float32),
+                    )
+                    _, _, after, _, _, _ = meta_step(
+                        parameters,
+                        outer_optimizer_state,
+                        support_observation,
+                        jnp.asarray(support_target),
+                        query_observation,
+                        action_tau,
+                        time,
+                        target,
+                        jnp.asarray(1.0, dtype=jnp.float32),
+                    )
+                    draw_records.append(
+                        {
+                            "tuple_index": int(query_tuple),
+                            "query_before": float(before),
+                            "query_after": float(after),
+                            "query_delta": float(after - before),
+                        }
+                    )
+                before_values = np.asarray([record["query_before"] for record in draw_records])
+                after_values = np.asarray([record["query_after"] for record in draw_records])
                 item[target_name] = {
-                    "query_before": float(before),
-                    "query_after": float(after),
-                    "query_delta": float(after - before),
+                    "query_before": float(np.mean(before_values)),
+                    "query_after": float(np.mean(after_values)),
+                    "query_delta": float(np.mean(after_values - before_values)),
                     "support_jepa_before": float(jepa_before),
+                    "query_draws": draw_records,
                 }
             records.append(item)
 
@@ -261,6 +285,7 @@ def main() -> None:
             "inner_learning_rate": args.inner_learning_rate,
             "outer_learning_rate": args.outer_learning_rate,
             "validation_pairs": len(validation_pairs),
+            "validation_query_draws": args.validation_query_draws,
             "first_order": True,
         },
         "history": history,
