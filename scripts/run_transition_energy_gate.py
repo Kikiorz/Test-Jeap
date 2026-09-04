@@ -30,6 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--observed", type=Path, required=True)
     parser.add_argument("--predicted", type=Path, required=True)
     parser.add_argument("--nochange", type=Path, required=True)
+    parser.add_argument(
+        "--hard-negatives",
+        type=Path,
+        help="Optional frozen-pi0.5 candidates for policy-aware contrastive training.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -76,6 +81,16 @@ def main() -> None:
     if any(len(indices) < 2 for indices in train_by_task.values()):
         raise ValueError("Every task needs at least two train examples for within-task negatives")
 
+    policy_candidates = None
+    if args.hard_negatives is not None:
+        hard_negative_data = np.load(args.hard_negatives, allow_pickle=False)
+        hard_negative_indices = np.asarray(hard_negative_data["sample_indices"])
+        if not np.array_equal(hard_negative_indices, np.arange(len(observed))):
+            raise ValueError("Hard-negative archive must contain every sample in canonical order")
+        policy_candidates = jnp.asarray(hard_negative_data["candidates"])
+        if policy_candidates.shape[0] != len(observed):
+            raise ValueError("Hard-negative sample count does not match transitions")
+
     model = transition_energy.TransitionActionEnergy(
         horizon=actions.shape[1],
         action_dim=actions.shape[2],
@@ -97,16 +112,53 @@ def main() -> None:
         action_to_transition = optax.softmax_cross_entropy_with_integer_labels(logits.T, labels).mean()
         return 0.5 * (transition_to_action + action_to_transition)
 
+    def policy_contrastive_loss(parameters, transition, positive_action, negative_actions):
+        batch, negative_count = negative_actions.shape[:2]
+        transition_embedding, positive_embedding, scale = model.apply(
+            {"params": parameters}, transition, positive_action
+        )
+        repeated_transition = jnp.repeat(transition[:, None], negative_count, axis=1)
+        _, negative_embedding, _ = model.apply(
+            {"params": parameters},
+            repeated_transition.reshape(batch * negative_count, *transition.shape[1:]),
+            negative_actions.reshape(batch * negative_count, *negative_actions.shape[2:]),
+        )
+        negative_embedding = negative_embedding.reshape(batch, negative_count, -1)
+        positive_logits = scale * jnp.sum(transition_embedding * positive_embedding, axis=-1)
+        negative_logits = scale * jnp.einsum("bd,bkd->bk", transition_embedding, negative_embedding)
+        logits = jnp.concatenate([positive_logits[:, None], negative_logits], axis=1)
+        return optax.softmax_cross_entropy_with_integer_labels(
+            logits, jnp.zeros(batch, dtype=jnp.int32)
+        ).mean()
+
     @jax.jit
-    def train_step(parameters, state, observed_batch, predicted_batch, action_batch):
+    def train_step(
+        parameters,
+        state,
+        observed_batch,
+        predicted_batch,
+        action_batch,
+        policy_negative_batch,
+    ):
         def objective(value):
             # One action embedding space must explain both the realized JEPA
             # transition used online and the current-only prediction used for
             # action guidance.
-            return 0.5 * (
+            expert_loss = 0.5 * (
                 contrastive_loss(value, observed_batch, action_batch)
                 + contrastive_loss(value, predicted_batch, action_batch)
             )
+            if policy_candidates is None:
+                return expert_loss
+            policy_loss = 0.5 * (
+                policy_contrastive_loss(
+                    value, observed_batch, action_batch, policy_negative_batch
+                )
+                + policy_contrastive_loss(
+                    value, predicted_batch, action_batch, policy_negative_batch
+                )
+            )
+            return 0.5 * (expert_loss + policy_loss)
 
         loss, gradients = jax.value_and_grad(objective)(parameters)
         updates, state = optimizer.update(gradients, state, parameters)
@@ -119,8 +171,18 @@ def main() -> None:
         task = int(task_order[step % len(task_order)])
         indices = train_by_task[task].copy()
         rng.shuffle(indices)
+        negative_batch = (
+            jnp.zeros((len(indices), 1, *actions.shape[1:]), dtype=actions.dtype)
+            if policy_candidates is None
+            else policy_candidates[indices]
+        )
         params, optimizer_state, loss = train_step(
-            params, optimizer_state, observed[indices], predicted[indices], actions[indices]
+            params,
+            optimizer_state,
+            observed[indices],
+            predicted[indices],
+            actions[indices],
+            negative_batch,
         )
         if step == 0 or (step + 1) % max(args.steps // 10, 1) == 0:
             item = {"step": step + 1, "loss": float(loss)}
@@ -170,7 +232,11 @@ def main() -> None:
             "seed": args.seed,
             "train_count": int(len(train_indices)),
             "validation_count": int(len(validation_indices)),
-            "negatives": "within_task_only",
+            "negatives": (
+                "within_task_experts_plus_frozen_pi05_candidates"
+                if policy_candidates is not None
+                else "within_task_experts_only"
+            ),
         },
         "history": history,
         "observed": evaluate("realized_vjepa_transition", observed),
