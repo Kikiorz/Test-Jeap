@@ -1,6 +1,6 @@
 # 当前方法：Control-Aligned JEPA Test-Time Training
 
-> 状态：`feat/point` 当前主线与最小实验合同。  
+> 状态：`feat/point` 当前主线与最小实验合同；代码已实现，核心 gate 尚未通过。
 > 基座：作者发布的 π0.5 JEPA-WAM checkpoint，step `59999`。  
 > 约束：不使用 tracker、point flow、光流、成功图像、环境奖励或测试集动作标签。  
 > 分支名 `feat/point` 仅为历史遗留；本文中的表示不是几何 point flow。
@@ -203,6 +203,51 @@ predict transition → act → observe realized transition
 这些结果共同说明：`U` 有动作信息，但精度不足以直接替代或修正强 π0.5。新方法因此不再直接解码、重排
 或残差注入 `U`，而把 JEPA 用作共享策略表征的在线学习目标。
 
+### 7.3 当前 control-aligned TTT 证据
+
+共享 image-token adapter、一步 JEPA inner update 和一阶 meta outer objective 已经接入完整 π0.5 forward。
+结构测试共 `6/6` 通过，包括关闭功能时的兼容性、零初始化输出等价性和 adapter 梯度。
+
+第一轮极小 gate 使用 120 个 meta steps 和 16 个 episode-heldout support–query pairs；每个 query 当时只取
+一个 flow time/noise draw：
+
+| 初始化 | support target | mean query delta | median query delta | improved pairs |
+|---|---|---:|---:|---:|
+| 未做 meta-alignment | correct transition | `-2.61e-5` | `+3.18e-6` | `8/16` |
+| meta-aligned | correct transition | `-1.86e-4` | `-4.41e-6` | `9/16` |
+| meta-aligned | no-change | `-3.26e-5` | `+7.40e-6` | `7/16` |
+| meta-aligned | within-task shuffled | `-9.86e-5` | `-0.65e-6` | `9/16` |
+
+meta-alignment 后，correct update 相对 no-change 在 `10/16` 对上更好，相对 shuffled 在 `11/16` 对上更好，
+但只有 `9/16` 同时优于两个控制项。均值还受到少量高 flow-loss draw 支配。因此这只是**弱的目标特异性
+迹象，不构成方法有效证据**。
+
+当前唯一追加实验不是增加模块，而是修正估计量：训练时轮换同一状态的独立 flow draws，验证时对四个
+flow time/noise draws 求期望。若正确 transition 在这个更稳定的动作目标上仍不能一致优于 no-change 和
+within-task shuffle，则当前 adapter 位置/一阶 meta-gradient 假设被否定，不进入 rollout。
+
+该追加实验已经完成。240 个 meta steps、16 个 held-out pairs、每对 4 个 flow draws 的结果为：
+
+| support target | mean query delta | median query delta | improved pairs |
+|---|---:|---:|---:|
+| correct transition | `-5.43e-5` | `-5.14e-6` | `10/16` |
+| no-change | `-0.98e-5` | `-6.22e-6` | `10/16` |
+| within-task shuffled | `-5.06e-5` | `-5.87e-6` | `10/16` |
+
+correct 与 shuffled 的均值只相差 `-3.76e-6`；correct 只在 `7/16` 对上同时优于两个控制项。因此更稳定的
+估计否定了当前版本：**一阶 meta-adapter 学到了一般性的小幅 action finetuning，而没有学会利用本次真实
+transition。** 本版本不进入 rollout。
+
+下一项最小实验回到同一个 JEPA 变量，但让 support loss 同时要求 transition 能重建已执行动作：
+
+```text
+L_online = L_JEPA(U^P, U^R) + lambda * L_inverse(I(U^P, q_t), A_executed).
+```
+
+`U^R` 仍由执行后 V-JEPA 产生，`A_executed` 是机器人本来就知道的动作；没有 tracker 或新标签。冻结的
+inverse readout 只用于验证 action-decodable JEPA gradient 是否比纯 prediction gradient 更具控制特异性，
+不能在 gate 通过前被包装成正式贡献。
+
 ## 8. 最小可证伪实验
 
 正式训练与 rollout 前只做一个 gate：
@@ -238,13 +283,23 @@ correct support update < shuffled/no-change support update
 - 扩展到完整 LIBERO-Plus；
 - 第二个 benchmark 与 persistent continual adaptation。
 
-## 9. 实现顺序
+## 9. 当前实现与下一步
 
-1. 在缓存特征和冻结 π0.5 velocity 上验证 support→query 的一步更新方向；
-2. 在 `embed_prefix` 的 image-token 路径加入 opt-in low-rank adapter，并验证零初始化等价；
-3. 实现一阶/二阶一步 meta-objective，先用单卡小 batch；
-4. gate 通过后再用四卡训练；
-5. 测试时只保存小 adapter state，不覆盖作者 checkpoint。
+已完成：
+
+1. 在 `embed_prefix` 的 image-token 路径加入 opt-in low-rank adapter；
+2. 实现 current-only JEPA prediction、真实 H10 V-JEPA target 和一步在线更新；
+3. 实现一阶一步 meta-objective，并在完整冻结 π0.5 forward 上运行；
+4. 保存独立 adapter state，不覆盖作者 checkpoint；
+5. 保留 correct/no-change/within-task-shuffle 三种严格支持信号。
+
+尚未完成：
+
+1. 纯 JEPA 的 flow-draw averaged gate 已失败；
+2. 尚无证据授权进行 LIBERO-Plus rollout；
+3. 正在验证 JEPA prediction 与 executed-action reconstruction 的单一联合 online loss；
+4. 该联合 loss 若仍无 target specificity，则停止当前共享 adapter 路线；不通过增加 gate、tracker 或更多
+   attention 分支补救。
 
 缓存实验只是验证更新机制，不构成最终动作改进结论。最终证据必须来自完整 π0.5 forward 和闭环 rollout。
 
@@ -261,4 +316,3 @@ correct support update < shuffled/no-change support update
 
 > **在 JEPA-WAM π0.5 中，针对已经实证存在的 JEPA–action disconnect，学习一个由真实 transition
 > prediction error 驱动、并由 action-flow objective 元对齐的共享在线更新方向。**
-
