@@ -483,7 +483,7 @@ def _predict_jepa_latents(policy: Any, samples: Any, batch_size: int) -> np.ndar
 
 
 def _load_alignment_head(model: Any, path: Path) -> None:
-    """Load the six alignment-head arrays produced by fit_horizon_alignment_head.py."""
+    """Load an adapted alignment head and optional future-query tokens."""
     import jax.numpy as jnp
 
     values = np.load(path, allow_pickle=False)
@@ -501,6 +501,16 @@ def _load_alignment_head(model: Any, path: Path) -> None:
                 f"Alignment-head shape mismatch: model={variable.value.shape}, file={value.shape}"
             )
         variable.value = jnp.asarray(value, dtype=variable.value.dtype)
+    if "query_tokens" in values:
+        query_tokens = values["query_tokens"]
+        if tuple(model.vjepa_query_tokens.value.shape) != tuple(query_tokens.shape):
+            raise ValueError(
+                "Future-query shape mismatch: "
+                f"model={model.vjepa_query_tokens.value.shape}, file={query_tokens.shape}"
+            )
+        model.vjepa_query_tokens.value = jnp.asarray(
+            query_tokens, dtype=model.vjepa_query_tokens.value.dtype
+        )
 
 
 def _change_map(first: np.ndarray, second: np.ndarray) -> np.ndarray:
