@@ -124,7 +124,6 @@ def main() -> None:
                         candidates.append(action[: args.horizon].astype(np.float32))
 
                     for candidate_index, action_chunk in enumerate(candidates):
-                        env.reset()
                         branch_obs = env.set_init_state(snapshot)
                         restored_base, _ = _images(branch_obs)
                         mae = float(
