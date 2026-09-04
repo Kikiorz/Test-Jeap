@@ -536,6 +536,12 @@ class TrainConfig:
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
 
+    # Con1 full phase uses one Adam state but a lower effective learning rate
+    # for the pretrained late Action slices than for newly learned Change
+    # parameters.  The optimizer schedule is the Change learning rate; this
+    # factor is applied only to Action-layer updates after AdamW.
+    action_change_late_action_lr_scale: float = 1.0
+
     # Specifies which weights should be frozen.
     freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
 
@@ -601,6 +607,8 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if self.action_change_late_action_lr_scale <= 0:
+            raise ValueError("action_change_late_action_lr_scale must be positive")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -954,11 +962,12 @@ _CONFIGS = [
         batch_size=64,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=500,
-            peak_lr=1e-5,
+            peak_lr=5e-5,
             decay_steps=55_000,
-            decay_lr=1e-6,
+            decay_lr=5e-6,
         ),
         optimizer=_optimizer.AdamW(weight_decay=0.01, clip_gradient_norm=1.0),
+        action_change_late_action_lr_scale=0.2,
         ema_decay=0.999,
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,

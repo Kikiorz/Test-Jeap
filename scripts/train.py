@@ -159,6 +159,25 @@ def train_step(
             mask,
         )
 
+    def scale_late_action_updates(tree):
+        """Apply the configured LR ratio only to active late Action slices."""
+        start_layer = config.model.change_joint_start_layer
+        scale = config.action_change_late_action_lr_scale
+
+        def transform(variable):
+            value = variable.value
+            if value.ndim < 1 or value.shape[0] <= start_layer:
+                raise ValueError(f"Unexpected scanned Action value shape: {value.shape}")
+            value = value.at[:start_layer].set(0)
+            value = value.at[start_layer:].multiply(scale)
+            return variable.replace(value)
+
+        return nnx_utils.state_map(
+            tree,
+            nnx_utils.PathRegex(".*llm/layers/.*_1.*"),
+            transform,
+        )
+
     @at.typecheck
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
@@ -293,7 +312,7 @@ def train_step(
         # AdamW adds decoupled weight decay after gradient masking.  Mask the
         # final update too, otherwise the nominally frozen first 12 blocks
         # would still drift at every optimizer step.
-        updates = mask_early_action_layers(updates)
+        updates = scale_late_action_updates(updates)
     new_params = optax.apply_updates(params, updates)
 
     # Update the model in place and return the new full state.
@@ -324,6 +343,14 @@ def train_step(
         "param_norm": optax.global_norm(kernel_params),
         **loss_info,
     }
+    if (
+        getattr(config.model, "use_action_change_mmdit", False)
+        and getattr(config.model, "change_train_action_late", False)
+        and not getattr(config.model, "use_achieved_change_adapter", False)
+    ):
+        info["late_action_lr_scale"] = jnp.asarray(
+            config.action_change_late_action_lr_scale, dtype=jnp.float32
+        )
     return new_state, info
 
 
