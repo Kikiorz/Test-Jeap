@@ -1,6 +1,6 @@
 # Con1：Action-Grounded Change CoFlow
 
-> 状态：Phase A 已完成选择，正在进行 A+B 最小联合验证
+> 状态：Phase A 已通过；A+B 500-step 最小联合验证未通过预注册判据
 >
 > 分支：`feat/con`
 >
@@ -200,6 +200,28 @@ integrated change MSE:  joint < independent
 ```
 
 四项 improvement 的 95% CI 下界均需大于 0。任一项失败都原样停止，不通过延长训练或临时增加模块掩盖。
+
+### 5.4 500-step 实测结果（seed 431）
+
+Phase A 使用最终的纯 `DeltaY_t` 接口重新训练并导出教师，episode-heldout Huber 为 `0.05634`，与先前
+选择实验的 `0.05705` 一致。
+
+Phase B 的 joint 与 independent 模型均为 `1,472,535` 个参数，使用相同数据划分、batch/noise/time seed
+和 500 次更新。误差越低越好：
+
+| heldout 指标 | independent | joint | `independent - joint` | episode bootstrap 95% CI |
+|---|---:|---:|---:|---:|
+| action flow MSE | 0.33746 | **0.32231** | +0.01516 | [-0.01232, 0.04124] |
+| change flow MSE | **0.89275** | 0.90002 | -0.00728 | [-0.02270, 0.00870] |
+| integrated action MSE | 0.16367 | **0.15926** | +0.00440 | [-0.00911, 0.01833] |
+| integrated change MSE | 0.75432 | **0.74888** | +0.00544 | [-0.00800, 0.01958] |
+
+均值上，joint 的 action flow、action endpoint 和 change endpoint 分别改善约 `4.49%`、`2.69%` 和
+`0.72%`，但所有置信区间都跨过 0，且 change flow 均值退化约 `0.81%`。因此四个预注册条件全部为
+false，A+B 最小 gate **未通过**。
+
+这组结果只支持“联合流存在弱但不稳定的动作侧趋势”，不支持“joint Action–Change Flow 已经优于 matched
+independent flow”。按照既定规则，当前不延长训练、不增加模块，也不进入 16-query 大模型集成。
 
 ## 6. 通过最小 gate 后的实现顺序
 
