@@ -79,19 +79,31 @@ class ChangeEncoder(nn.Module):
 
 
 class InverseActionDecoder(nn.Module):
-    """Decode physical actions from change tokens without state or language inputs."""
+    """Decode physical actions from change tokens and current robot state."""
 
     horizon: int = 10
     action_dim: int = 7
     width: int = 256
 
     @nn.compact
-    def __call__(self, change_tokens: jax.Array) -> jax.Array:
+    def __call__(self, change_tokens: jax.Array, state: jax.Array) -> jax.Array:
         if change_tokens.ndim != 3:
             raise ValueError(f"Expected [batch, tokens, channels], got {change_tokens.shape}")
-        hidden = change_tokens.reshape(change_tokens.shape[0], -1)
-        hidden = nn.LayerNorm(name="input_norm")(hidden)
-        hidden = nn.silu(nn.Dense(self.width, name="hidden")(hidden))
+        if state.ndim != 2 or state.shape[0] != change_tokens.shape[0]:
+            raise ValueError(
+                f"Expected state [batch, channels] aligned with change tokens, got {state.shape}"
+            )
+
+        change_hidden = change_tokens.reshape(change_tokens.shape[0], -1)
+        change_hidden = nn.LayerNorm(name="change_norm")(change_hidden)
+        change_hidden = nn.silu(nn.Dense(self.width, name="change_projection")(change_hidden))
+
+        state_hidden = nn.silu(
+            nn.Dense(self.width, name="state_projection")(state.astype(jnp.float32))
+        )
+
+        hidden = jnp.concatenate([change_hidden, state_hidden], axis=-1)
+        hidden = nn.silu(nn.Dense(self.width, name="fusion")(hidden))
         actions = nn.Dense(self.horizon * self.action_dim, name="action_output")(hidden)
         return actions.reshape(change_tokens.shape[0], self.horizon, self.action_dim)
 
@@ -108,7 +120,7 @@ class PhaseAModel(nn.Module):
     action_dim: int = 7
 
     @nn.compact
-    def __call__(self, representation: jax.Array) -> tuple[jax.Array, jax.Array]:
+    def __call__(self, representation: jax.Array, state: jax.Array) -> tuple[jax.Array, jax.Array]:
         change = ChangeEncoder(
             num_tokens=self.num_tokens,
             token_dim=self.token_dim,
@@ -122,5 +134,5 @@ class PhaseAModel(nn.Module):
             action_dim=self.action_dim,
             width=self.width,
             name="inverse_decoder",
-        )(change)
+        )(change, state)
         return change, actions

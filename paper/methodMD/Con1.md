@@ -1,6 +1,6 @@
 # Con1：Action-Grounded Change CoFlow
 
-> 状态：收缩后的方法与最小验证合同，尚未开始实现或训练
+> 状态：Phase A 最小验证实现；后续阶段在 Phase A 通过前不实施
 >
 > 分支：`feat/con`
 >
@@ -87,12 +87,16 @@ B^R_t = G_psi(DeltaY_t) ∈ R^(16×16)
 `G_psi` 是两层 query readout：16 个 learned queries 通过 cross-attention 读取 576 个 `DeltaY` tokens，
 hidden width 为 256，最后投影为 `[16,16]`。`K=32` 只作为主模型成立后的容量消融。
 
-逆动力学头不读取 `q_t`、当前图像或语言：
+变化后验本身仍只读取 `DeltaY_t`。逆动力学头额外读取部署时天然可用的当前机器人状态 `q_t`，但不读取
+当前图像或语言：
 
 ```text
-A_hat_t = D_inv(B^R_t) ∈ R^(10×7)
+A_hat_t = D_inv(B^R_t, q_t) ∈ R^(10×7)
 L_inv = Huber(A_hat_t, A*_[...,0:7])
 ```
+
+这样 `B^R` 的语义仍然是变化表示，而 decoder 回答的是“在当前机器人状态下，什么动作对应这种变化”。
+若把 `q_t` 直接混入 `B^R` 的标签构造，`G_psi` 可能仅编码 state shortcut，因此首版不这样做。
 
 Phase A 冻结 V-JEPA、π0.5 和 JEPA-WAM，只训练 `G_psi` 与 `D_inv`。
 
@@ -100,37 +104,40 @@ Phase A 冻结 V-JEPA、π0.5 和 JEPA-WAM，只训练 `G_psi` 与 `D_inv`。
 
 Phase A 只检验：
 
-> **相对 no-change reference 的 JEPA latent displacement 中，是否存在能够区分对应专家动作的样本级信息？**
+> **在已经给定当前机器人状态后，JEPA latent displacement 是否仍为专家动作提供可泛化的增量信息？**
 
 它不检验 rollout 成功率、不检验当前观测能否预测该变化，也不检验因果反事实。
 
-验证集必须按完整 episode 隔离。使用相同模型容量比较：
+验证集必须按完整 episode 隔离。四个模型使用相同的 `G_psi + D_inv` 结构、宽度、训练步数和随机种子；
+被移除的输入以零张量替代，从而保持参数量一致：
 
 | 输入 | 作用 |
 |---|---|
-| correct `DeltaY_t` | 主方法 |
-| within-task shuffled `DeltaY` | 排除仅依赖任务类别或平均动作 |
-| zero `DeltaY` | 判断 no-change 输入能否靠 decoder bias 猜动作 |
-| raw pair `Y^R` | 判断 latent change 是否优于 latent pair |
-| current-only `Y^0` | 测量当前状态/轨迹阶段 shortcut 有多强 |
+| `q_t` | state-only 基线，测量当前状态能预测多少动作 |
+| `DeltaY_t` | change-only 基线，测量变化本身包含多少动作信息 |
+| `(q_t, DeltaY_t)` | 主方法，检验 change 在 state 之外的增量价值 |
+| `(q_t, Y^R_t)` | raw-pair 对照，判断 latent change 是否优于完整 latent pair |
 
-Phase A 的核心统计量是 held-out shuffle gap：
+Phase A 的核心统计量是同一 held-out expert sample 上的配对 loss improvement：
 
 ```text
-gap = L_inv(shuffled DeltaY) - L_inv(correct DeltaY)
+improvement_state = L_inv(q_t) - L_inv(q_t, DeltaY_t)
+improvement_pair  = L_inv(q_t, Y^R_t) - L_inv(q_t, DeltaY_t)
 ```
 
 继续 Phase B 的最低条件：
 
-1. correct `DeltaY` 的 held-out loss 显著低于 shuffled 与 zero；
-2. bootstrap 95% CI 下，shuffle gap 仍大于 0；
-3. delta 表示相对 raw pair 具有更大的 shuffle gap，而不只是更低的训练 loss；
-4. 结果不是由少数 episode 或单个任务贡献。
+1. `(q_t,DeltaY_t)` 的 held-out loss 低于 state-only；
+2. episode-level bootstrap 95% CI 下，`improvement_state` 仍大于 0；
+3. `(q_t,DeltaY_t)` 优于 change-only，证明 state conditioning 确实必要；
+4. `(q_t,DeltaY_t)` 的 held-out loss 低于 `(q_t,Y^R_t)`；
+5. episode-level bootstrap 95% CI 下，`improvement_pair` 仍大于 0。
 
-`current-only` 可能因为专家策略近似确定而很强，这本身不否定 delta。它只用于量化数据中的状态—动作
-shortcut，不能作为我们的模型输入。
+不再使用打乱 transition 的输入作为证据：打乱后的配对不来自专家数据分布，它只能证明 decoder 会响应
+输入变化，不能证明 change 的语义或控制价值。
 
-若以上条件失败，结论是“该 JEPA displacement 未显示足够的动作可辨识性”，停止 Con1，不进入 Phase B。
+若条件 1–3 失败，说明 change 没有提供 state 之外的动作信息；若条件 4–5 失败，说明 no-change subtraction
+相对 raw pair 没有优势。任一种情况都先停止，不进入 Phase B，也不在运行中修改算法。
 
 ## 4. Phase B：将未来后验蒸馏为当前变化先验
 
@@ -140,15 +147,18 @@ Phase A 完成后冻结 `G_psi` 和 `D_inv`：
 B^R_t = stopgrad(G_psi(DeltaY_t))
 ```
 
-训练一个只读取当前观测和语言的 prior predictor：
+后续 Phase B 不使用外挂 Transformer。仿照 JEPA-WAM，在冻结 VLM 序列中加入 16 个 change-query tokens；
+这些 query 可读取当前 image-language prefix 和原有 64 个 JEPA-WAM future-query states：
 
 ```text
-B^P_t = P_omega(prefix_pi05(o_t, language)) ∈ R^(16×16)
+[image, language, R^JEPA_(1:64), Q^B_(1:16)] → frozen VLM
+H^B_t = hidden states at Q^B_(1:16)
+B^P_t = Proj(AdaLN(H^B_t; E_q(q_t))) ∈ R^(16×16)
 L_distill = Huber(B^P_t, B^R_t)
 ```
 
-`P_omega` 使用 16 个新 queries 单向读取冻结 π0.5 image-language prefix。prefix 不读取这些 queries，
-因此新增分支不会改变基础策略。
+数学上的 `P_omega` 就是这 16 个 VLM 内生 queries、state conditioning 和轻量 projection，而不是第二个
+预测网络。`B^R` 仍不含 state；`q_t` 只帮助 current-only student 预测专家未来变化。
 
 这里才是严格意义上的蒸馏：
 
@@ -167,15 +177,15 @@ Phase B 只检验：
 - learned `B^P`；
 - global mean `B^R`；
 - task-conditioned mean `B^R`；
-- shuffled-language `B^P`。
+- 一个从训练开始就移除语言输入的 matched predictor。
 
 同时通过冻结 `D_inv(B^P)` 报告动作诊断，但不把它称为策略成功率。
 
 继续 Phase C 的最低条件：
 
 1. learned prior 的 `L_distill` 优于 global mean 和 task mean；
-2. shuffled language 会恶化 prior 或 inverse-action 诊断；
-3. `D_inv(B^P_t)` 对对应动作优于 within-task shuffled `B^P`。
+2. 完整 predictor 优于 matched no-language predictor；
+3. `D_inv(B^P_t,q_t)` 的 held-out action loss 优于 `D_inv(global/task mean,q_t)`。
 
 若 learned prior 不超过 task mean，说明它主要记忆任务平均变化，停止 Con1。
 
@@ -233,8 +243,8 @@ Change hidden → attend stopgrad(Action hidden) → refined Change hidden
 
 ```text
 L_action(full CoFlow) < L_action(fixed condition)
-L_action(shuffled B^P) > L_action(correct B^P)
-L_change(shuffled action) > L_change(correct action)
+L_action(full CoFlow) < L_action(independent flows)
+L_change(full CoFlow) < L_change(independent flows)
 ```
 
 若 full CoFlow 不超过 matched fixed condition，说明双向共同演化没有价值，Con1 在这里失败。
@@ -268,7 +278,6 @@ B_1 = P_omega(o_t, language)
 
 - 相同 seed 下是否比 frozen baseline 少失败；
 - 是否出现明显策略退化或动作发散；
-- correct `B^P` 与 shuffled `B^P` 是否产生可测的行为差异；
 - 推理延迟是否可接受。
 
 20 episodes 只用于淘汰错误方法，不用于论文结论。只有 smoke test 不退化且出现正向信号，才运行预注册的
@@ -294,7 +303,8 @@ episode-level 160 train / 160 validation
 500 steps, batch 32
 ```
 
-同时训练 matched raw-pair/current-only baselines。500 steps 无 shuffle gap 就停止；有信号才延长到 2,000。
+同时训练 matched state-only、change-only 和 state+raw-pair controls。500 steps 不满足预设 held-out 增量条件
+就停止；通过后才考虑延长到 2,000。
 
 ### Step 2：Phase B 快速证伪
 
@@ -322,9 +332,9 @@ offline flow metrics only
 
 | 阶段 | 科学问题 | 成功证据 | 失败后动作 |
 |---|---|---|---|
-| Phase A | JEPA latent change 是否含样本级动作信息？ | correct 优于 shuffled/zero，且 delta shuffle gap 优于 raw pair | 停止 Con1 |
+| Phase A | JEPA latent change 是否在 state 之外提供动作信息？ | state+change 显著优于 state-only/change-only，并优于 state+raw-pair | 停止 Con1 |
 | Phase B | 未来后验能否蒸馏为当前先验？ | learned prior 优于 global/task mean，并依赖语言 | 停止 Con1 |
-| Phase C | joint evolution 是否优于普通 condition？ | full CoFlow 优于 matched fixed condition，双向 shuffle 均敏感 | 停止 Con1 |
+| Phase C | joint evolution 是否优于普通 condition？ | full CoFlow 优于 matched fixed condition 和 independent flows | 停止 Con1 |
 | Inference | offline 改善能否进入动作生成？ | solver 稳定、20-episode paired smoke 出现正向信号 | 不做大评测 |
 | Final | 是否真正改善 OOD 控制？ | 预注册 L4/L5 paired success 与统计检验 | 缩小或否定论文主张 |
 
@@ -358,7 +368,7 @@ offline flow metrics only
 1. 只使用专家数据，不采集 intervention；
 2. `DeltaY = L2Norm(Y^R) - L2Norm(Y^0)`；
 3. `K=16,d_B=16`，`K=32` 只做容量消融；
-4. Phase A inverse decoder 不读取 state、image 或 language；
+4. `B^R` 只由 `DeltaY` 构造；Phase A inverse decoder 额外读取 `q_t`，但不读取 image 或 language；
 5. Phase B 才构成 posterior-to-prior distillation；
 6. Phase C 只使用一个 CoFlow block；
 7. 首版冻结完整基础模型和 Action Expert；
