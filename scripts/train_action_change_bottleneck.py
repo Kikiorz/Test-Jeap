@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run the expert-only Phase A incremental-value test for Con1.
+"""Compare context-free and current-conditioned Phase A bottlenecks.
 
-The change bottleneck is computed only from a no-change-referenced V-JEPA
-displacement. Current robot state is supplied separately to the training-only
-inverse decoder. Four matched models test whether change adds held-out action
-information beyond state and whether delta is preferable to the raw pair.
+All inverse decoders read only the compact bottleneck. Three matched encoders
+receive change only, current context only, or both. Current visual context is
+the frozen no-change JEPA target; proprioception is normalized robot state.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import optax
 
 from openpi.models import action_change_bottleneck as bottleneck
 
-RepresentationMode = Literal["state_change", "change_only", "state_only", "state_raw_pair"]
+RepresentationMode = Literal["change_only", "current_only", "current_change"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,20 +77,21 @@ def _quantile_normalize(values: np.ndarray, stats: dict[str, Any], name: str) ->
     return normalized
 
 
-def _representation(mode: RepresentationMode, realized: jax.Array, nochange: jax.Array) -> jax.Array:
-    if mode in ("state_change", "change_only"):
-        return bottleneck.latent_displacement(realized, nochange)
-    if mode == "state_raw_pair":
-        return bottleneck.l2_normalize_tokens(realized)
-    if mode == "state_only":
-        return jnp.zeros_like(realized, dtype=jnp.float32)
-    raise ValueError(f"Unknown representation mode: {mode}")
-
-
-def _state_condition(mode: RepresentationMode, state: jax.Array) -> jax.Array:
+def _model_inputs(
+    mode: RepresentationMode,
+    realized: jax.Array,
+    nochange: jax.Array,
+    state: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    displacement = bottleneck.latent_displacement(realized, nochange)
+    current = bottleneck.l2_normalize_tokens(nochange)
     if mode == "change_only":
-        return jnp.zeros_like(state, dtype=jnp.float32)
-    return state.astype(jnp.float32)
+        return displacement, jnp.zeros_like(current), jnp.zeros_like(state, dtype=jnp.float32)
+    if mode == "current_only":
+        return jnp.zeros_like(displacement), current, state.astype(jnp.float32)
+    if mode == "current_change":
+        return displacement, current, state.astype(jnp.float32)
+    raise ValueError(f"Unknown representation mode: {mode}")
 
 
 def _huber_per_example(prediction: jax.Array, target: jax.Array, delta: float = 1.0) -> jax.Array:
@@ -142,18 +142,16 @@ def _train_mode(
     )
     example_realized = jnp.asarray(np.asarray(realized[:1], dtype=np.float32))
     example_nochange = jnp.asarray(np.asarray(nochange[:1], dtype=np.float32))
-    example_representation = _representation(mode, example_realized, example_nochange)
-    example_state = _state_condition(mode, jnp.asarray(states[:1]))
-    params = model.init(jax.random.key(args.seed), example_representation, example_state)["params"]
+    example_inputs = _model_inputs(mode, example_realized, example_nochange, jnp.asarray(states[:1]))
+    params = model.init(jax.random.key(args.seed), *example_inputs)["params"]
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(args.learning_rate, 1e-4))
     optimizer_state = optimizer.init(params)
 
     @jax.jit
     def train_step(parameters, optimizer_value, realized_batch, nochange_batch, state_batch, action_batch):
         def loss_fn(value):
-            representation = _representation(mode, realized_batch, nochange_batch)
-            state_condition = _state_condition(mode, state_batch)
-            _, prediction = model.apply({"params": value}, representation, state_condition)
+            model_inputs = _model_inputs(mode, realized_batch, nochange_batch, state_batch)
+            _, prediction = model.apply({"params": value}, *model_inputs)
             return jnp.mean(_huber_per_example(prediction, action_batch))
 
         loss, gradients = jax.value_and_grad(loss_fn)(parameters)
@@ -167,9 +165,8 @@ def _train_mode(
 
     @jax.jit
     def evaluate(parameters, realized_batch, nochange_batch, state_batch, action_batch):
-        representation = _representation(mode, realized_batch, nochange_batch)
-        state_condition = _state_condition(mode, state_batch)
-        change, prediction = model.apply({"params": parameters}, representation, state_condition)
+        model_inputs = _model_inputs(mode, realized_batch, nochange_batch, state_batch)
+        change, prediction = model.apply({"params": parameters}, *model_inputs)
         return change, prediction, _huber_per_example(prediction, action_batch)
 
     rng = np.random.default_rng(args.seed)
@@ -221,8 +218,8 @@ def _encode_all(
 ) -> np.ndarray:
     @jax.jit
     def encode(realized_batch, nochange_batch, state_batch):
-        representation = bottleneck.latent_displacement(realized_batch, nochange_batch)
-        change, _ = model.apply({"params": params}, representation, state_batch)
+        model_inputs = _model_inputs("current_change", realized_batch, nochange_batch, state_batch)
+        change, _ = model.apply({"params": params}, *model_inputs)
         return change
 
     outputs: list[np.ndarray] = []
@@ -266,7 +263,7 @@ def main() -> None:
     results: dict[str, Any] = {}
     validation_losses: dict[str, np.ndarray] = {}
     trained: dict[str, tuple[Any, bottleneck.PhaseAModel]] = {}
-    for mode in ("state_only", "change_only", "state_change", "state_raw_pair"):
+    for mode in ("change_only", "current_only", "current_change"):
         metrics, per_example_loss, params, model = _train_mode(
             mode,
             realized,
@@ -282,13 +279,13 @@ def main() -> None:
         trained[mode] = (params, model)
 
     comparisons: dict[str, Any] = {}
-    for control_name in ("state_only", "change_only", "state_raw_pair"):
-        improvement = validation_losses[control_name] - validation_losses["state_change"]
+    for control_name in ("change_only", "current_only"):
+        improvement = validation_losses[control_name] - validation_losses["current_change"]
         task_improvements: dict[str, float] = {}
         for task in np.unique(tasks[validation_indices]):
             mask = tasks[validation_indices] == task
             task_improvements[str(int(task))] = float(np.mean(improvement[mask]))
-        comparisons[f"state_change_vs_{control_name}"] = {
+        comparisons[f"current_change_vs_{control_name}"] = {
             "mean_huber_improvement": float(np.mean(improvement)),
             "bootstrap": _bootstrap_episode_improvement(
                 improvement,
@@ -302,20 +299,17 @@ def main() -> None:
         }
 
     conditions = {
-        "state_change_better_than_state_only": (
-            results["state_change"]["heldout_huber"] < results["state_only"]["heldout_huber"]
+        "current_change_better_than_change_only": (
+            results["current_change"]["heldout_huber"] < results["change_only"]["heldout_huber"]
         ),
-        "state_increment_bootstrap_ci_above_zero": (
-            comparisons["state_change_vs_state_only"]["bootstrap"]["ci95_low"] > 0.0
+        "current_context_bootstrap_ci_above_zero": (
+            comparisons["current_change_vs_change_only"]["bootstrap"]["ci95_low"] > 0.0
         ),
-        "state_change_better_than_change_only": (
-            results["state_change"]["heldout_huber"] < results["change_only"]["heldout_huber"]
+        "current_change_better_than_current_only": (
+            results["current_change"]["heldout_huber"] < results["current_only"]["heldout_huber"]
         ),
-        "state_change_better_than_state_raw_pair": (
-            results["state_change"]["heldout_huber"] < results["state_raw_pair"]["heldout_huber"]
-        ),
-        "delta_vs_raw_pair_bootstrap_ci_above_zero": (
-            comparisons["state_change_vs_state_raw_pair"]["bootstrap"]["ci95_low"] > 0.0
+        "change_increment_bootstrap_ci_above_zero": (
+            comparisons["current_change_vs_current_only"]["bootstrap"]["ci95_low"] > 0.0
         ),
     }
     summary = {
@@ -337,7 +331,7 @@ def main() -> None:
         json.dump(summary, handle, indent=2, sort_keys=True)
         handle.write("\n")
 
-    delta_params, delta_model = trained["state_change"]
+    delta_params, delta_model = trained["current_change"]
     (args.output_dir / "phase_a_delta_params.msgpack").write_bytes(serialization.to_bytes(delta_params))
     posterior = _encode_all(delta_model, delta_params, realized, nochange, states, args.batch_size)
     np.save(args.output_dir / "posterior_b_r.npy", posterior)

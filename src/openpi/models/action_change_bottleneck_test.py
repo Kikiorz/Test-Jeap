@@ -23,17 +23,18 @@ def test_displacement_norm_matches_cosine_distance():
 
 
 def test_phase_a_shapes_and_gradients():
-    representation = jax.random.normal(jax.random.key(4), (2, 24, 64))
+    displacement = jax.random.normal(jax.random.key(4), (2, 24, 64))
+    current_tokens = jax.random.normal(jax.random.key(11), (2, 24, 64))
     state = jax.random.normal(jax.random.key(7), (2, 8))
     target = jax.random.normal(jax.random.key(5), (2, 10, 7))
     model = bottleneck.PhaseAModel(width=32, depth=2, num_heads=4)
-    variables = model.init(jax.random.key(6), representation, state)
-    change, action = model.apply(variables, representation, state)
+    variables = model.init(jax.random.key(6), displacement, current_tokens, state)
+    change, action = model.apply(variables, displacement, current_tokens, state)
     assert change.shape == (2, 16, 16)
     assert action.shape == target.shape
 
     def loss(params):
-        _, prediction = model.apply({"params": params}, representation, state)
+        _, prediction = model.apply({"params": params}, displacement, current_tokens, state)
         return jnp.mean(jnp.square(prediction - target))
 
     gradients = jax.grad(loss)(variables["params"])
@@ -43,11 +44,18 @@ def test_phase_a_shapes_and_gradients():
     assert any(np.any(np.asarray(leaf) != 0) for leaf in leaves)
 
 
-def test_inverse_decoder_uses_state_condition():
-    representation = jax.random.normal(jax.random.key(8), (2, 24, 64))
+def test_context_changes_bottleneck_but_never_enters_decoder_directly():
+    displacement = jax.random.normal(jax.random.key(8), (2, 24, 64))
+    current_tokens = jax.random.normal(jax.random.key(12), (2, 24, 64))
     state = jax.random.normal(jax.random.key(9), (2, 8))
     model = bottleneck.PhaseAModel(width=32, depth=1, num_heads=4)
-    variables = model.init(jax.random.key(10), representation, state)
-    _, action = model.apply(variables, representation, state)
-    _, zero_state_action = model.apply(variables, representation, jnp.zeros_like(state))
-    assert not np.allclose(np.asarray(action), np.asarray(zero_state_action))
+    variables = model.init(jax.random.key(10), displacement, current_tokens, state)
+    change, action = model.apply(variables, displacement, current_tokens, state)
+    zero_context_change, zero_context_action = model.apply(
+        variables,
+        displacement,
+        jnp.zeros_like(current_tokens),
+        jnp.zeros_like(state),
+    )
+    assert not np.allclose(np.asarray(change), np.asarray(zero_context_change))
+    assert not np.allclose(np.asarray(action), np.asarray(zero_context_action))

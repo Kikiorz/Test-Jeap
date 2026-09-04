@@ -33,7 +33,7 @@ class _SwiGLU(nn.Module):
 
 
 class ChangeEncoder(nn.Module):
-    """Read a dense JEPA displacement into a compact set of change tokens."""
+    """Read JEPA displacement and optional current context into compact tokens."""
 
     num_tokens: int = 16
     token_dim: int = 16
@@ -42,14 +42,30 @@ class ChangeEncoder(nn.Module):
     num_heads: int = 4
 
     @nn.compact
-    def __call__(self, displacement: jax.Array) -> jax.Array:
+    def __call__(
+        self,
+        displacement: jax.Array,
+        current_tokens: jax.Array,
+        state: jax.Array,
+    ) -> jax.Array:
         if displacement.ndim != 3:
             raise ValueError(f"Expected [batch, patches, channels], got {displacement.shape}")
+        if current_tokens.shape != displacement.shape:
+            raise ValueError(f"Current tokens must match displacement: {current_tokens.shape} != {displacement.shape}")
+        if state.ndim != 2 or state.shape[0] != displacement.shape[0]:
+            raise ValueError(f"Expected state [batch, channels] aligned with displacement, got {state.shape}")
         if self.width % self.num_heads:
             raise ValueError("width must be divisible by num_heads")
 
         batch_size = displacement.shape[0]
-        dense_tokens = nn.Dense(self.width, use_bias=False, name="input_projection")(displacement.astype(jnp.float32))
+        delta_hidden = nn.Dense(self.width, use_bias=False, name="delta_projection")(
+            displacement.astype(jnp.float32)
+        )
+        current_hidden = nn.Dense(self.width, use_bias=False, name="current_projection")(
+            current_tokens.astype(jnp.float32)
+        )
+        state_hidden = nn.Dense(self.width, use_bias=False, name="state_projection")(state.astype(jnp.float32))
+        dense_tokens = delta_hidden + current_hidden + state_hidden[:, None, :]
         queries = self.param(
             "change_queries",
             nn.initializers.normal(0.02),
@@ -75,27 +91,19 @@ class ChangeEncoder(nn.Module):
 
 
 class InverseActionDecoder(nn.Module):
-    """Decode physical actions from change tokens and current robot state."""
+    """Decode physical actions only from the compact bottleneck."""
 
     horizon: int = 10
     action_dim: int = 7
     width: int = 256
 
     @nn.compact
-    def __call__(self, change_tokens: jax.Array, state: jax.Array) -> jax.Array:
+    def __call__(self, change_tokens: jax.Array) -> jax.Array:
         if change_tokens.ndim != 3:
             raise ValueError(f"Expected [batch, tokens, channels], got {change_tokens.shape}")
-        if state.ndim != 2 or state.shape[0] != change_tokens.shape[0]:
-            raise ValueError(f"Expected state [batch, channels] aligned with change tokens, got {state.shape}")
-
-        change_hidden = change_tokens.reshape(change_tokens.shape[0], -1)
-        change_hidden = nn.LayerNorm(name="change_norm")(change_hidden)
-        change_hidden = nn.silu(nn.Dense(self.width, name="change_projection")(change_hidden))
-
-        state_hidden = nn.silu(nn.Dense(self.width, name="state_projection")(state.astype(jnp.float32)))
-
-        hidden = jnp.concatenate([change_hidden, state_hidden], axis=-1)
-        hidden = nn.silu(nn.Dense(self.width, name="fusion")(hidden))
+        hidden = change_tokens.reshape(change_tokens.shape[0], -1)
+        hidden = nn.LayerNorm(name="input_norm")(hidden)
+        hidden = nn.silu(nn.Dense(self.width, name="hidden")(hidden))
         actions = nn.Dense(self.horizon * self.action_dim, name="action_output")(hidden)
         return actions.reshape(change_tokens.shape[0], self.horizon, self.action_dim)
 
@@ -112,7 +120,12 @@ class PhaseAModel(nn.Module):
     action_dim: int = 7
 
     @nn.compact
-    def __call__(self, representation: jax.Array, state: jax.Array) -> tuple[jax.Array, jax.Array]:
+    def __call__(
+        self,
+        displacement: jax.Array,
+        current_tokens: jax.Array,
+        state: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
         change = ChangeEncoder(
             num_tokens=self.num_tokens,
             token_dim=self.token_dim,
@@ -120,11 +133,11 @@ class PhaseAModel(nn.Module):
             depth=self.depth,
             num_heads=self.num_heads,
             name="change_encoder",
-        )(representation)
+        )(displacement, current_tokens, state)
         actions = InverseActionDecoder(
             horizon=self.horizon,
             action_dim=self.action_dim,
             width=self.width,
             name="inverse_decoder",
-        )(change, state)
+        )(change)
         return change, actions

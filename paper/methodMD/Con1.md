@@ -74,29 +74,33 @@ DeltaY_t = Y_bar^R_t - Y_bar^0_t
 `DeltaY` 保留 `24×24` token 顺序，但它只是 **no-change-referenced semantic displacement**，不是光流、
 像素对应或严格因果变化。
 
-### 3.2 Change encoder 与 inverse decoder
+### 3.2 Current-conditioned change encoder 与 inverse decoder
 
-第一版使用：
+为了检验变化表示是否需要当前参照，第一版把 no-change latent `Y^0_t` 作为当前图像表示，并将 proprioception
+`q_t` 作为当前机器人状态。三路输入分别为：
 
 ```text
 K=16 change tokens
 d_B=16 per-token dimensions
-B^R_t = G_psi(DeltaY_t) ∈ R^(16×16)
+
+B^Delta_t   = G_psi(DeltaY_t, 0, 0)
+B^Current_t = G_psi(0, Y^0_t, q_t)
+B^R_t       = G_psi(DeltaY_t, Y^0_t, q_t) ∈ R^(16×16)
 ```
 
-`G_psi` 是两层 query readout：16 个 learned queries 通过 cross-attention 读取 576 个 `DeltaY` tokens，
-hidden width 为 256，最后投影为 `[16,16]`。`K=32` 只作为主模型成立后的容量消融。
+`G_psi` 对 `DeltaY_t`、`Y^0_t` 和 broadcast 后的 `q_t` 分别做无 bias 线性投影并相加，再由 16 个 learned
+queries 通过两层 cross-attention 读取 576 个融合 token。hidden width 为 256，最后投影为 `[16,16]`。
+三路使用完全相同的参数结构；缺失输入以零张量替代。`K=32` 只作为主模型成立后的容量消融。
 
-变化后验本身仍只读取 `DeltaY_t`。逆动力学头额外读取部署时天然可用的当前机器人状态 `q_t`，但不读取
-当前图像或语言：
+逆动力学头只读取瓶颈，不直接读取 `q_t`、当前图像或语言：
 
 ```text
-A_hat_t = D_inv(B^R_t, q_t) ∈ R^(10×7)
+A_hat_t = D_inv(B_t) ∈ R^(10×7)
 L_inv = Huber(A_hat_t, A*_[...,0:7])
 ```
 
-这样 `B^R` 的语义仍然是变化表示，而 decoder 回答的是“在当前机器人状态下，什么动作对应这种变化”。
-若把 `q_t` 直接混入 `B^R` 的标签构造，`G_psi` 可能仅编码 state shortcut，因此首版不这样做。
+因此 current-conditioned 分支即使使用 `q_t`，也必须先把它压入同一个 `16×16` 瓶颈；decoder 不存在
+独立的 `q_t→action` 旁路。
 
 Phase A 冻结 V-JEPA、π0.5 和 JEPA-WAM，只训练 `G_psi` 与 `D_inv`。
 
@@ -104,47 +108,46 @@ Phase A 冻结 V-JEPA、π0.5 和 JEPA-WAM，只训练 `G_psi` 与 `D_inv`。
 
 Phase A 只检验：
 
-> **在已经给定当前机器人状态后，JEPA latent displacement 是否仍为专家动作提供可泛化的增量信息？**
+> **JEPA latent displacement 是否需要当前图像和机器人状态作为参照，并且融合后的瓶颈是否同时使用变化与
+> 当前条件？**
 
 它不检验 rollout 成功率、不检验当前观测能否预测该变化，也不检验因果反事实。
 
-验证集必须按完整 episode 隔离。四个模型使用相同的 `G_psi + D_inv` 结构、宽度、训练步数和随机种子；
+验证集必须按完整 episode 隔离。三个模型使用相同的 `G_psi + D_inv` 结构、宽度、训练步数和随机种子；
 被移除的输入以零张量替代，从而保持参数量一致：
 
 | 输入 | 作用 |
 |---|---|
-| `q_t` | state-only 基线，测量当前状态能预测多少动作 |
-| `DeltaY_t` | change-only 基线，测量变化本身包含多少动作信息 |
-| `(q_t, DeltaY_t)` | 主方法，检验 change 在 state 之外的增量价值 |
-| `(q_t, Y^R_t)` | raw-pair 对照，判断 latent change 是否优于完整 latent pair |
+| `DeltaY_t` | change-only，测量变化本身包含多少动作信息 |
+| `(Y^0_t,q_t)` | current-only，测量当前图像和机器人状态 shortcut |
+| `(DeltaY_t,Y^0_t,q_t)` | 主方法，检验当前参照和变化能否互补 |
 
 Phase A 的核心统计量是同一 held-out expert sample 上的配对 loss improvement：
 
 ```text
-improvement_state = L_inv(q_t) - L_inv(q_t, DeltaY_t)
-improvement_pair  = L_inv(q_t, Y^R_t) - L_inv(q_t, DeltaY_t)
+improvement_context = L_inv(DeltaY_t) - L_inv(DeltaY_t, Y^0_t, q_t)
+improvement_change  = L_inv(Y^0_t, q_t) - L_inv(DeltaY_t, Y^0_t, q_t)
 ```
 
 继续 Phase B 的最低条件：
 
-1. `(q_t,DeltaY_t)` 的 held-out loss 低于 state-only；
-2. episode-level bootstrap 95% CI 下，`improvement_state` 仍大于 0；
-3. `(q_t,DeltaY_t)` 优于 change-only，证明 state conditioning 确实必要；
-4. `(q_t,DeltaY_t)` 的 held-out loss 低于 `(q_t,Y^R_t)`；
-5. episode-level bootstrap 95% CI 下，`improvement_pair` 仍大于 0。
+1. full bottleneck 的 held-out loss 低于 change-only；
+2. episode-level bootstrap 95% CI 下，`improvement_context` 仍大于 0；
+3. full bottleneck 的 held-out loss 低于 current-only；
+4. episode-level bootstrap 95% CI 下，`improvement_change` 仍大于 0。
 
 不再使用打乱 transition 的输入作为证据：打乱后的配对不来自专家数据分布，它只能证明 decoder 会响应
 输入变化，不能证明 change 的语义或控制价值。
 
-若条件 1–3 失败，说明 change 没有提供 state 之外的动作信息；若条件 4–5 失败，说明 no-change subtraction
-相对 raw pair 没有优势。任一种情况都先停止，不进入 Phase B，也不在运行中修改算法。
+若条件 1–2 失败，说明当前参照没有帮助解释变化；若条件 3–4 失败，说明 full bottleneck 可以只靠当前信息，
+`DeltaY` 没有提供增量价值。任一种情况都先停止，不进入 Phase B，也不在运行中修改算法。
 
 ## 4. Phase B：将未来后验蒸馏为当前变化先验
 
 Phase A 完成后冻结 `G_psi` 和 `D_inv`：
 
 ```text
-B^R_t = stopgrad(G_psi(DeltaY_t))
+B^R_t = stopgrad(G_psi(DeltaY_t, Y^0_t, q_t))
 ```
 
 后续 Phase B 不使用外挂 Transformer。仿照 JEPA-WAM，在冻结 VLM 序列中加入 16 个 change-query tokens；
@@ -158,7 +161,7 @@ L_distill = Huber(B^P_t, B^R_t)
 ```
 
 数学上的 `P_omega` 就是这 16 个 VLM 内生 queries、state conditioning 和轻量 projection，而不是第二个
-预测网络。`B^R` 仍不含 state；`q_t` 只帮助 current-only student 预测专家未来变化。
+预测网络。teacher 与 student 都使用部署时可见的 `q_t`；只有 teacher 额外读取真实未来形成的 `DeltaY_t`。
 
 这里才是严格意义上的蒸馏：
 
@@ -303,8 +306,8 @@ episode-level 160 train / 160 validation
 500 steps, batch 32
 ```
 
-同时训练 matched state-only、change-only 和 state+raw-pair controls。500 steps 不满足预设 held-out 增量条件
-就停止；通过后才考虑延长到 2,000。
+同时训练 matched change-only 和 current-only controls。500 steps 不满足双向 held-out 增量条件就停止；
+通过后才考虑延长到 2,000。
 
 ### Step 2：Phase B 快速证伪
 
@@ -332,7 +335,7 @@ offline flow metrics only
 
 | 阶段 | 科学问题 | 成功证据 | 失败后动作 |
 |---|---|---|---|
-| Phase A | JEPA latent change 是否在 state 之外提供动作信息？ | state+change 显著优于 state-only/change-only，并优于 state+raw-pair | 停止 Con1 |
+| Phase A | current context 与 JEPA latent change 是否互补？ | full bottleneck 分别显著优于 change-only 和 current-only | 停止 Con1 |
 | Phase B | 未来后验能否蒸馏为当前先验？ | learned prior 优于 global/task mean，并依赖语言 | 停止 Con1 |
 | Phase C | joint evolution 是否优于普通 condition？ | full CoFlow 优于 matched fixed condition 和 independent flows | 停止 Con1 |
 | Inference | offline 改善能否进入动作生成？ | solver 稳定、20-episode paired smoke 出现正向信号 | 不做大评测 |
@@ -368,7 +371,7 @@ offline flow metrics only
 1. 只使用专家数据，不采集 intervention；
 2. `DeltaY = L2Norm(Y^R) - L2Norm(Y^0)`；
 3. `K=16,d_B=16`，`K=32` 只做容量消融；
-4. `B^R` 只由 `DeltaY` 构造；Phase A inverse decoder 额外读取 `q_t`，但不读取 image 或 language；
+4. `B^R` 由 `(DeltaY,Y^0,q_t)` 构造；Phase A inverse decoder 只读取 `B^R`；
 5. Phase B 才构成 posterior-to-prior distillation；
 6. Phase C 只使用一个 CoFlow block；
 7. 首版冻结完整基础模型和 Action Expert；
