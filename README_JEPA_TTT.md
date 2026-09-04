@@ -1,4 +1,45 @@
-# 当前方法：Control-Aligned JEPA Test-Time Training
+# 当前研究状态：JEPA–Action 接口的核心验证
+
+> **2026-09-04 更新：目前没有一种接口通过完整控制 gate，因此尚未进入 LIBERO-Plus rollout。**
+> `feat/point` 已依次验证 CoFlow、共享 adapter TTT、inverse-TTT 和 transition–action energy；这些实验均
+> 使用作者 π0.5 JEPA-WAM step `59999`、H=10 对齐数据以及 episode-disjoint 划分。当前结论是
+> **JEPA transition 含动作信息，但现有接口不能把该信息稳定转化为更好的 π0.5 动作。**
+
+## 最新核心结果
+
+| 验证 | 主要结果 | 判定 |
+|---|---:|---|
+| transition→action 信息量 | current-only predicted transition 的同任务 4-way action retrieval top-1 `81.88%`；no-change `40.63%` | `R` 确有动作相关信息 |
+| 共享 image-adapter JEPA-TTT | correct update 与 within-task shuffled update 几乎相同；仅 `7/16` 同时优于两个控制项 | 无 target specificity，停止 |
+| JEPA+inverse adapter TTT | correct 仅 `8/24` 同时优于 no-change、shuffled-action、shuffled-transition | 无 target specificity，停止 |
+| transition-energy 局部梯度 | 人工扰动专家动作上 `76.88%` 改善；对真实 π0.5 action 仅 `60.63%` 改善，MSE `0.00473339→0.00473073` | 方向弱，bootstrap 95% CI 跨 0 |
+| transition-energy 4-candidate rerank | 原 energy：MSE `0.004733→0.008319` | 明显失败 |
+| policy hard-negative energy | rerank MSE `0.004733→0.007711` | 失败 |
+| policy listwise-ranking energy | rerank MSE `0.004733→0.006342` | 仍失败 |
+
+因此不能把“retrieval 准确”写成“控制有效”，也不能因为 spatial shuffle 会恶化就运行昂贵 rollout。当前
+最小科学结论是：
+
+```text
+R contains action information
+        ≠
+R provides a usable local control objective for a strong pi0.5 policy.
+```
+
+下一步若继续，不再尝试 `R→Action` 的直接条件、残差、adapter 或无状态 compatibility。唯一仍合理的
+根本修改是显式拆开：
+
+```text
+JEPA-WAM current-only prediction  → desired transition U_des
+current state + candidate action  → predicted consequence U_hat(A)
+action selection/refinement       → match U_hat(A) to U_des under the pi0.5 prior
+executed action + next observation→ update the same consequence model
+```
+
+该方向必须先通过 action-sensitivity gate：改变候选 action 时，`U_hat(A)` 必须产生与真实 transition 一致的
+可区分变化；否则不再扩展结构。
+
+# 历史方法：Control-Aligned JEPA Test-Time Training
 
 > 状态：`feat/point` 当前主线与最小实验合同；代码已实现，核心 gate 尚未通过。
 > 基座：作者发布的 π0.5 JEPA-WAM checkpoint，step `59999`。  
