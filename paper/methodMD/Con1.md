@@ -98,7 +98,43 @@ B_t^R = stopgrad(G_psi(DeltaY_t))
 
 正式接口不再保留 current/state 输入，也不传入零张量。先前的零输入只属于参数量匹配的对照实验。
 
-### 3.3 `B_t^R` 的含义边界
+### 3.3 Stage-1 两折准确性验证
+
+为避免单次 episode 划分高估 `B_t^R` 的动作可辨识性，对每个任务的两个 sampled episodes 做两折交换：
+一条用于训练，另一条用于验证；每折运行两个随机种子。模型、损失和 500-step 训练配置保持不变。
+
+| validation fold | seed | train Huber | heldout Huber ↓ | mean-action Huber ↓ | 相对改善 |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 401 | 0.00075 | 0.06973 | 0.13758 | 49.32% |
+| 0 | 409 | 0.00107 | 0.06953 | 0.13758 | 49.46% |
+| 1 | 401 | 0.00060 | 0.05621 | 0.13465 | 58.25% |
+| 1 | 409 | 0.00110 | 0.05734 | 0.13465 | 57.42% |
+
+四次运行汇总：
+
+```text
+heldout normalized Huber      0.06320 ± 0.00744
+heldout normalized MAE        0.24296 ± 0.01528
+heldout normalized RMSE       0.36460 ± 0.02467
+mean-action Huber baseline    0.13611 ± 0.00169
+relative Huber improvement    53.61% ± 4.89%
+global action correlation     0.7469
+validation-centered R^2       0.5164
+gripper sign accuracy         84.28%
+```
+
+反归一化后的七个动作维度 MAE 均值为：
+
+```text
+[0.19765, 0.15042, 0.17932, 0.02704, 0.04221, 0.04929, 0.44599]
+```
+
+结论边界：`DeltaY_t -> B_t^R` 在未见 episode 上显著优于固定平均动作模板，证明 `B_t^R` 保留了可泛化的
+动作信息；但 heldout Huber 约为训练 Huber 的 72 倍，而且 fold 0/1 的差异远大于同 fold 的 seed 差异。
+因此 Stage 1 可判定为“具有动作可辨识性”，不能判定为“已经能够高精度恢复专家动作”。当前主要限制是
+每个任务只有两个 sampled episodes 带来的跨轨迹覆盖不足，而不是优化不稳定。
+
+### 3.4 `B_t^R` 的含义边界
 
 `B_t^R` 是 **inverse-dynamics-aligned latent transition code**：输入限定它来自 H10 JEPA semantic
 displacement，inverse objective 要求它保留可辨识专家动作的信息，低容量瓶颈抑制静态细节。
