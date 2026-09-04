@@ -217,7 +217,9 @@ def main() -> None:
         nnx_utils.PathRegex("vjepa_alignment_(norm|in|out)/.*"),
     )
     trainable_state, frozen_state = full_state.split(trainable_filter, ...)
-    trainable_paths = ["/".join(str(part) for part in path) for path, _ in trainable_state.flat_state()]
+    trainable_paths = [
+        "/".join(str(part) for part in path) for path in trainable_state.flat_state()
+    ]
     if "vjepa_query_tokens" not in trainable_paths or len(trainable_paths) != 7:
         raise RuntimeError(f"Unexpected trainable parameter set: {trainable_paths}")
 
