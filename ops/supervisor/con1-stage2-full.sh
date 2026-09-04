@@ -14,4 +14,5 @@ exec /workspace/openpi_jepawam/.venv/bin/python scripts/train_con1_con2.py con1-
   --source-params "${source_params}" \
   --exp-name h10_t16_d128_nojl \
   --checkpoint-base-dir /workspace/artifacts/checkpoints \
+  --num-train-steps 20000 \
   --resume
