@@ -24,6 +24,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--predicted", type=Path, required=True)
     parser.add_argument("--nochange", type=Path, required=True)
     parser.add_argument("--energy-params", type=Path, required=True)
+    parser.add_argument(
+        "--proposals",
+        type=Path,
+        help="Optional rerank selections.npz; uses its first frozen-pi0.5 candidate instead of synthetic noise.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--num-heads", type=int, default=4)
@@ -52,10 +57,9 @@ def main() -> None:
     predicted = _pool(np.asarray(np.load(args.predicted, mmap_mode="r")))
     nochange = _pool(np.asarray(np.load(args.nochange, mmap_mode="r")))
     actions = _actions(cache, len(observed))
-    _, validation_indices = inverse_gate._episode_split(
+    _, default_validation_indices = inverse_gate._episode_split(
         samples["episode_indices"], samples["task_indices"]
     )
-    validation = jnp.asarray(validation_indices)
 
     model = transition_energy.TransitionActionEnergy(
         horizon=actions.shape[1],
@@ -67,11 +71,24 @@ def main() -> None:
     template = model.init(jax.random.key(args.seed), observed[:2], actions[:2])["params"]
     params = serialization.from_bytes(template, args.energy_params.read_bytes())
 
-    rng = np.random.default_rng(args.seed)
-    expert = actions[validation]
-    proposal = expert + jnp.asarray(
-        rng.normal(0.0, args.proposal_noise, size=expert.shape), dtype=expert.dtype
-    )
+    if args.proposals is None:
+        validation_indices = default_validation_indices
+        validation = jnp.asarray(validation_indices)
+        rng = np.random.default_rng(args.seed)
+        expert = actions[validation]
+        proposal = expert + jnp.asarray(
+            rng.normal(0.0, args.proposal_noise, size=expert.shape), dtype=expert.dtype
+        )
+        proposal_source = "expert_plus_gaussian_noise"
+    else:
+        proposal_data = np.load(args.proposals, allow_pickle=False)
+        validation_indices = np.asarray(proposal_data["validation_indices"])
+        if not np.array_equal(validation_indices, default_validation_indices):
+            raise ValueError("Proposal validation indices do not match the episode split")
+        validation = jnp.asarray(validation_indices)
+        expert = jnp.asarray(proposal_data["experts"])
+        proposal = jnp.asarray(proposal_data["candidates"][:, 0])
+        proposal_source = "frozen_pi05_first_candidate"
     tasks = np.asarray(samples["task_indices"])[validation_indices]
     shuffled_indices = validation_indices.copy()
     for task in np.unique(tasks):
@@ -93,6 +110,7 @@ def main() -> None:
         "config": {
             "count": int(len(validation_indices)),
             "proposal_noise": args.proposal_noise,
+            "proposal_source": proposal_source,
             "step_sizes": args.step_sizes,
             "seed": args.seed,
         },
