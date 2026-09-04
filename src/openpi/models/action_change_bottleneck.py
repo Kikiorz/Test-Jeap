@@ -58,9 +58,7 @@ class ChangeEncoder(nn.Module):
             raise ValueError("width must be divisible by num_heads")
 
         batch_size = displacement.shape[0]
-        delta_hidden = nn.Dense(self.width, use_bias=False, name="delta_projection")(
-            displacement.astype(jnp.float32)
-        )
+        delta_hidden = nn.Dense(self.width, use_bias=False, name="delta_projection")(displacement.astype(jnp.float32))
         current_hidden = nn.Dense(self.width, use_bias=False, name="current_projection")(
             current_tokens.astype(jnp.float32)
         )
