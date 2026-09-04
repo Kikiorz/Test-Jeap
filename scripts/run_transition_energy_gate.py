@@ -112,23 +112,23 @@ def main() -> None:
         action_to_transition = optax.softmax_cross_entropy_with_integer_labels(logits.T, labels).mean()
         return 0.5 * (transition_to_action + action_to_transition)
 
-    def policy_contrastive_loss(parameters, transition, positive_action, negative_actions):
-        batch, negative_count = negative_actions.shape[:2]
-        transition_embedding, positive_embedding, scale = model.apply(
-            {"params": parameters}, transition, positive_action
-        )
-        repeated_transition = jnp.repeat(transition[:, None], negative_count, axis=1)
-        _, negative_embedding, _ = model.apply(
+    def policy_ranking_loss(parameters, transition, expert_action, action_candidates):
+        batch, candidate_count = action_candidates.shape[:2]
+        repeated_transition = jnp.repeat(transition[:, None], candidate_count, axis=1)
+        transition_embedding, action_embedding, scale = model.apply(
             {"params": parameters},
-            repeated_transition.reshape(batch * negative_count, *transition.shape[1:]),
-            negative_actions.reshape(batch * negative_count, *negative_actions.shape[2:]),
+            repeated_transition.reshape(batch * candidate_count, *transition.shape[1:]),
+            action_candidates.reshape(batch * candidate_count, *action_candidates.shape[2:]),
         )
-        negative_embedding = negative_embedding.reshape(batch, negative_count, -1)
-        positive_logits = scale * jnp.sum(transition_embedding * positive_embedding, axis=-1)
-        negative_logits = scale * jnp.einsum("bd,bkd->bk", transition_embedding, negative_embedding)
-        logits = jnp.concatenate([positive_logits[:, None], negative_logits], axis=1)
+        scores = (
+            scale * jnp.sum(transition_embedding * action_embedding, axis=-1)
+        ).reshape(batch, candidate_count)
+        candidate_mse = jnp.mean(
+            jnp.square(action_candidates - expert_action[:, None]), axis=(2, 3)
+        )
+        labels = jnp.argmin(candidate_mse, axis=1)
         return optax.softmax_cross_entropy_with_integer_labels(
-            logits, jnp.zeros(batch, dtype=jnp.int32)
+            scores, labels
         ).mean()
 
     @jax.jit
@@ -151,10 +151,10 @@ def main() -> None:
             if policy_candidates is None:
                 return expert_loss
             policy_loss = 0.5 * (
-                policy_contrastive_loss(
+                policy_ranking_loss(
                     value, observed_batch, action_batch, policy_negative_batch
                 )
-                + policy_contrastive_loss(
+                + policy_ranking_loss(
                     value, predicted_batch, action_batch, policy_negative_batch
                 )
             )
@@ -233,7 +233,7 @@ def main() -> None:
             "train_count": int(len(train_indices)),
             "validation_count": int(len(validation_indices)),
             "negatives": (
-                "within_task_experts_plus_frozen_pi05_candidates"
+                "within_task_experts_plus_frozen_pi05_candidate_ranking"
                 if policy_candidates is not None
                 else "within_task_experts_only"
             ),
