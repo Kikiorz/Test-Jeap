@@ -32,6 +32,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-params", type=Path, required=True)
     parser.add_argument("--exp-name", required=True)
     parser.add_argument("--checkpoint-base-dir", type=Path, required=True)
+    parser.add_argument(
+        "--num-train-steps",
+        type=int,
+        default=None,
+        help="Optional final global step override (useful for bounded continuation runs).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Optional global batch-size override for a bounded continuation run.",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", action="store_true")
     mode.add_argument("--overwrite", action="store_true")
@@ -59,6 +71,8 @@ def main() -> None:
         resume=args.resume,
         overwrite=args.overwrite,
         wandb_enabled=args.wandb,
+        **({"num_train_steps": args.num_train_steps} if args.num_train_steps is not None else {}),
+        **({"batch_size": args.batch_size} if args.batch_size is not None else {}),
     )
     train_lib.main(config)
 
