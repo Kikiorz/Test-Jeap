@@ -49,6 +49,13 @@ def _actions(cache: np.lib.npyio.NpzFile, count: int) -> jax.Array:
     return jnp.asarray(cache["actions"][[first[index] for index in range(count)], :, :7])
 
 
+def _bootstrap_interval(delta: np.ndarray, seed: int) -> list[float]:
+    rng = np.random.default_rng(seed)
+    indices = rng.integers(0, len(delta), size=(10_000, len(delta)))
+    means = delta[indices].mean(axis=1)
+    return [float(value) for value in np.quantile(means, [0.025, 0.975])]
+
+
 def main() -> None:
     args = parse_args()
     samples = np.load(args.samples, allow_pickle=False)
@@ -123,18 +130,23 @@ def main() -> None:
         "nochange": nochange[validation],
         "within_task_shuffled_predicted": predicted[jnp.asarray(shuffled_indices)],
     }
-    for name, transition in transition_inputs.items():
+    for transition_offset, (name, transition) in enumerate(transition_inputs.items()):
         energy, gradient = energy_gradient(transition, proposal)
         per_step = {}
         for step_size in args.step_sizes:
             corrected = proposal - step_size * gradient
             corrected_per_sample = jnp.mean(jnp.square(corrected - expert), axis=(1, 2))
             delta = corrected_per_sample - base_per_sample
+            delta_array = np.asarray(delta)
             per_step[str(step_size)] = {
                 "mse": float(jnp.mean(corrected_per_sample)),
                 "mean_mse_delta": float(jnp.mean(delta)),
                 "median_mse_delta": float(jnp.median(delta)),
                 "fraction_improved": float(jnp.mean(delta < 0)),
+                "bootstrap_95ci_mean_delta": _bootstrap_interval(
+                    delta_array,
+                    args.seed + transition_offset * len(args.step_sizes) + len(per_step),
+                ),
                 "mean_action_step_rms": float(
                     jnp.mean(jnp.sqrt(jnp.mean(jnp.square(step_size * gradient), axis=(1, 2))))
                 ),
