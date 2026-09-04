@@ -13,12 +13,12 @@ def normalize(value: jax.Array) -> jax.Array:
 
 
 class ActionConditionedConsequence(nn.Module):
-    """Embed a realized transition and predict its embedding from state/action.
+    """Embed a realized semantic change and predict it from state/action.
 
-    Both current state and realized outcome are represented in the same frozen
-    V-JEPA feature space.  A shared transition encoder prevents two arbitrary
-    coordinate systems, while the predictor receives only current-state tokens
-    and an action chunk.
+    A learned query first reads the current state.  That current-anchored query
+    then reads the realized transition, and only its query update is retained as
+    the target.  The predictor receives the current anchor and an action chunk,
+    but never the future target.
     """
 
     horizon: int
@@ -47,25 +47,33 @@ class ActionConditionedConsequence(nn.Module):
 
         batch = current.shape[0]
         projection = nn.Dense(self.width, use_bias=False, name="transition_projection")
-        attention = nn.MultiHeadDotProductAttention(
+        spatial_pool = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             qkv_features=self.width,
             out_features=self.width,
             dropout_rate=0.0,
-            name="transition_pool",
+            name="current_pool",
+        )
+        temporal_readout = nn.MultiHeadDotProductAttention(
+            num_heads=self.num_heads,
+            qkv_features=self.width,
+            out_features=self.width,
+            dropout_rate=0.0,
+            name="temporal_readout",
         )
         position = self.param(
             "transition_position", nn.initializers.normal(0.02), (64, self.width)
         )
         query = self.param("transition_query", nn.initializers.normal(0.02), (1, self.width))
 
-        def pool_transition(value: jax.Array) -> jax.Array:
-            tokens = projection(normalize(value)) + position[None]
-            queries = jnp.broadcast_to(query[None], (batch, 1, self.width))
-            return attention(queries, tokens, deterministic=True)[:, 0]
-
-        current_embedding = pool_transition(current)
-        target_embedding = pool_transition(target)
+        current_tokens = projection(normalize(current)) + position[None]
+        target_tokens = projection(normalize(target)) + position[None]
+        queries = jnp.broadcast_to(query[None], (batch, 1, self.width))
+        current_embedding = spatial_pool(queries, current_tokens, deterministic=True)[:, 0]
+        target_embedding = temporal_readout(
+            current_embedding[:, None], target_tokens, deterministic=True
+        )[:, 0]
+        target_update = target_embedding - current_embedding
 
         action_flat = action.reshape(batch, self.horizon * self.action_dim)
         action_hidden = nn.Dense(4 * self.width, name="action_hidden")(action_flat)
@@ -78,13 +86,13 @@ class ActionConditionedConsequence(nn.Module):
         consequence_embedding = nn.Dense(self.width, name="consequence_output")(
             nn.gelu(consequence_hidden)
         )
-        target_embedding = nn.Dense(self.width, name="target_output")(
-            nn.gelu(nn.LayerNorm(name="target_norm")(target_embedding))
+        target_update = nn.Dense(self.width, name="target_output")(
+            nn.gelu(nn.LayerNorm(name="target_norm")(target_update))
         )
 
         logit_scale = self.param("logit_scale", lambda key: jnp.asarray(jnp.log(10.0)))
         return (
             normalize(consequence_embedding),
-            normalize(target_embedding),
+            normalize(target_update),
             jnp.exp(jnp.clip(logit_scale, jnp.log(1.0), jnp.log(100.0))),
         )
