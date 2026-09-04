@@ -26,6 +26,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-ids", type=int, nargs="+", default=[0, 1, 2, 3])
     parser.add_argument("--init-state-count", type=int, default=4)
     parser.add_argument("--candidates", type=int, default=4)
+    parser.add_argument(
+        "--candidate-mode", choices=("policy_samples", "axis_interventions"), default="policy_samples"
+    )
+    parser.add_argument("--perturbation", type=float, default=0.2)
     parser.add_argument("--horizon", type=int, default=10)
     parser.add_argument("--stabilization-steps", type=int, default=10)
     parser.add_argument("--resolution", type=int, default=256)
@@ -115,13 +119,42 @@ def main() -> None:
                     base, wrist = _images(obs)
                     state = _robot_state(obs)
                     element = _policy_element(obs, str(task.language), args.policy_resolution)
-                    candidates = []
-                    for candidate_index in range(args.candidates):
-                        policy_seed = episode_seed * 100 + candidate_index
-                        action = np.asarray(client.infer(element, seed=policy_seed)["actions"])
-                        if action.ndim != 2 or action.shape[0] < args.horizon or action.shape[1] != 7:
-                            raise ValueError(f"Unexpected policy action shape {action.shape}")
-                        candidates.append(action[: args.horizon].astype(np.float32))
+                    if args.candidate_mode == "policy_samples":
+                        candidates = []
+                        for candidate_index in range(args.candidates):
+                            policy_seed = episode_seed * 100 + candidate_index
+                            action = np.asarray(client.infer(element, seed=policy_seed)["actions"])
+                            if action.ndim != 2 or action.shape[0] < args.horizon or action.shape[1] != 7:
+                                raise ValueError(f"Unexpected policy action shape {action.shape}")
+                            candidates.append(action[: args.horizon].astype(np.float32))
+                    else:
+                        intervention_basis = np.asarray(
+                            [
+                                [0.0, 0.0, 0.0],
+                                [1.0, 0.0, 0.0],
+                                [-1.0, 0.0, 0.0],
+                                [0.0, 1.0, 0.0],
+                                [0.0, -1.0, 0.0],
+                                [0.0, 0.0, 1.0],
+                                [0.0, 0.0, -1.0],
+                            ],
+                            dtype=np.float32,
+                        )
+                        if args.candidates > len(intervention_basis):
+                            raise ValueError("axis_interventions supports at most seven candidates")
+                        base_action = np.asarray(
+                            client.infer(element, seed=episode_seed * 100)["actions"],
+                            dtype=np.float32,
+                        )[: args.horizon]
+                        if base_action.shape != (args.horizon, 7):
+                            raise ValueError(f"Unexpected policy action shape {base_action.shape}")
+                        candidates = []
+                        for offset in intervention_basis[: args.candidates]:
+                            action = base_action.copy()
+                            action[:, :3] = np.clip(
+                                action[:, :3] + args.perturbation * offset[None], -1.0, 1.0
+                            )
+                            candidates.append(action)
 
                     for candidate_index, action_chunk in enumerate(candidates):
                         branch_obs = env.set_init_state(snapshot)
@@ -199,6 +232,8 @@ def main() -> None:
         wrong_future_indices=wrong_future_indices,
         restore_mae=np.asarray(restore_mae, dtype=np.float32),
         future_offset=np.asarray(args.horizon, dtype=np.int32),
+        candidate_mode=np.asarray(args.candidate_mode),
+        perturbation=np.asarray(args.perturbation, dtype=np.float32),
     )
     print(
         json.dumps(
