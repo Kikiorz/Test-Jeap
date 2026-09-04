@@ -98,8 +98,7 @@ run_model() {
 
   for index in 0 1 2 3; do
     suite="${suites[$index]}"
-    # LIBERO sees a single remapped CUDA device in each evaluator process;
-    # MuJoCo EGL must therefore use local device 0, regardless of host GPU id.
+    # robosuite checks EGL against the host-visible CUDA ordinal.
     RUN_ID="${label}_seed${seed}" \
     HOST=127.0.0.1 \
     PORT="$((8100 + index))" \
@@ -110,7 +109,7 @@ run_model() {
     REPLAN_STEPS=10 \
     SAVE_VIDEO=0 \
     EVAL_GPU="${index}" \
-    MUJOCO_EGL_DEVICE_ID=0 \
+    MUJOCO_EGL_DEVICE_ID="${index}" \
     EVAL_PYTHON="${eval_python}" \
     STANDARD_LIBERO_ROOT="${standard_libero_root}" \
     RESULTS_ROOT="${result_root}/${label}" \
