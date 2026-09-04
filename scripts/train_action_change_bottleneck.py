@@ -37,18 +37,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth", type=int, default=2)
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--seed", type=int, default=401)
+    parser.add_argument(
+        "--validation-parity",
+        type=int,
+        choices=(0, 1),
+        default=1,
+        help="For each task's sorted sampled episodes, hold out even (0) or odd (1) episodes.",
+    )
     return parser.parse_args()
 
 
-def _episode_split(episodes: np.ndarray, tasks: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _episode_split(
+    episodes: np.ndarray,
+    tasks: np.ndarray,
+    validation_parity: int,
+) -> tuple[np.ndarray, np.ndarray]:
     train_episodes: set[int] = set()
     validation_episodes: set[int] = set()
     for task in np.unique(tasks):
         task_episodes = np.unique(episodes[tasks == task])
         if len(task_episodes) < 2:
             raise ValueError(f"Task {task} has fewer than two sampled episodes")
-        train_episodes.update(task_episodes[::2].tolist())
-        validation_episodes.update(task_episodes[1::2].tolist())
+        validation_episodes.update(task_episodes[validation_parity::2].tolist())
+        train_episodes.update(task_episodes[1 - validation_parity :: 2].tolist())
     return (
         np.flatnonzero(np.isin(episodes, list(train_episodes))),
         np.flatnonzero(np.isin(episodes, list(validation_episodes))),
@@ -70,6 +81,12 @@ def _quantile_normalize(values: np.ndarray, stats: dict[str, Any]) -> np.ndarray
     if not np.isfinite(normalized).all():
         raise ValueError("Normalized values contain non-finite values")
     return normalized
+
+
+def _quantile_denormalize(values: np.ndarray, stats: dict[str, Any]) -> np.ndarray:
+    q01 = np.asarray(stats["q01"], dtype=np.float32)
+    q99 = np.asarray(stats["q99"], dtype=np.float32)
+    return (values.astype(np.float32) + 1.0) * 0.5 * (q99 - q01) + q01
 
 
 def _huber_per_example(prediction: jax.Array, target: jax.Array, delta: float = 1.0) -> jax.Array:
@@ -97,7 +114,7 @@ def main() -> None:
     actions = _quantile_normalize(np.asarray(samples["action_chunks"]), norm_stats["actions"])
     tasks = np.asarray(samples["task_indices"])
     episodes = np.asarray(samples["episode_indices"])
-    train_indices, validation_indices = _episode_split(episodes, tasks)
+    train_indices, validation_indices = _episode_split(episodes, tasks, args.validation_parity)
 
     model = bottleneck.PhaseAModel(
         num_tokens=args.num_change_tokens,
@@ -132,7 +149,7 @@ def main() -> None:
     def evaluate(parameters, realized_batch, nochange_batch, action_batch):
         displacement = bottleneck.latent_displacement(realized_batch, nochange_batch)
         change, prediction = model.apply({"params": parameters}, displacement)
-        return change, _huber_per_example(prediction, action_batch)
+        return change, prediction, _huber_per_example(prediction, action_batch)
 
     rng = np.random.default_rng(args.seed)
     history: list[dict[str, float | int]] = []
@@ -154,24 +171,38 @@ def main() -> None:
             history.append(record)
             print(json.dumps({"phase": "A", **record}), flush=True)
 
-    def encode(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def encode(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         changes: list[np.ndarray] = []
+        predictions: list[np.ndarray] = []
         losses: list[np.ndarray] = []
         for start in range(0, len(indices), args.batch_size):
             selected = indices[start : start + args.batch_size]
-            change, loss = evaluate(
+            change, prediction, loss = evaluate(
                 params,
                 jnp.asarray(np.asarray(realized[selected], dtype=np.float32)),
                 jnp.asarray(np.asarray(nochange[selected], dtype=np.float32)),
                 jnp.asarray(actions[selected]),
             )
             changes.append(np.asarray(change, dtype=np.float32))
+            predictions.append(np.asarray(prediction, dtype=np.float32))
             losses.append(np.asarray(loss, dtype=np.float32))
-        return np.concatenate(changes), np.concatenate(losses)
+        return np.concatenate(changes), np.concatenate(predictions), np.concatenate(losses)
 
     all_indices = np.arange(len(actions), dtype=np.int32)
-    posterior, _ = encode(all_indices)
-    _, validation_loss = encode(validation_indices)
+    posterior, _, _ = encode(all_indices)
+    _, _, train_loss = encode(train_indices)
+    _, validation_prediction, validation_loss = encode(validation_indices)
+    validation_target = actions[validation_indices]
+    mean_template = actions[train_indices].mean(axis=0, keepdims=True)
+    mean_prediction = np.broadcast_to(mean_template, validation_target.shape)
+    mean_huber = np.asarray(_huber_per_example(jnp.asarray(mean_prediction), jnp.asarray(validation_target)))
+    normalized_error = validation_prediction - validation_target
+    mean_error = mean_prediction - validation_target
+    prediction_physical = _quantile_denormalize(validation_prediction, norm_stats["actions"])
+    target_physical = np.asarray(samples["action_chunks"])[validation_indices].astype(np.float32)
+    physical_mae_by_dim = np.abs(prediction_physical - target_physical).mean(axis=(0, 1))
+    baseline_huber = float(mean_huber.mean())
+    heldout_huber = float(validation_loss.mean())
     summary = {
         "phase": "A",
         "definition": "B_R = G_psi(DeltaY)",
@@ -179,18 +210,38 @@ def main() -> None:
         "train_count": len(train_indices),
         "validation_count": len(validation_indices),
         "validation_episode_count": len(np.unique(episodes[validation_indices])),
+        "validation_parity": args.validation_parity,
         "task_count": len(np.unique(tasks)),
         "steps": args.steps,
         "batch_size": args.batch_size,
         "num_change_tokens": args.num_change_tokens,
         "change_token_dim": args.change_token_dim,
-        "heldout_huber": float(validation_loss.mean()),
+        "train_huber": float(train_loss.mean()),
+        "heldout_huber": heldout_huber,
+        "heldout_normalized_mae": float(np.abs(normalized_error).mean()),
+        "heldout_normalized_rmse": float(np.sqrt(np.square(normalized_error).mean())),
+        "mean_template_huber": baseline_huber,
+        "mean_template_normalized_rmse": float(np.sqrt(np.square(mean_error).mean())),
+        "relative_huber_improvement_percent": 100.0 * (baseline_huber - heldout_huber) / baseline_huber,
+        "physical_mae_by_action_dim": physical_mae_by_dim.tolist(),
         "history": history,
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "phase_a_change_only_params.msgpack").write_bytes(serialization.to_bytes(params))
     np.save(args.output_dir / "posterior_b_r.npy", posterior, allow_pickle=False)
+    np.savez(
+        args.output_dir / "heldout_predictions.npz",
+        validation_indices=validation_indices,
+        episode_indices=episodes[validation_indices],
+        task_indices=tasks[validation_indices],
+        prediction_normalized=validation_prediction,
+        target_normalized=validation_target,
+        prediction_physical=prediction_physical,
+        target_physical=target_physical,
+        per_example_huber=validation_loss,
+        mean_template_huber=mean_huber,
+    )
     with (args.output_dir / "metrics.json").open("w") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
         handle.write("\n")
