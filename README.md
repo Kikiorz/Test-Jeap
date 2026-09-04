@@ -1,5 +1,8 @@
 # openpi
 
+> 本仓库 `feat/point` 分支的 JEPA-WAM × π0.5 研究方案、已完成实验和当前结论见
+> [README_RESEARCH_ZH.md](README_RESEARCH_ZH.md)。
+
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
 
 Currently, this repo contains three types of models:
