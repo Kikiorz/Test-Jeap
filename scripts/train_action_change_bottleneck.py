@@ -108,9 +108,7 @@ def _bootstrap_episode_improvement(
     seed: int,
 ) -> dict[str, float | int]:
     by_episode: dict[int, list[float]] = defaultdict(list)
-    for index, improvement in zip(
-        validation_indices.tolist(), per_example_improvement.tolist(), strict=True
-    ):
+    for index, improvement in zip(validation_indices.tolist(), per_example_improvement.tolist(), strict=True):
         by_episode[int(episodes[index])].append(float(improvement))
     episode_means = np.asarray([np.mean(values) for values in by_episode.values()], dtype=np.float64)
     rng = np.random.default_rng(seed)
@@ -299,9 +297,7 @@ def main() -> None:
                 args.bootstrap_replicates,
                 args.seed + 100,
             ),
-            "positive_task_fraction": float(
-                np.mean(np.asarray(list(task_improvements.values())) > 0.0)
-            ),
+            "positive_task_fraction": float(np.mean(np.asarray(list(task_improvements.values())) > 0.0)),
             "task_improvements": task_improvements,
         }
 

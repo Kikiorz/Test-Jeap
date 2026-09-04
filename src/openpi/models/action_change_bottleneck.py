@@ -49,9 +49,7 @@ class ChangeEncoder(nn.Module):
             raise ValueError("width must be divisible by num_heads")
 
         batch_size = displacement.shape[0]
-        dense_tokens = nn.Dense(self.width, use_bias=False, name="input_projection")(
-            displacement.astype(jnp.float32)
-        )
+        dense_tokens = nn.Dense(self.width, use_bias=False, name="input_projection")(displacement.astype(jnp.float32))
         queries = self.param(
             "change_queries",
             nn.initializers.normal(0.02),
@@ -71,9 +69,7 @@ class ChangeEncoder(nn.Module):
                 name=f"cross_attention_{layer}",
             )(query_input, dense_input, deterministic=True)
             queries = queries + message
-            queries = queries + _SwiGLU(self.width, name=f"ffn_{layer}")(
-                nn.RMSNorm(name=f"ffn_norm_{layer}")(queries)
-            )
+            queries = queries + _SwiGLU(self.width, name=f"ffn_{layer}")(nn.RMSNorm(name=f"ffn_norm_{layer}")(queries))
 
         return nn.Dense(self.token_dim, name="change_output")(queries)
 
@@ -90,17 +86,13 @@ class InverseActionDecoder(nn.Module):
         if change_tokens.ndim != 3:
             raise ValueError(f"Expected [batch, tokens, channels], got {change_tokens.shape}")
         if state.ndim != 2 or state.shape[0] != change_tokens.shape[0]:
-            raise ValueError(
-                f"Expected state [batch, channels] aligned with change tokens, got {state.shape}"
-            )
+            raise ValueError(f"Expected state [batch, channels] aligned with change tokens, got {state.shape}")
 
         change_hidden = change_tokens.reshape(change_tokens.shape[0], -1)
         change_hidden = nn.LayerNorm(name="change_norm")(change_hidden)
         change_hidden = nn.silu(nn.Dense(self.width, name="change_projection")(change_hidden))
 
-        state_hidden = nn.silu(
-            nn.Dense(self.width, name="state_projection")(state.astype(jnp.float32))
-        )
+        state_hidden = nn.silu(nn.Dense(self.width, name="state_projection")(state.astype(jnp.float32)))
 
         hidden = jnp.concatenate([change_hidden, state_hidden], axis=-1)
         hidden = nn.silu(nn.Dense(self.width, name="fusion")(hidden))
