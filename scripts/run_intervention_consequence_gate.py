@@ -29,6 +29,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--seed", type=int, default=223)
+    parser.add_argument(
+        "--load-params",
+        type=Path,
+        help="Evaluate an existing consequence model without retraining it.",
+    )
     return parser.parse_args()
 
 
@@ -91,8 +96,8 @@ def main() -> None:
         num_heads=args.num_heads,
     )
     params = model.init(jax.random.key(args.seed), current[:2], actions[:2], realized[:2])["params"]
-    optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(args.learning_rate, 1e-4))
-    optimizer_state = optimizer.init(params)
+    if args.load_params is not None:
+        params = serialization.from_bytes(params, args.load_params.read_bytes())
 
     def consequence_loss(parameters, current_batch, action_batch, realized_batch):
         consequence, target, scale = model.apply(
@@ -112,19 +117,22 @@ def main() -> None:
         updates, state = optimizer.update(gradients, state, parameters)
         return optax.apply_updates(parameters, updates), state, loss
 
-    rng = np.random.default_rng(args.seed)
     history = []
-    for step in range(args.steps):
-        state = int(train_states[step % len(train_states)])
-        indices = groups[state].copy()
-        rng.shuffle(indices)
-        params, optimizer_state, loss = train_step(
-            params, optimizer_state, current[indices], actions[indices], realized[indices]
-        )
-        if step == 0 or (step + 1) % max(args.steps // 10, 1) == 0:
-            item = {"step": step + 1, "loss": float(loss)}
-            history.append(item)
-            print(json.dumps(item), flush=True)
+    if args.load_params is None:
+        optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(args.learning_rate, 1e-4))
+        optimizer_state = optimizer.init(params)
+        rng = np.random.default_rng(args.seed)
+        for step in range(args.steps):
+            state = int(train_states[step % len(train_states)])
+            indices = groups[state].copy()
+            rng.shuffle(indices)
+            params, optimizer_state, loss = train_step(
+                params, optimizer_state, current[indices], actions[indices], realized[indices]
+            )
+            if step == 0 or (step + 1) % max(args.steps // 10, 1) == 0:
+                item = {"step": step + 1, "loss": float(loss)}
+                history.append(item)
+                print(json.dumps(item), flush=True)
 
     @jax.jit
     def embeddings(current_batch, action_batch, target_batch):
@@ -194,6 +202,7 @@ def main() -> None:
             "train_states": train_states.tolist(),
             "validation_states": validation_states.tolist(),
             "candidate_count": candidate_count,
+            "loaded_params": str(args.load_params) if args.load_params is not None else None,
         },
         "history": history,
         "realized_action_sensitivity": {
