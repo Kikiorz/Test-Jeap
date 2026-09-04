@@ -14,6 +14,11 @@ con1_checkpoint=/workspace/artifacts/checkpoints/pi05_libero_vjepa_con1/h10_t16_
 result_root=/workspace/artifacts/eval/con1_first_1k_paired20
 seed=431
 
+# The Python environment is shared with the upstream JEPA-WAM checkout.  Put
+# this checkout first so policy serving resolves the Con1/Con2 implementation
+# and training configs from the checkpoint-producing source tree.
+export PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 test -x "${policy_python}"
 test -x "${eval_python}"
 test -d "${standard_libero_root}/libero/libero"
@@ -93,6 +98,8 @@ run_model() {
 
   for index in 0 1 2 3; do
     suite="${suites[$index]}"
+    # LIBERO sees a single remapped CUDA device in each evaluator process;
+    # MuJoCo EGL must therefore use local device 0, regardless of host GPU id.
     RUN_ID="${label}_seed${seed}" \
     HOST=127.0.0.1 \
     PORT="$((8100 + index))" \
@@ -103,6 +110,7 @@ run_model() {
     REPLAN_STEPS=10 \
     SAVE_VIDEO=0 \
     EVAL_GPU="${index}" \
+    MUJOCO_EGL_DEVICE_ID=0 \
     EVAL_PYTHON="${eval_python}" \
     STANDARD_LIBERO_ROOT="${standard_libero_root}" \
     RESULTS_ROOT="${result_root}/${label}" \
