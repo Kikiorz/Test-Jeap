@@ -228,6 +228,10 @@ def main() -> None:
         prompts=np.asarray(prompts),
         task_indices=task_indices_array,
         episode_indices=episode_indices_array,
+        # Keep the archive compatible with the JEPA audit/reporting pipeline.
+        # Intervention branches do not have dataset frame indices, so the
+        # within-state candidate index is the only meaningful local index.
+        frame_indices=candidate_indices_array,
         candidate_indices=candidate_indices_array,
         wrong_future_indices=wrong_future_indices,
         restore_mae=np.asarray(restore_mae, dtype=np.float32),
