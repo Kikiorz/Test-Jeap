@@ -72,6 +72,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Reuse an already generated frozen predictor output instead of running Pi0.5 again.",
     )
+    predict.add_argument(
+        "--alignment-head",
+        type=Path,
+        help="Optional horizon-adapted JEPA alignment-head parameters (.npz).",
+    )
     predict.add_argument("--bootstrap-replicates", type=int, default=5000)
     predict.add_argument("--seed", type=int, default=17)
 
@@ -477,6 +482,27 @@ def _predict_jepa_latents(policy: Any, samples: Any, batch_size: int) -> np.ndar
     return np.concatenate(predictions, axis=0)
 
 
+def _load_alignment_head(model: Any, path: Path) -> None:
+    """Load the six alignment-head arrays produced by fit_horizon_alignment_head.py."""
+    import jax.numpy as jnp
+
+    values = np.load(path, allow_pickle=False)
+    assignments = (
+        (model.vjepa_alignment_norm.scale, values["norm_scale"]),
+        (model.vjepa_alignment_norm.bias, values["norm_bias"]),
+        (model.vjepa_alignment_in.kernel, values["in_kernel"]),
+        (model.vjepa_alignment_in.bias, values["in_bias"]),
+        (model.vjepa_alignment_out.kernel, values["out_kernel"]),
+        (model.vjepa_alignment_out.bias, values["out_bias"]),
+    )
+    for variable, value in assignments:
+        if tuple(variable.value.shape) != tuple(value.shape):
+            raise ValueError(
+                f"Alignment-head shape mismatch: model={variable.value.shape}, file={value.shape}"
+            )
+        variable.value = jnp.asarray(value, dtype=variable.value.dtype)
+
+
 def _change_map(first: np.ndarray, second: np.ndarray) -> np.ndarray:
     first = _unit_patch(first)
     second = _unit_patch(second)
@@ -540,6 +566,8 @@ def predict_and_score(args: argparse.Namespace) -> None:
         prediction = np.load(args.prediction_file, allow_pickle=False)
     else:
         policy = policy_config.create_trained_policy(train_config, args.policy_checkpoint)
+        if args.alignment_head is not None:
+            _load_alignment_head(policy._model, args.alignment_head)
         prediction = _predict_jepa_latents(policy, samples, args.batch_size)
     np.save(args.output_dir / "predicted_targets.npy", prediction)
 
@@ -580,6 +608,9 @@ def predict_and_score(args: argparse.Namespace) -> None:
             "model": "openpi_jepawam Pi0.5",
             "config": args.config,
             "checkpoint": str(args.policy_checkpoint.resolve()),
+            "alignment_head": (
+                str(args.alignment_head.resolve()) if args.alignment_head is not None else None
+            ),
             "frozen": True,
             "sample_count": int(len(prediction)),
             "future_offset": int(samples["future_offset"]),
