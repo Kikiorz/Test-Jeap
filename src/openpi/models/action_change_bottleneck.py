@@ -33,7 +33,7 @@ class _SwiGLU(nn.Module):
 
 
 class ChangeEncoder(nn.Module):
-    """Read JEPA displacement and optional current context into compact tokens."""
+    """Compress a JEPA latent displacement into action-identifiable tokens."""
 
     num_tokens: int = 16
     token_dim: int = 16
@@ -42,28 +42,14 @@ class ChangeEncoder(nn.Module):
     num_heads: int = 4
 
     @nn.compact
-    def __call__(
-        self,
-        displacement: jax.Array,
-        current_tokens: jax.Array,
-        state: jax.Array,
-    ) -> jax.Array:
+    def __call__(self, displacement: jax.Array) -> jax.Array:
         if displacement.ndim != 3:
             raise ValueError(f"Expected [batch, patches, channels], got {displacement.shape}")
-        if current_tokens.shape != displacement.shape:
-            raise ValueError(f"Current tokens must match displacement: {current_tokens.shape} != {displacement.shape}")
-        if state.ndim != 2 or state.shape[0] != displacement.shape[0]:
-            raise ValueError(f"Expected state [batch, channels] aligned with displacement, got {state.shape}")
         if self.width % self.num_heads:
             raise ValueError("width must be divisible by num_heads")
 
         batch_size = displacement.shape[0]
-        delta_hidden = nn.Dense(self.width, use_bias=False, name="delta_projection")(displacement.astype(jnp.float32))
-        current_hidden = nn.Dense(self.width, use_bias=False, name="current_projection")(
-            current_tokens.astype(jnp.float32)
-        )
-        state_hidden = nn.Dense(self.width, use_bias=False, name="state_projection")(state.astype(jnp.float32))
-        dense_tokens = delta_hidden + current_hidden + state_hidden[:, None, :]
+        dense_tokens = nn.Dense(self.width, use_bias=False, name="delta_projection")(displacement.astype(jnp.float32))
         queries = self.param(
             "change_queries",
             nn.initializers.normal(0.02),
@@ -118,12 +104,7 @@ class PhaseAModel(nn.Module):
     action_dim: int = 7
 
     @nn.compact
-    def __call__(
-        self,
-        displacement: jax.Array,
-        current_tokens: jax.Array,
-        state: jax.Array,
-    ) -> tuple[jax.Array, jax.Array]:
+    def __call__(self, displacement: jax.Array) -> tuple[jax.Array, jax.Array]:
         change = ChangeEncoder(
             num_tokens=self.num_tokens,
             token_dim=self.token_dim,
@@ -131,7 +112,7 @@ class PhaseAModel(nn.Module):
             depth=self.depth,
             num_heads=self.num_heads,
             name="change_encoder",
-        )(displacement, current_tokens, state)
+        )(displacement)
         actions = InverseActionDecoder(
             horizon=self.horizon,
             action_dim=self.action_dim,
