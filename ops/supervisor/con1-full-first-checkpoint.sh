@@ -32,6 +32,9 @@ with open(sys.argv[1]) as handle:
     for line in handle:
         if match := pattern.search(line):
             records.append({key: float(match[key]) for key in ("step", "change", "action", "grad")})
+run_starts = [index for index, record in enumerate(records) if record["step"] == 0]
+if run_starts:
+    records = records[run_starts[-1] :]
 if not records or records[0]["step"] != 0 or records[-1]["step"] < 1000:
     raise SystemExit("Full-phase log does not contain step 0 through step 1000")
 if not all(math.isfinite(value) for record in records for value in record.values()):
