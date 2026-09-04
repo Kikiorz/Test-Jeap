@@ -23,7 +23,6 @@ import optax
 
 from openpi.models import action_change_bottleneck as bottleneck
 
-
 RepresentationMode = Literal["delta", "raw_pair", "current_only"]
 
 
@@ -121,7 +120,7 @@ def _bootstrap_episode_gap(
         "mean": float(episode_means.mean()),
         "ci95_low": float(np.percentile(draws, 2.5)),
         "ci95_high": float(np.percentile(draws, 97.5)),
-        "episode_count": int(len(episode_means)),
+        "episode_count": len(episode_means),
     }
 
 
@@ -316,10 +315,10 @@ def main() -> None:
     }
     summary = {
         "phase": "A",
-        "sample_count": int(len(actions)),
-        "train_count": int(len(train_indices)),
-        "validation_count": int(len(validation_indices)),
-        "task_count": int(len(np.unique(tasks))),
+        "sample_count": len(actions),
+        "train_count": len(train_indices),
+        "validation_count": len(validation_indices),
+        "task_count": len(np.unique(tasks)),
         "steps": args.steps,
         "batch_size": args.batch_size,
         "num_change_tokens": args.num_change_tokens,
