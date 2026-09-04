@@ -43,6 +43,20 @@ class Pi0Config(_model.BaseModelConfig):
     vjepa_action_attends_queries: bool = False
     vjepa_disable_geometric_augmentation: bool = True
 
+    # Con1: co-generate action and a frozen Stage-1 change endpoint. Disabled by
+    # default so all upstream Pi0/Pi0.5 parameter trees remain unchanged.
+    use_action_change_mmdit: bool = False
+    change_num_tokens: int = 16
+    change_token_dim: int = 128
+    change_joint_start_layer: int = 12
+    change_loss_weight: float = 0.3
+    change_train_action_late: bool = True
+    # Con2 adds a zero-function, strictly directional Change->Action adapter
+    # only after the complete Con1 model has been trained and frozen.
+    use_achieved_change_adapter: bool = False
+    achieved_change_adapter_rank: int = 4
+    achieved_change_inverse_probability: float = 0.3
+
     # Low-rank residual shared by the JEPA future-query and action paths.
     # The first control-aligned TTT experiment updates only this adapter.
     use_jepa_ttt_adapter: bool = False
@@ -84,6 +98,23 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("V-JEPA target grid size and dimension must be positive")
             if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
                 raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
+        if self.use_action_change_mmdit:
+            if not self.use_vjepa_aux or not self.pi05:
+                raise ValueError("Action–Change MMDiT requires the Pi0.5 JEPA-WAM future-query branch")
+            if self.change_num_tokens != 16:
+                raise ValueError("The first Con1 implementation requires a 4x4 (16-token) change grid")
+            if self.change_token_dim < 1 or self.change_loss_weight < 0:
+                raise ValueError("Change token dimension must be positive and loss weight non-negative")
+            action_depth = _gemma.get_config(self.action_expert_variant).depth
+            if not 0 < self.change_joint_start_layer < action_depth:
+                raise ValueError("change_joint_start_layer must split the Action Expert depth")
+        if self.use_achieved_change_adapter:
+            if not self.use_action_change_mmdit:
+                raise ValueError("Achieved-Change adaptation requires Action–Change MMDiT")
+            if self.achieved_change_adapter_rank < 1:
+                raise ValueError("Achieved-Change adapter rank must be positive")
+            if not 0.0 < self.achieved_change_inverse_probability < 1.0:
+                raise ValueError("Achieved-Change inverse probability must lie strictly between zero and one")
         if self.use_point_flow:
             if not self.use_vjepa_aux:
                 raise ValueError("Point-flow prediction requires the JEPA-WAM future-query branch")
@@ -142,7 +173,14 @@ class Pi0Config(_model.BaseModelConfig):
                     jax.ShapeDtypeStruct(
                         [batch_size, self.vjepa_target_grid_size**2, self.vjepa_target_dim], jnp.float16
                     )
-                    if self.use_vjepa_aux
+                    if self.use_vjepa_aux and not self.use_action_change_mmdit
+                    else None
+                ),
+                change_target=(
+                    jax.ShapeDtypeStruct(
+                        [batch_size, self.change_num_tokens, self.change_token_dim], jnp.float32
+                    )
+                    if self.use_action_change_mmdit
                     else None
                 ),
                 point_flow_queries=(
@@ -171,6 +209,24 @@ class Pi0Config(_model.BaseModelConfig):
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Returns the freeze filter based on the model config."""
+        if self.use_achieved_change_adapter:
+            trainable = nnx_utils.PathRegex(".*change_to_action_(k|v)_(down|up).*")
+            return nnx.Not(trainable)
+        if self.use_action_change_mmdit:
+            trainable_parts = [
+                "future_context_proj",
+                "change_in_proj",
+                "change_out_proj",
+                "change_spatial_embedding",
+                "llm.*_2",
+            ]
+            if self.change_train_action_late:
+                # The scanned layer arrays contain all 18 blocks. train.py
+                # masks parameter gradients on rows 0:change_joint_start_layer;
+                # do not include the final norm or other Action parameters.
+                trainable_parts.append("llm/layers/.*_1")
+            trainable = nnx_utils.PathRegex(".*(" + "|".join(trainable_parts) + ").*")
+            return nnx.Not(trainable)
         filters = []
         has_lora = False
         gemma_params_filter = nnx_utils.PathRegex(".*llm.*")

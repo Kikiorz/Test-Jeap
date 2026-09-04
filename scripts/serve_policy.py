@@ -6,6 +6,7 @@ import socket
 import tyro
 
 from openpi.policies import policy as _policy
+from openpi.policies import achieved_change_adaptation
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
@@ -54,6 +55,13 @@ class Args:
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
+    # Optional Con2 episode-local achieved-Change adaptation.
+    con2_stage1_dir: str | None = None
+    con2_vjepa_hf_port: str | None = None
+    con2_learning_rate: float = 1e-5
+    con2_proximal_weight: float = 1e-4
+    con2_noise_samples: int = 4
+
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
@@ -89,9 +97,21 @@ def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
     match args.policy:
         case Checkpoint():
-            return _policy_config.create_trained_policy(
+            policy = _policy_config.create_trained_policy(
                 _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
             )
+            if (args.con2_stage1_dir is None) != (args.con2_vjepa_hf_port is None):
+                raise ValueError("Con2 requires both --con2-stage1-dir and --con2-vjepa-hf-port")
+            if args.con2_stage1_dir is not None:
+                return achieved_change_adaptation.AchievedChangeAdaptivePolicy(
+                    policy,
+                    hf_port=args.con2_vjepa_hf_port,
+                    stage1_dir=args.con2_stage1_dir,
+                    learning_rate=args.con2_learning_rate,
+                    proximal_weight=args.con2_proximal_weight,
+                    num_noise_samples=args.con2_noise_samples,
+                )
+            return policy
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 

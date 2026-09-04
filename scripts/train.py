@@ -143,6 +143,22 @@ def train_step(
     model = nnx.merge(state.model_def, state.params)
     model.train()
 
+    def mask_early_action_layers(tree):
+        """Zero slices 0:start in scanned Action arrays, preserving frozen blocks."""
+        start_layer = config.model.change_joint_start_layer
+
+        def mask(variable):
+            value = variable.value
+            if value.ndim < 1 or value.shape[0] <= start_layer:
+                raise ValueError(f"Unexpected scanned Action value shape: {value.shape}")
+            return variable.replace(value.at[:start_layer].set(0))
+
+        return nnx_utils.state_map(
+            tree,
+            nnx_utils.PathRegex(".*llm/layers/.*_1.*"),
+            mask,
+        )
+
     @at.typecheck
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
@@ -197,12 +213,58 @@ def train_step(
             )
         return total_loss, loss_info
 
+    def action_change_loss_fn(
+        model: _model.BaseModel,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+    ):
+        action_loss, change_loss = model.compute_action_change_loss_components(
+            rng, observation, actions, train=True
+        )
+        action_loss = jnp.mean(action_loss)
+        change_loss = jnp.mean(change_loss)
+        weighted_change_loss = config.model.change_loss_weight * change_loss
+        return action_loss + weighted_change_loss, {
+            "flow_loss": action_loss,
+            "change_flow_loss": change_loss,
+            "change_loss_weight": config.model.change_loss_weight,
+            "weighted_change_flow_loss": weighted_change_loss,
+        }
+
+    def achieved_change_adapter_loss_fn(
+        model: _model.BaseModel,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+    ):
+        action_loss, change_loss, inverse_mode = model.compute_achieved_change_adapter_loss_components(
+            rng, observation, actions, train=True
+        )
+        action_loss = jnp.mean(action_loss)
+        change_loss = jnp.mean(change_loss)
+        weighted_change_loss = config.model.change_loss_weight * change_loss
+        return action_loss + weighted_change_loss, {
+            "flow_loss": action_loss,
+            "change_flow_loss": change_loss,
+            "weighted_change_flow_loss": weighted_change_loss,
+            "con2_inverse_mode": inverse_mode,
+        }
+
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    if getattr(config.model, "use_vjepa_aux", False):
+    if getattr(config.model, "use_achieved_change_adapter", False):
+        (loss, loss_info), grads = nnx.value_and_grad(
+            achieved_change_adapter_loss_fn, argnums=diff_state, has_aux=True
+        )(model, train_rng, observation, actions)
+    elif getattr(config.model, "use_action_change_mmdit", False):
+        (loss, loss_info), grads = nnx.value_and_grad(action_change_loss_fn, argnums=diff_state, has_aux=True)(
+            model, train_rng, observation, actions
+        )
+    elif getattr(config.model, "use_vjepa_aux", False):
         (loss, loss_info), grads = nnx.value_and_grad(vjepa_loss_fn, argnums=diff_state, has_aux=True)(
             model, train_rng, observation, actions
         )
@@ -210,8 +272,28 @@ def train_step(
         loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
         loss_info = {}
 
+    if (
+        getattr(config.model, "use_action_change_mmdit", False)
+        and getattr(config.model, "change_train_action_late", False)
+        and not getattr(config.model, "use_achieved_change_adapter", False)
+    ):
+        # Gemma stores the 18 Transformer blocks in scanned arrays. Preserve
+        # differentiability through the frozen early Action computation so
+        # action loss can train Change, but prevent optimizer updates to the
+        # first 12 Action parameter slices.
+        grads = mask_early_action_layers(grads)
+
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
+    if (
+        getattr(config.model, "use_action_change_mmdit", False)
+        and getattr(config.model, "change_train_action_late", False)
+        and not getattr(config.model, "use_achieved_change_adapter", False)
+    ):
+        # AdamW adds decoupled weight decay after gradient masking.  Mask the
+        # final update too, otherwise the nominally frozen first 12 blocks
+        # would still drift at every optimizer step.
+        updates = mask_early_action_layers(updates)
     new_params = optax.apply_updates(params, updates)
 
     # Update the model in place and return the new full state.

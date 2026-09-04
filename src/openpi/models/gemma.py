@@ -40,6 +40,13 @@ import openpi.training.sharding as sharding
 
 PALIGEMMA_VOCAB_SIZE = 257_152
 
+# Keep parameter initializers as stable module-level objects.  NNX compares
+# the bridged Linen GraphDef created during eval_shape with the concrete model
+# GraphDef; recreating initializer closures inside the compact call can make
+# otherwise identical Con2 models differ by function identity.
+_DIRECTIONAL_ADAPTER_DOWN_INIT = nn.initializers.normal(stddev=0.01)
+_DIRECTIONAL_ADAPTER_UP_INIT = nn.initializers.zeros
+
 
 @dataclasses.dataclass
 class Config:
@@ -50,6 +57,9 @@ class Config:
     num_kv_heads: int
     head_dim: int
     lora_configs: dict[str, lora.LoRAConfig] = dataclasses.field(default_factory=dict)
+    # Con2 only: a block-specific B->A adapter. It is not a public K/V LoRA:
+    # its residual is applied exclusively to Action-query/Change-key rows.
+    directional_adapter_rank: int = 0
 
 
 Variant = Literal["dummy", "gemma_300m", "gemma_300m_lora", "gemma_2b", "gemma_2b_lora"]
@@ -170,9 +180,15 @@ class Attention(nn.Module):
         dtype = next(x.dtype for x in xs if x is not None)  # original dtype, could be half-precision
 
         qkvs = []
+        token_slices: dict[int, tuple[int, int]] = {}
+        token_cursor = 0
+        directional_k = None
+        directional_v = None
         for i, (x, config) in enumerate(zip(xs, self.configs, strict=True)):
             if x is None:
                 continue
+            token_slices[i] = (token_cursor, token_cursor + x.shape[1])
+            token_cursor += x.shape[1]
             if config.num_kv_heads == config.num_heads:
                 qkv_einsum = lora.Einsum(
                     shape=(3, config.num_heads, config.width, config.head_dim),
@@ -198,12 +214,48 @@ class Attention(nn.Module):
                 k, v = kv_einsum("BSD,2KDH->2BSKH", x)
                 qkvs.append((q, k, v))
 
+            if i == 2 and config.directional_adapter_rank:
+                rank = config.directional_adapter_rank
+                k_down = self.param(
+                    "change_to_action_k_down", _DIRECTIONAL_ADAPTER_DOWN_INIT, (config.width, rank)
+                )
+                k_up = self.param(
+                    "change_to_action_k_up",
+                    _DIRECTIONAL_ADAPTER_UP_INIT,
+                    (rank, config.num_kv_heads, config.head_dim),
+                )
+                v_down = self.param(
+                    "change_to_action_v_down", _DIRECTIONAL_ADAPTER_DOWN_INIT, (config.width, rank)
+                )
+                v_up = self.param(
+                    "change_to_action_v_up",
+                    _DIRECTIONAL_ADAPTER_UP_INIT,
+                    (rank, config.num_kv_heads, config.head_dim),
+                )
+                directional_k = jnp.einsum(
+                    "BSR,RKH->BSKH", jnp.einsum("BSD,DR->BSR", x, k_down.astype(x.dtype)), k_up.astype(x.dtype)
+                )
+                directional_v = jnp.einsum(
+                    "BSR,RKH->BSKH", jnp.einsum("BSD,DR->BSR", x, v_down.astype(x.dtype)), v_up.astype(x.dtype)
+                )
+
         q, k, v = (jnp.concatenate(y, axis=1) for y in zip(*qkvs, strict=True))
 
         q = _apply_rope(q, positions=positions)
         q *= self.configs[0].head_dim ** -0.5
 
         k = _apply_rope(k, positions=positions)
+
+        directional_k_full = None
+        directional_v_full = None
+        action_query_slice = token_slices.get(1)
+        change_slice = token_slices.get(2)
+        if directional_k is not None and directional_v is not None:
+            if action_query_slice is None or change_slice is None:
+                raise ValueError("Directional Change->Action adapter requires both Action and Change tokens")
+            directional_k_full = jnp.zeros_like(k).at[:, change_slice[0] : change_slice[1]].set(directional_k)
+            directional_v_full = jnp.zeros_like(v).at[:, change_slice[0] : change_slice[1]].set(directional_v)
+            directional_k_full = _apply_rope(directional_k_full, positions=positions)
 
         # should still be half-precision here (if input was half-precision)
         assert q.dtype == k.dtype == v.dtype == dtype
@@ -212,9 +264,22 @@ class Attention(nn.Module):
             cache_k, cache_v = kv_cache
             k = jnp.concatenate([cache_k, k], axis=1)
             v = jnp.concatenate([cache_v, v], axis=1)
+            if directional_k_full is not None and directional_v_full is not None:
+                directional_k_full = jnp.concatenate([jnp.zeros_like(cache_k), directional_k_full], axis=1)
+                directional_v_full = jnp.concatenate([jnp.zeros_like(cache_v), directional_v_full], axis=1)
 
         q = einops.rearrange(q, "B T (K G) H -> B T K G H", K=self.configs[0].num_kv_heads)
         logits = jnp.einsum("BTKGH,BSKH->BKGTS", q, k, preferred_element_type=jnp.float32)
+        action_query_mask = None
+        if directional_k_full is not None:
+            assert action_query_slice is not None
+            directional_logits = jnp.einsum(
+                "BTKGH,BSKH->BKGTS", q, directional_k_full, preferred_element_type=jnp.float32
+            )
+            action_query_mask = jnp.zeros((q.shape[1],), dtype=jnp.bool_).at[
+                action_query_slice[0] : action_query_slice[1]
+            ].set(True)
+            logits = logits + jnp.where(action_query_mask[None, None, None, :, None], directional_logits, 0.0)
 
         if attn_mask.shape != (q.shape[0], 1, q.shape[1], k.shape[1]):
             raise ValueError(
@@ -228,6 +293,12 @@ class Attention(nn.Module):
         probs = jax.nn.softmax(masked_logits, axis=-1).astype(dtype)
 
         encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs, v)
+        if directional_v_full is not None:
+            assert action_query_mask is not None
+            directional_encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs, directional_v_full)
+            encoded = encoded + jnp.where(
+                action_query_mask[None, :, None, None, None], directional_encoded, 0.0
+            )
         encoded = einops.rearrange(encoded, "B T K G H -> B T (K G) H")
 
         out = []
@@ -290,8 +361,24 @@ class Block(nn.Module):
     dropout_bdims: tuple[int, ...] = ()
 
     @nn.compact
-    def __call__(self, xs, kv_cache, positions, attn_mask, adarms_cond, deterministic=True):  # noqa: FBT002
+    def __call__(
+        self,
+        xs,
+        kv_cache,
+        positions,
+        attn_mask,
+        adarms_cond,
+        injections,
+        active_experts,
+        deterministic=True,  # noqa: FBT002
+    ):
         xs = sharding.activation_sharding_constraint(xs)
+        xs = [
+            None
+            if x is None
+            else jnp.where(active, x + injection.astype(x.dtype), jnp.zeros_like(x))
+            for x, injection, active in zip(xs, injections, active_experts, strict=True)
+        ]
         drop = nn.Dropout(self.dropout, self.dropout_bdims) if self.dropout else lambda x, _: x
 
         attn = Attention(configs=self.configs, name="attn")
@@ -328,6 +415,12 @@ class Block(nn.Module):
         out = sharding.activation_sharding_constraint(out)
         out = jax.tree.map(lambda x: drop(x, deterministic), out)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, out, gates, strict=True)]
+        xs = [
+            None
+            if x is None
+            else jnp.where(active, x, jnp.zeros_like(x))
+            for x, active in zip(xs, active_experts, strict=True)
+        ]
         xs = sharding.activation_sharding_constraint(xs)
 
         return xs, kv_cache
@@ -359,7 +452,7 @@ class Module(nn.Module):
         block_cls = nn.remat(
             Block,
             prevent_cse=False,
-            static_argnums=(5,),  # 0=self, 6=deterministic
+            static_argnums=(7,),  # deterministic
             policy=jax.checkpoint_policies.nothing_saveable,
         )
         self.layers = nn.scan(
@@ -369,10 +462,12 @@ class Module(nn.Module):
             in_axes=(
                 0,
                 nn.broadcast,
+                0,
                 nn.broadcast,
+                0,
+                0,
                 nn.broadcast,
-                nn.broadcast,
-            ),  # 0=kv_cache, 1=positions, 2=mask, 3=adarms_cond, 4=deterministic
+            ),
             length=self.configs[0].depth,
         )(
             configs=self.configs,
@@ -395,14 +490,40 @@ class Module(nn.Module):
         adarms_cond: Sequence[at.Float[at.Array, "b _d"] | None] | None = None,
         *,
         kv_cache: KVCache | None = None,
+        layer_masks: at.Bool[at.Array, "l b t s"] | None = None,
+        injections: Sequence[at.Float[at.Array, "l b _t _d"] | None] | None = None,
+        active_experts: at.Bool[at.Array, "l e"] | None = None,
         deterministic: bool = True,
     ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
         embedded = jax.tree.map(lambda e: e.astype(self.embed_dtype), embedded)
         mask = jnp.asarray(mask)[:, None, :, :]
+        if layer_masks is None:
+            layer_masks = jnp.broadcast_to(mask[None], (self.configs[0].depth, *mask.shape))
+        else:
+            layer_masks = jnp.asarray(layer_masks)[:, :, None, :, :]
         if adarms_cond is None:
             adarms_cond = [None] * len(self.configs)
 
-        embedded, kv_cache = self.layers(embedded, kv_cache, positions, mask, adarms_cond, deterministic)
+        if injections is None:
+            injections = [
+                None if value is None else jnp.zeros((self.configs[0].depth, *value.shape), dtype=value.dtype)
+                for value in embedded
+            ]
+        if active_experts is None:
+            active_experts = jnp.broadcast_to(
+                jnp.asarray([value is not None for value in embedded], dtype=jnp.bool_)[None],
+                (self.configs[0].depth, len(self.configs)),
+            )
+        embedded, kv_cache = self.layers(
+            embedded,
+            kv_cache,
+            positions,
+            layer_masks,
+            adarms_cond,
+            injections,
+            active_experts,
+            deterministic,
+        )
 
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
 

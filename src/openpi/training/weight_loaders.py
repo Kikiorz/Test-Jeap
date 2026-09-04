@@ -56,6 +56,48 @@ class CheckpointWeightLoader(WeightLoader):
 
 
 @dataclasses.dataclass(frozen=True)
+class ActionChangeCheckpointWeightLoader(WeightLoader):
+    """Warm-start Con1 and initialize its Change expert from the Action expert."""
+
+    params_path: str
+    change_kv_init_scale: float = 1e-3
+
+    def load(self, params: at.Params) -> at.Params:
+        loaded = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
+        flat_loaded = flax.traverse_util.flatten_dict(loaded, sep="/")
+        result = {}
+        new_pattern = re.compile(
+            r".*(future_context_proj|change_in_proj|change_out_proj|change_spatial_embedding).*"
+        )
+        for key, reference in flat_ref.items():
+            source_key = key
+            if source_key not in flat_loaded and "_2" in source_key:
+                source_key = source_key.replace("_2", "_1")
+            if source_key in flat_loaded:
+                value = flat_loaded[source_key]
+                if source_key != key and (
+                    "kv_einsum_2" in key or "attn_vec_einsum_2" in key
+                ):
+                    # A full Action->Change clone makes the new Change keys and
+                    # values perturb the pretrained joint softmax too strongly
+                    # before any Con1 update. Keep the useful Q/norm/FFN
+                    # initialization, but introduce Change K/V and its readout
+                    # in the local neighborhood of the released policy.
+                    value = value * self.change_kv_init_scale
+                if value.shape != reference.shape:
+                    raise ValueError(
+                        f"Checkpoint shape mismatch for {key} from {source_key}: {value.shape} != {reference.shape}"
+                    )
+                result[key] = value.astype(reference.dtype) if value.dtype != reference.dtype else value
+            elif new_pattern.fullmatch(key):
+                result[key] = reference
+            else:
+                raise KeyError(f"Base checkpoint is missing non-Con1 parameter: {key}")
+        return flax.traverse_util.unflatten_dict(result, sep="/")
+
+
+@dataclasses.dataclass(frozen=True)
 class PaliGemmaWeightLoader(WeightLoader):
     """Loads weights from the official PaliGemma checkpoint.
 

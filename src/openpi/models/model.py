@@ -69,6 +69,7 @@ IMAGE_RESOLUTION = (224, 224)
 #     "token_ar_mask": int32[*b, l],  # Optional, autoregressive mask for FAST model
 #     "token_loss_mask": bool[*b, l],  # Optional, loss mask for FAST model
 #     "vjepa_target": float16[*b, p, d],  # Optional, frozen future-pair target used only during training
+#     "change_target": float16[*b, ct, cd],  # Optional frozen Stage-1 endpoint used only during training
 #     "point_flow_queries": float32[*b, k, 2],  # Optional normalized tracker query coordinates
 #     "point_flow_target": float32[*b, k, h, 2],  # Optional normalized future point tracks
 #     "point_flow_visibility": float32[*b, k, h],  # Optional soft correspondence confidence
@@ -113,6 +114,10 @@ class Observation(Generic[ArrayT]):
     # Optional frozen visual target used by the Pi0.5 V-JEPA auxiliary objective.
     vjepa_target: at.Float[ArrayT, "*b p d"] | None = None
 
+    # Optional Con1 Stage-1 change endpoint. It is absent at deployment.
+    # ``ct``/``cd`` must remain distinct from the image-channel axis ``c``.
+    change_target: at.Float[ArrayT, "*b ct cd"] | None = None
+
     # Optional observable-motion supervision.  These fields are deterministically
     # induced from the model's own frozen spatial features and are never required
     # at deployment time.
@@ -143,6 +148,7 @@ class Observation(Generic[ArrayT]):
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             vjepa_target=data.get("vjepa_target"),
+            change_target=data.get("change_target"),
             point_flow_queries=data.get("point_flow_queries"),
             point_flow_target=data.get("point_flow_target"),
             point_flow_visibility=data.get("point_flow_visibility"),
@@ -227,6 +233,7 @@ def preprocess_observation(
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
         vjepa_target=observation.vjepa_target,
+        change_target=observation.change_target,
         point_flow_queries=observation.point_flow_queries,
         point_flow_target=observation.point_flow_target,
         point_flow_visibility=observation.point_flow_visibility,

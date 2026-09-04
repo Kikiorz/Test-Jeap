@@ -10,8 +10,12 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
+import datasets as hf_datasets
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+from lerobot.common.datasets.video_utils import decode_video_frames
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 
 import openpi.models.model as _model
@@ -51,6 +55,96 @@ class DataLoader(Protocol[T_co]):
 
     def __iter__(self) -> Iterator[T_co]:
         raise NotImplementedError("Subclasses of DataLoader should implement __iter__.")
+
+
+class PackedLiberoDataset(Dataset):
+    """Read LIBERO converted to packed LeRobot parquet/video files.
+
+    Some exported LIBERO copies contain modern episode metadata pointing into
+    ``file-xxx.parquet`` and timestamp ranges of packed videos while retaining
+    a v2.0 ``info.json``.  Older LeRobot releases try to find one file per
+    episode and then download the dataset again.  This adapter follows the
+    authoritative per-episode file/timestamp metadata without modifying the
+    dataset or changing sample semantics.
+    """
+
+    _CAMERAS = {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.image2",
+    }
+
+    def __init__(self, metadata: lerobot_dataset.LeRobotDatasetMetadata, action_horizon: int):
+        self.root = Path(metadata.root)
+        self.action_horizon = action_horizon
+        episode_paths = sorted((self.root / "meta" / "episodes").rglob("*.parquet"))
+        if not episode_paths:
+            raise FileNotFoundError(f"Packed episode metadata not found under {self.root}")
+        table = pa.concat_tables([pq.read_table(path) for path in episode_paths])
+        self.episodes = sorted(table.to_pylist(), key=lambda row: int(row["episode_index"]))
+        if [int(row["episode_index"]) for row in self.episodes] != list(range(len(self.episodes))):
+            raise ValueError("Packed LIBERO episode indices are not contiguous")
+        self.episode_from = np.asarray([row["dataset_from_index"] for row in self.episodes], dtype=np.int64)
+        self.episode_to = np.asarray([row["dataset_to_index"] for row in self.episodes], dtype=np.int64)
+        if not np.array_equal(self.episode_from[1:], self.episode_to[:-1]):
+            raise ValueError("Packed LIBERO episode ranges are not contiguous")
+
+        data_files = sorted((self.root / "data").rglob("file-*.parquet"))
+        if not data_files:
+            raise FileNotFoundError(f"Packed data files not found under {self.root}")
+        self.rows = hf_datasets.load_dataset(
+            "parquet",
+            data_files={"train": [str(path) for path in data_files]},
+            split="train",
+        )
+        if len(self.rows) != int(self.episode_to[-1]):
+            raise ValueError(f"Packed rows={len(self.rows)}, episode metadata ends at {self.episode_to[-1]}")
+        if int(self.rows[0]["index"]) != 0 or int(self.rows[-1]["index"]) != len(self.rows) - 1:
+            raise ValueError("Packed parquet files are not in global sample-index order")
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        index = int(index)
+        row = self.rows[index]
+        episode = int(np.searchsorted(self.episode_to, index, side="right"))
+        record = self.episodes[episode]
+        if int(row["episode_index"]) != episode:
+            raise ValueError(f"Row {index} belongs to episode {row['episode_index']}, expected {episode}")
+        end = int(self.episode_to[episode])
+        action_indices = np.minimum(np.arange(index, index + self.action_horizon), end - 1)
+        action_column = "actions" if "actions" in self.rows.column_names else "action"
+        actions = np.asarray(self.rows.select(action_indices.tolist())[action_column], dtype=np.float32)
+
+        timestamp = float(row["timestamp"])
+        output = {
+            "state": np.asarray(row["observation.state"], dtype=np.float32),
+            "actions": actions,
+            "timestamp": np.float32(timestamp),
+            "frame_index": np.int64(row["frame_index"]),
+            "episode_index": np.int64(episode),
+            "index": np.int64(index),
+            "task_index": np.int64(row["task_index"]),
+        }
+        for output_key, video_key in self._CAMERAS.items():
+            metadata_key = f"videos/{video_key}"
+            chunk = int(record[f"{metadata_key}/chunk_index"])
+            file_index = int(record[f"{metadata_key}/file_index"])
+            start_time = float(record[f"{metadata_key}/from_timestamp"])
+            video_path = self.root / "videos" / video_key / f"chunk-{chunk:03d}" / f"file-{file_index:03d}.mp4"
+            frame = decode_video_frames(
+                video_path,
+                [start_time + timestamp],
+                tolerance_s=1e-4,
+                backend="pyav",
+            )
+            output[output_key] = frame.squeeze(0)
+        return output
+
+
+def _uses_packed_episode_storage(root: str | Path) -> bool:
+    root = Path(root)
+    return (root / "meta" / "episodes").is_dir() and any((root / "data").rglob("file-*.parquet"))
 
 
 class TransformedDataset(Dataset[T_co]):
@@ -159,6 +253,111 @@ class VJepaTargetDataset(Dataset):
         mmap = getattr(value, "_mmap", None)
         if mmap is not None:
             mmap.close()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_cache"] = OrderedDict()
+        return state
+
+
+class ChangeTargetDataset(Dataset):
+    """Filters invalid episode tails and attaches normalized Stage-1 change endpoints."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        target_root: str | Path,
+        *,
+        expected_shape: tuple[int, int],
+        expected_future_offset: int,
+        expected_num_frames: int | None = None,
+        mmap_cache_size: int = 16,
+    ):
+        if mmap_cache_size < 1:
+            raise ValueError("Change-target mmap cache size must be positive")
+        self._dataset = dataset
+        self._target_root = Path(target_root)
+        self._expected_shape = expected_shape
+        self._mmap_cache_size = mmap_cache_size
+        self._cache: OrderedDict[int, np.memmap] = OrderedDict()
+        manifest_path = self._target_root / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Change-target manifest not found: {manifest_path}")
+        with manifest_path.open() as handle:
+            manifest = json.load(handle)
+        if tuple(manifest.get("target_shape", ())) != expected_shape:
+            raise ValueError(
+                f"Change-target shape mismatch: expected {expected_shape}, got {manifest.get('target_shape')}"
+            )
+        if manifest.get("target_dtype") != "float16":
+            raise ValueError(f"Expected float16 change targets, got {manifest.get('target_dtype')}")
+        if int(manifest.get("future_offset", -1)) != expected_future_offset:
+            raise ValueError(
+                f"Change-target horizon mismatch: expected {expected_future_offset}, "
+                f"got {manifest.get('future_offset')}"
+            )
+        if expected_num_frames is not None and int(manifest.get("dataset_total_frames", -1)) != expected_num_frames:
+            raise ValueError(
+                f"Change-target frame count mismatch: expected {expected_num_frames}, "
+                f"got {manifest.get('dataset_total_frames')}"
+            )
+        self._chunks_size = int(manifest.get("chunks_size", 1000))
+        self._mean = np.asarray(manifest["normalization_mean"], dtype=np.float32)
+        self._std = np.asarray(manifest["normalization_std"], dtype=np.float32)
+        if self._mean.shape != (expected_shape[-1],) or self._std.shape != self._mean.shape:
+            raise ValueError(f"Invalid change normalization shapes: {self._mean.shape}, {self._std.shape}")
+
+        valid_indices: list[np.ndarray] = []
+        raw_cursor = 0
+        episode_count = int(manifest["dataset_total_episodes"])
+        for episode in range(episode_count):
+            target = np.load(self._path(episode), mmap_mode="r", allow_pickle=False)
+            if target.ndim != 3 or tuple(target.shape[1:]) != expected_shape or target.dtype != np.float16:
+                VJepaTargetDataset._close_mmap(target)
+                raise ValueError(f"Invalid change-target episode {episode}: shape={target.shape}, dtype={target.dtype}")
+            valid_length = target.shape[0]
+            VJepaTargetDataset._close_mmap(target)
+            valid_indices.append(np.arange(raw_cursor, raw_cursor + valid_length, dtype=np.int64))
+            raw_cursor += valid_length + expected_future_offset
+        if raw_cursor != len(dataset):
+            raise ValueError(f"Change-target episode lengths imply {raw_cursor} rows, dataset has {len(dataset)}")
+        self._valid_indices = np.concatenate(valid_indices)
+        if len(self._valid_indices) != int(manifest["valid_sample_count"]):
+            raise ValueError("Change-target valid sample count disagrees with manifest")
+
+    def __len__(self) -> int:
+        return len(self._valid_indices)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        sample = dict(self._dataset[int(self._valid_indices[int(index)])])
+        episode = int(np.asarray(sample["episode_index"]).item())
+        frame = int(np.asarray(sample["frame_index"]).item())
+        target = self._get_episode(episode)
+        if not 0 <= frame < target.shape[0]:
+            raise IndexError(f"Frame {frame} is outside valid change targets for episode {episode}")
+        value = np.asarray(target[frame], dtype=np.float32)
+        sample["change_target"] = ((value - self._mean) / (self._std + 1e-6)).astype(np.float32)
+        return sample
+
+    def _path(self, episode: int) -> Path:
+        return (
+            self._target_root
+            / "targets"
+            / f"chunk-{episode // self._chunks_size:03d}"
+            / f"episode_{episode:06d}.npy"
+        )
+
+    def _get_episode(self, episode: int) -> np.memmap:
+        if episode in self._cache:
+            target = self._cache.pop(episode)
+            self._cache[episode] = target
+            return target
+        target = np.load(self._path(episode), mmap_mode="r", allow_pickle=False)
+        self._cache[episode] = target
+        while len(self._cache) > self._mmap_cache_size:
+            _, evicted = self._cache.popitem(last=False)
+            VJepaTargetDataset._close_mmap(evicted)
+        return target
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -349,15 +548,21 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-    )
+    if _uses_packed_episode_storage(dataset_meta.root):
+        logging.info("Using packed LIBERO adapter for %s at %s", repo_id, dataset_meta.root)
+        dataset = PackedLiberoDataset(dataset_meta, action_horizon)
+    else:
+        dataset = lerobot_dataset.LeRobotDataset(
+            data_config.repo_id,
+            delta_timestamps={
+                key: [t / dataset_meta.fps for t in range(action_horizon)]
+                for key in data_config.action_sequence_keys
+            },
+        )
 
     use_vjepa_aux = bool(getattr(model_config, "use_vjepa_aux", False))
-    if use_vjepa_aux and data_config.vjepa_target_root is None:
+    use_action_change = bool(getattr(model_config, "use_action_change_mmdit", False))
+    if use_vjepa_aux and not use_action_change and data_config.vjepa_target_root is None:
         raise ValueError("V-JEPA auxiliary training requires data.vjepa_target_root")
     if data_config.vjepa_target_root is not None:
         if not use_vjepa_aux:
@@ -372,6 +577,22 @@ def create_torch_dataset(
             expected_image_key=data_config.vjepa_image_key,
             expected_num_frames=len(dataset),
             mmap_cache_size=data_config.vjepa_mmap_cache_size,
+        )
+
+    if use_action_change and data_config.change_target_root is None:
+        raise ValueError("Action–Change MMDiT training requires data.change_target_root")
+    if data_config.change_target_root is not None:
+        if not use_action_change:
+            raise ValueError("Change targets were configured for a model with use_action_change_mmdit=False")
+        if data_config.change_future_offset is None:
+            raise ValueError("Change targets require an expected future offset")
+        dataset = ChangeTargetDataset(
+            dataset,
+            data_config.change_target_root,
+            expected_shape=(model_config.change_num_tokens, model_config.change_token_dim),
+            expected_future_offset=data_config.change_future_offset,
+            expected_num_frames=len(dataset),
+            mmap_cache_size=data_config.change_mmap_cache_size,
         )
 
     use_point_flow = bool(getattr(model_config, "use_point_flow", False))

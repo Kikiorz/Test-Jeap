@@ -32,13 +32,13 @@ if [[ "$MODE" == "standard" ]]; then
     EVAL_PYTHON="${EVAL_PYTHON:-$ROOT/examples/libero/.venv/bin/python}"
     CONFIG_ROOT="${LIBERO_CONFIG_PATH:-$ROOT/data/libero-standard/config}"
     BENCHMARK_REVISION="${BENCHMARK_REVISION:-$(git -C "$SOURCE_ROOT" rev-parse HEAD 2>/dev/null || true)}"
-    NUM_TRIALS=50
+    NUM_TRIALS="${NUM_TRIALS:-50}"
 else
     SOURCE_ROOT="$LIBERO_PLUS_ROOT"
     EVAL_PYTHON="${EVAL_PYTHON:-$ROOT/examples/libero/.venv-plus/bin/python}"
     CONFIG_ROOT="${LIBERO_CONFIG_PATH:-$ROOT/data/libero-plus/config}"
     BENCHMARK_REVISION="${BENCHMARK_REVISION:-$PLUS_REVISION}"
-    NUM_TRIALS=1
+    NUM_TRIALS="${NUM_TRIALS:-1}"
 fi
 
 if [[ ! -x "$EVAL_PYTHON" ]]; then

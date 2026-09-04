@@ -102,6 +102,10 @@ class DataConfig:
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    # Optional Con1 Stage-1 endpoints for Action–Change joint flow.
+    change_target_root: str | None = None
+    change_mmap_cache_size: int = 16
+    change_future_offset: int | None = None
     # Optional frozen point tracks extracted from expert videos.
     point_flow_target_root: str | None = None
     point_flow_mmap_cache_size: int = 16
@@ -310,6 +314,9 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    change_target_root: str | None = None
+    change_mmap_cache_size: int = 16
+    change_future_offset: int | None = None
     point_flow_target_root: str | None = None
     point_flow_mmap_cache_size: int = 16
     point_flow_horizon: int | None = None
@@ -334,6 +341,8 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         }
         if self.vjepa_target_root is not None:
             repack_mapping["vjepa_target"] = "vjepa_target"
+        if self.change_target_root is not None:
+            repack_mapping["change_target"] = "change_target"
         if self.point_flow_target_root is not None:
             for key in ("point_flow_queries", "point_flow_target", "point_flow_visibility"):
                 repack_mapping[key] = key
@@ -383,6 +392,9 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             vjepa_mmap_cache_size=self.vjepa_mmap_cache_size,
             vjepa_future_offset=self.vjepa_future_offset,
             vjepa_image_key=self.vjepa_image_key,
+            change_target_root=self.change_target_root,
+            change_mmap_cache_size=self.change_mmap_cache_size,
+            change_future_offset=self.change_future_offset,
             point_flow_target_root=self.point_flow_target_root,
             point_flow_mmap_cache_size=self.point_flow_mmap_cache_size,
             point_flow_horizon=self.point_flow_horizon,
@@ -840,6 +852,198 @@ _CONFIGS = [
         ),
         num_train_steps=30_000,
         num_workers=2,
+    ),
+    TrainConfig(
+        name="pi05_libero_vjepa_con1_warmup",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            vjepa_num_queries=64,
+            vjepa_query_grid_size=8,
+            vjepa_target_grid_size=24,
+            vjepa_target_dim=1408,
+            vjepa_action_attends_queries=False,
+            use_action_change_mmdit=True,
+            change_num_tokens=16,
+            change_token_dim=128,
+            change_joint_start_layer=12,
+            change_loss_weight=0.3,
+            change_train_action_late=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/"
+                    "pi05_libero_vjepa_aux/"
+                    "pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999/assets"
+                )
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            change_target_root="/workspace/artifacts/con1/stage1_h10_t16_d128_nojl/change_targets_raw",
+            change_mmap_cache_size=32,
+            change_future_offset=10,
+        ),
+        # The third MMDiT expert adds six active joint blocks and Adam state;
+        # batch 128 exceeds 24-GiB cards even with FSDP=2.
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=5e-5,
+            decay_steps=5000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(weight_decay=0.01, clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            use_action_change_mmdit=True,
+            change_train_action_late=False,
+        ).get_freeze_filter(),
+        weight_loader=weight_loaders.ActionChangeCheckpointWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/"
+            "pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999/params"
+        ),
+        num_train_steps=5000,
+        num_workers=2,
+        save_interval=1000,
+        keep_period=None,
+        fsdp_devices=2,
+    ),
+    TrainConfig(
+        name="pi05_libero_vjepa_con1",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            vjepa_num_queries=64,
+            vjepa_query_grid_size=8,
+            vjepa_target_grid_size=24,
+            vjepa_target_dim=1408,
+            vjepa_action_attends_queries=False,
+            use_action_change_mmdit=True,
+            change_num_tokens=16,
+            change_token_dim=128,
+            change_joint_start_layer=12,
+            change_loss_weight=0.3,
+            change_train_action_late=True,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/"
+                    "pi05_libero_vjepa_aux/"
+                    "pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999/assets"
+                )
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            change_target_root="/workspace/artifacts/con1/stage1_h10_t16_d128_nojl/change_targets_raw",
+            change_mmap_cache_size=32,
+            change_future_offset=10,
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-5,
+            decay_steps=55_000,
+            decay_lr=1e-6,
+        ),
+        optimizer=_optimizer.AdamW(weight_decay=0.01, clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            use_action_change_mmdit=True,
+            change_train_action_late=True,
+        ).get_freeze_filter(),
+        # The launch command replaces this path with the 5k warm-up checkpoint.
+        weight_loader=weight_loaders.ActionChangeCheckpointWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/"
+            "pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999/params"
+        ),
+        num_train_steps=55_000,
+        num_workers=2,
+        save_interval=1000,
+        keep_period=None,
+        fsdp_devices=2,
+    ),
+    TrainConfig(
+        name="pi05_libero_vjepa_con2_adapter",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            vjepa_num_queries=64,
+            vjepa_query_grid_size=8,
+            vjepa_target_grid_size=24,
+            vjepa_target_dim=1408,
+            vjepa_action_attends_queries=False,
+            use_action_change_mmdit=True,
+            change_num_tokens=16,
+            change_token_dim=128,
+            change_joint_start_layer=12,
+            change_loss_weight=0.3,
+            change_train_action_late=True,
+            use_achieved_change_adapter=True,
+            achieved_change_adapter_rank=4,
+            achieved_change_inverse_probability=0.3,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/"
+                    "pi05_libero_vjepa_aux/"
+                    "pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999/assets"
+                )
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            change_target_root="/workspace/artifacts/con1/stage1_h10_t16_d128_nojl/change_targets_raw",
+            change_mmap_cache_size=32,
+            change_future_offset=10,
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=5e-5,
+            decay_steps=10_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(weight_decay=0.01, clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            use_action_change_mmdit=True,
+            use_achieved_change_adapter=True,
+        ).get_freeze_filter(),
+        # The launch command points this loader at the selected frozen Con1 checkpoint.
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/artifacts/con1/con1_final/params",
+            missing_regex=".*change_to_action_(k|v)_(down|up).*",
+        ),
+        num_train_steps=10_000,
+        num_workers=2,
+        save_interval=1000,
+        keep_period=None,
+        fsdp_devices=2,
     ),
     #
     # Fine-tuning Aloha configs.

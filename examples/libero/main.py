@@ -1028,6 +1028,10 @@ def _run_episode(
                         )
                     ),
                     "prompt": str(task_description),
+                    # Ignored by ordinary policies; consumed by Con2 to reset
+                    # episode-local fast weights and verify H10 alignment.
+                    "_reset_adaptation": inference_index == 0,
+                    "_executed_horizon": args.replan_steps,
                 }
 
                 policy_seed = _derive_policy_seed(episode_seed, inference_index)
