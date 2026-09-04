@@ -9,7 +9,7 @@
 JEPA representation 更准确，不保证 JEPA 更新方向能改善动作。
 ```
 
-当前 tracker-free 统一方案、数学定义、部署因果顺序、实现状态和负结果见
+最新 CoFlow-JEPA 统一方案、数学定义、同状态干预结果、当前失败诊断和下一步见
 [README_JEPA_TTT.md](README_JEPA_TTT.md)。新方案只使用 JEPA-WAM 自身的 predicted transition 与执行后
 V-JEPA realized transition，不使用 tracker、point flow、光流或人工运动标签。
 
