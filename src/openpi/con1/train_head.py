@@ -40,6 +40,8 @@ def main():
     p.add_argument('--learning-rate',type=float,default=5e-5)
     p.add_argument('--delta-weight',type=float,default=1.)
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--init-from',type=Path,default=None,
+                   help='Initialize params/optimizer/step from a completed head checkpoint into a new run.')
     args=p.parse_args()
     if args.steps<1 or args.batch_size<1 or args.learning_rate<=0:raise ValueError('Invalid training settings')
     args.output.mkdir(parents=True,exist_ok=True)
@@ -77,12 +79,21 @@ def main():
             reduction='mean_feature_then_mean_valid_positions',attention_heads=4,
             architecture='anchor_MLP_chunk_expand_cross_attention_FFN_shared_delta_projection')
         step0=0
+        if args.resume and args.init_from is not None:
+            raise ValueError('Use only one of --resume and --init-from')
         if args.resume:
             if json.loads((args.output/'run.json').read_text())!=contract:raise ValueError('Resume contract mismatch')
             latest=json.loads((args.output/'latest.json').read_text())
             restored=serialization.from_bytes({'params':params,'opt_state':opt_state,'step':0},
                 (args.output/latest['file']).read_bytes())
             params,opt_state,step0=restored['params'],restored['opt_state'],int(restored['step'])
+        elif args.init_from is not None:
+            restored=serialization.from_bytes({'params':params,'opt_state':opt_state,'step':0},
+                args.init_from.read_bytes())
+            params,opt_state,step0=restored['params'],restored['opt_state'],int(restored['step'])
+            if step0 >= args.steps:
+                raise ValueError('Initial checkpoint step must be below target --steps')
+            write_json(args.output/'run.json',contract)
         else:write_json(args.output/'run.json',contract)
         def loss_fn(params,values):
             out=model.apply({'params':params},values['r_tokens'],values['anchor'])
