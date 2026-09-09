@@ -67,6 +67,8 @@ ops/install_mean_public_code.py
 ops/mean_5k_manifest.json
 ops/download_mean_5k.py
 ops/prepare_mean_con1.py
+ops/smoke_mujoco_egl.py
+ops/mean_preparation_test.py
 ops/rebuild_mean_teacher_inputs.py
 ops/supervisor/con1-mean-5k-download.conf
 ops/supervisor/con1-mean-preparation.conf

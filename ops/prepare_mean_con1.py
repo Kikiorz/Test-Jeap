@@ -53,6 +53,15 @@ def wait_for(path, service):
         raise RuntimeError('Input marker did not pass: '+str(path))
 
 
+def fresh_audit(name, script):
+    """Rerun read-only audits without overwriting an earlier run's evidence."""
+    path = ROOT/'runtime'/f'{name}_{time.time_ns()}.json'
+    run(name, [PYTHON, script, '--output', str(path)])
+    if not json.loads(path.read_text()).get('passed'):
+        raise RuntimeError('Audit did not pass: '+str(path))
+    return path
+
+
 def main():
     (ROOT/'runtime').mkdir(parents=True,exist_ok=True)
     wait_for(ROOT/'runtime/github_mean_code_verified.json','con1_mean_preparation')
@@ -63,12 +72,13 @@ def main():
         'src/openpi/training/action_freeze_test.py',
         'ops/mean_con1_experiment_test.py',
         'ops/mean_teacher_rebuild_test.py',
+        'ops/mean_preparation_test.py',
     ]
     xml=ROOT/'runtime/loss_tests.xml'
     run('loss_tests',[PYTHON,'-m','pytest','-q',*tests,'--junitxml='+str(xml)])
     suites=ET.parse(xml).getroot()
     cases=list(suites.iter('testcase'))
-    if not cases or list(suites.iter('failure')) or list(suites.iter('error')):
+    if not cases or any(list(suites.iter(kind)) for kind in ('failure','error','skipped')):
         raise RuntimeError('Mean-loss test report is not a clean pass')
     record('loss_tests.json',{'passed':True,'tests':len(cases),'xml':str(xml),'unix_time':time.time(),
                              'scope':'CPU loss/gradient/freeze/trainer and orchestration unit tests, not policy efficacy'})
@@ -106,17 +116,14 @@ def main():
         'p=Path('+repr(str(ROOT/'panels.json'))+'); '
         'c=json.loads(Path("/workspace/artifacts/benchmarks/LIBERO-plus/libero/libero/benchmark/task_classification.json").read_text()); '
         'v=choose_panels(c); assert not p.exists() or json.loads(p.read_text())==v; atomic_json(p,v)'])
-    run('direct_targets',[PYTHON,'ops/audit_direct_con1_restart.py','--output',str(ROOT/'runtime/direct_target_audit.json')])
-    run('teacher_targets',[PYTHON,'ops/audit_mean_teacher_inputs.py','--output',str(ROOT/'runtime/teacher_target_audit.json')])
-    run('egl_runtime',[str(REPO/'examples/libero/.venv-plus/bin/python'),'-c',
-        'import os; os.environ["MUJOCO_GL"]="egl"; os.environ["PYOPENGL_PLATFORM"]="egl"; '
-        'import mujoco; m=mujoco.MjModel.from_xml_string("<mujoco><worldbody><geom type=\"sphere\" size=\".1\"/></worldbody></mujoco>"); '
-        'd=mujoco.MjData(m); mujoco.mj_forward(m,d); r=mujoco.Renderer(m,64,64); r.update_scene(d); '
-        'assert r.render().shape==(64,64,3); r.close(); print("EGL renderer passed")'],cpu=False)
+    direct_report=fresh_audit('direct_target_audit','ops/audit_direct_con1_restart.py')
+    teacher_report=fresh_audit('teacher_target_audit','ops/audit_mean_teacher_inputs.py')
+    run('egl_runtime',[str(REPO/'examples/libero/.venv-plus/bin/python'),
+                       'ops/smoke_mujoco_egl.py'],cpu=False)
     record('input_audit.json',{'passed':True,'unix_time':time.time(),'checkpoint':str(ANCHOR),
                               'checkpoint_sha256_report':str(ROOT/'runtime/checkpoint_5k_sha256.json'),
-                              'teacher_target_report':str(ROOT/'runtime/teacher_target_audit.json'),
-                              'direct_target_report':str(ROOT/'runtime/direct_target_audit.json'),
+                              'teacher_target_report':str(teacher_report),
+                              'direct_target_report':str(direct_report),
                               'gpu_runtime':'4 GPUs, JAX and Torch primitives passed',
                               'render_runtime':'EGL passed',
                               'input_inventory':'Pinned GitHub/HF sources; 33 checkpoint SHA-256 hashes; newly generated teacher caches',
