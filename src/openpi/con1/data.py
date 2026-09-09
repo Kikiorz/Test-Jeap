@@ -1,0 +1,73 @@
+"""Episode-local feature cache. No future frame is exposed as a head input."""
+import hashlib
+import json
+from pathlib import Path
+
+import numpy as np
+
+
+def anchored_example(r, states, frame, horizon):
+    if horizon < 1 or r.ndim != 3 or states.ndim != 2 or len(r) != len(states) or not 0 <= frame < len(states):
+        raise ValueError("Invalid episode arrays, frame or horizon")
+    anchor = np.array(states[frame], dtype=np.float32)
+    count = min(horizon, len(states) - frame - 1)
+    future = np.broadcast_to(anchor, (horizon, len(anchor))).copy()
+    future[:count] = np.asarray(states[frame + 1:frame + 1 + count], dtype=np.float32)
+    return {"r_tokens": np.array(r[frame], dtype=np.float32), "anchor": anchor,
+            "future_target": future, "valid": np.arange(horizon) < count}
+
+
+def split_episodes(episodes, *, fraction=.1, seed=42):
+    if not 0 < fraction < 1 or len({e["id"] for e in episodes}) != len(episodes):
+        raise ValueError("Invalid validation fraction or duplicate episode IDs")
+    heldout = set()
+    for task in sorted({e["task_id"] for e in episodes}):
+        ids = sorted(e["id"] for e in episodes if e["task_id"] == task)
+        if len(ids) < 2:
+            raise ValueError("Each task needs >=2 episodes for a non-leaking holdout")
+        rng = np.random.default_rng(np.random.SeedSequence([seed, task]))
+        heldout.update(rng.permutation(ids)[:min(len(ids) - 1, max(1, round(len(ids) * fraction)))].tolist())
+    return ([e for e in episodes if e["id"] not in heldout], [e for e in episodes if e["id"] in heldout])
+
+
+class FeatureDataset:
+    def __init__(self, root, *, horizon, split, seed=42, fraction=.1):
+        self.root = Path(root)
+        raw = (self.root / "manifest.json").read_bytes()
+        self.identity = hashlib.sha256(raw).hexdigest()
+        self.manifest = json.loads(raw)
+        if self.manifest.get("schema") != "con1-anchored-features-v1" or not self.manifest.get("complete"):
+            raise ValueError("Requires a completed anchored feature cache, not legacy targets")
+        if self.manifest.get("anchor_source") != "current_only_frozen_teacher":
+            raise ValueError("Anchor must come from current observation only")
+        if split not in ("train", "validation"):
+            raise ValueError("Use explicit train or validation split")
+        groups = split_episodes(self.manifest["episodes"], fraction=fraction, seed=seed)
+        self.episodes = groups[split == "validation"]
+        self.horizon = horizon
+        self.index = [(e, t) for e in self.episodes for t in range(e["length"] - 1)]
+        if not self.index:
+            raise ValueError("No supervised transitions")
+        self._cached_id = None
+        self._arrays = None
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, index):
+        episode, frame = self.index[index]
+        if self._cached_id != episode["id"]:
+            r = np.load(self.root / episode["r"], mmap_mode="r", allow_pickle=False)
+            z = np.load(self.root / episode["z"], mmap_mode="r", allow_pickle=False)
+            if r.shape != (episode["length"], *self.manifest["r_shape"]) or z.shape != (episode["length"], self.manifest["latent_dim"]):
+                raise ValueError("Cache shapes disagree with manifest")
+            self._arrays, self._cached_id = (r, z), episode["id"]
+        return anchored_example(*self._arrays, frame, self.horizon)
+
+
+def batch(dataset, indices):
+    examples = [dataset[int(i)] for i in indices]
+    result = {k:np.stack([e[k] for e in examples]) for k in examples[0]}
+    if any(not np.isfinite(v).all() for v in result.values()):
+        raise ValueError("Non-finite cache input/target")
+    return result

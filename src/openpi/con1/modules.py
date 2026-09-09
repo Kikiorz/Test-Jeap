@@ -1,0 +1,116 @@
+"""No Q0/Gamma branch, no historical Con1 implementations.
+
+The head's fixed horizon encoding is not a learned action query Q0.
+Only CURRENT-observation features enter prediction. Labels enter loss only.
+"""
+import math
+
+import flax.linen as nn
+import jax
+import jax.numpy as jnp
+
+
+def horizon_encoding(horizon, width):
+    if horizon < 1 or width < 2 or width % 2:
+        raise ValueError("Positive horizon and even width >=2 required")
+    positions = jnp.arange(1, horizon + 1, dtype=jnp.float32)[:, None]
+    frequencies = jnp.exp(-math.log(10000.) * jnp.arange(width // 2) / (width // 2))
+    angles = positions * frequencies[None]
+    return jnp.concatenate([jnp.sin(angles), jnp.cos(angles)], axis=-1)
+
+
+class AnchoredDeltaHead(nn.Module):
+    horizon: int = 10
+    latent_dim: int = 2816
+    width: int = 512
+
+    @nn.compact
+    def __call__(self, r_tokens, current_latent):
+        if r_tokens.ndim != 3 or current_latent.ndim != 2:
+            raise ValueError("Expected R[B,N,E] and current latent[B,D]")
+        if r_tokens.shape[0] != current_latent.shape[0] or current_latent.shape[-1] != self.latent_dim:
+            raise ValueError("Anchor/batch dimensions disagree")
+        r = jax.lax.stop_gradient(r_tokens.astype(jnp.float32))
+        anchor = jax.lax.stop_gradient(current_latent.astype(jnp.float32))
+        r = nn.LayerNorm(name="r_norm")(r)
+        # Raw anchor projection retains magnitude information; normalize hidden,
+        # not the teacher latent defining the delta/reconstruction target.
+        anchor_hidden = nn.Dense(self.width, name="anchor_in")(anchor)
+        slots = anchor_hidden[:, None] + horizon_encoding(self.horizon, self.width)[None]
+        q = nn.Dense(self.width, use_bias=False, name="temporal_query")(
+            nn.LayerNorm(name="slot_norm")(slots))
+        k = nn.Dense(self.width, use_bias=False, name="r_key")(r)
+        v = nn.Dense(self.width, use_bias=False, name="r_value")(r)
+        attention = jax.nn.softmax(jnp.einsum("bhd,bnd->bhn", q, k) / math.sqrt(self.width), -1)
+        hidden = slots + attention @ v
+        hidden = hidden + nn.Dense(self.width, name="ff_out")(
+            nn.gelu(nn.Dense(2 * self.width, name="ff_in")(nn.LayerNorm(name="ff_norm")(hidden))))
+        delta = nn.Dense(self.latent_dim, name="delta_out",
+                         kernel_init=nn.initializers.normal(1e-4))(hidden)
+        return {"delta": delta, "future": anchor[:, None] + delta}
+
+
+class ActionDeltaCrossAttention(nn.Module):
+    action_width: int
+    width: int = 512
+    alpha_initial: float = .05
+
+    @nn.compact
+    def __call__(self, action_hidden, predicted_delta):
+        if not 0 < self.alpha_initial < 1:
+            raise ValueError("alpha_initial must be inside (0,1)")
+        if action_hidden.ndim != 3 or predicted_delta.ndim != 3:
+            raise ValueError("Expected action[B,H,A] and delta[B,J,D]")
+        if action_hidden.shape[0] != predicted_delta.shape[0] or action_hidden.shape[-1] != self.action_width:
+            raise ValueError("Action/delta dimensions disagree")
+        # Q = W_Q LN(H_A): no learnable query tokens, no Q0 + Gamma(H).
+        q = nn.Dense(self.width, use_bias=False, name="query")(
+            nn.LayerNorm(name="action_norm")(action_hidden.astype(jnp.float32)))
+        k = nn.Dense(self.width, use_bias=False, name="key")(predicted_delta.astype(jnp.float32))
+        v = nn.Dense(self.width, use_bias=False, name="value")(predicted_delta.astype(jnp.float32))
+        attention = jax.nn.softmax(jnp.einsum("bhd,bjd->bhj", q, k) / math.sqrt(self.width), -1)
+        residual = nn.Dense(self.action_width, use_bias=False, name="out",
+                            kernel_init=nn.initializers.zeros_init())(attention @ v)
+        logit = self.param("alpha_logit", lambda _: jnp.asarray(
+            math.log(self.alpha_initial / (1 - self.alpha_initial)), dtype=jnp.float32))
+        correction = jax.nn.sigmoid(logit) * residual
+        return {"hidden": action_hidden.astype(jnp.float32) + correction,
+                "correction": correction, "attention": attention,
+                "alpha": jax.nn.sigmoid(logit)}
+
+
+def anchored_loss(delta, anchor, future_target, valid, *, delta_weight=1., feature_reduction="mean"):
+    """Exact requested two-term objective, detached CURRENT anchor and teacher.
+
+    With anchor=z_t*=Phi(o_t), the terms are algebraically identical:
+    L_recon + lambda L_delta = (1+lambda) L_delta. No extra constraint.
+    Mean reduction avoids inflating scale by latent_dim; 'sum' is explicit.
+    Average over valid positions; all-invalid batches yield zero loss/gradient.
+    """
+    if delta_weight < 0 or not math.isfinite(delta_weight):
+        raise ValueError("delta_weight must be finite and nonnegative")
+    if feature_reduction not in ("mean", "sum"):
+        raise ValueError("feature_reduction must be mean or sum")
+    if delta.shape != future_target.shape or valid.shape != delta.shape[:-1] or anchor.shape != (delta.shape[0], delta.shape[-1]):
+        raise ValueError("Delta/anchor/future/mask shapes disagree")
+    anchor = jax.lax.stop_gradient(anchor.astype(jnp.float32))
+    target = jax.lax.stop_gradient(future_target.astype(jnp.float32))
+    mask = valid.astype(bool)
+    # Sanitize padded entries BEFORE arithmetic (including NaN placeholders).
+    target = jnp.where(mask[..., None], target, anchor[:, None])
+    prediction = jnp.where(mask[..., None], delta.astype(jnp.float32), 0.)
+    target_delta = target - anchor[:, None]
+    # Stable algebraic form also avoids cancellation when anchor is large.
+    error = prediction - target_delta
+    divisor = delta.shape[-1] if feature_reduction == "mean" else 1
+    count = mask.sum()
+    denom = jnp.maximum(count, 1)
+    reconstruction = jnp.where(mask, jnp.square(error).sum(-1) / divisor, 0.).sum() / denom
+    delta_loss = reconstruction
+    zero_mse = jnp.where(mask, jnp.square(target_delta).mean(-1), 0.).sum() / denom
+    mse = jnp.where(mask, jnp.square(error).mean(-1), 0.).sum() / denom
+    metrics = {"loss": reconstruction + delta_weight * delta_loss,
+               "reconstruction_loss": reconstruction, "delta_loss": delta_loss,
+               "delta_mse": mse, "copy_current_mse": zero_mse,
+               "delta_nmse": mse / jnp.maximum(zero_mse, 1e-12), "valid_count": count}
+    return metrics["loss"], metrics
