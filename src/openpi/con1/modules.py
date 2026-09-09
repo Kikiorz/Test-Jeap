@@ -121,3 +121,30 @@ def anchored_loss(delta, anchor, future_target, valid, *, delta_weight=1., featu
                "delta_mse": mse, "copy_current_mse": zero_mse,
                "delta_nmse": mse / jnp.maximum(zero_mse, 1e-12), "valid_count": count}
     return metrics["loss"], metrics
+
+
+def reciprocal_con1_loss(predicted_delta, target_delta, flow_prediction, flow_target,
+                         anchor, future_target, valid, *, delta_weight=.2,
+                         flow_weight=1.0, residual_weight=1e-3):
+    """Joint Con1 objective with an action-to-latent reverse constraint.
+
+    ``flow_prediction`` is produced after injecting the delta through the
+    action cross-attention.  Consequently its error differentiates through
+    the cross-attention and the delta head; this is the reverse (action-side)
+    constraint, rather than a detached diagnostic.  The residual penalty is
+    deliberately small and uses the frozen anchor as the reference.
+    """
+    if predicted_delta.shape != target_delta.shape:
+        raise ValueError("Delta prediction/target shapes disagree")
+    if flow_prediction.shape != flow_target.shape:
+        raise ValueError("Flow prediction/target shapes disagree")
+    latent, lm = anchored_loss(predicted_delta, anchor, future_target, valid,
+                               delta_weight=delta_weight)
+    flow = jnp.mean(jnp.square(flow_prediction.astype(jnp.float32) -
+                               jax.lax.stop_gradient(flow_target.astype(jnp.float32))))
+    # Keep the injected correction close to zero initially; this is a soft
+    # trust-region term, not a binary fallback gate.
+    residual = jnp.mean(jnp.square(predicted_delta.astype(jnp.float32)))
+    total = latent + flow_weight * flow + residual_weight * residual
+    metrics = dict(lm, flow_loss=flow, residual_loss=residual, loss=total)
+    return total, metrics
