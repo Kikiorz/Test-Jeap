@@ -109,6 +109,10 @@ class Observation(Generic[ArrayT]):
 
     # Optional frozen visual target used by the Pi0.5 V-JEPA auxiliary objective.
     vjepa_target: at.Float[ArrayT, "*b p d"] | None = None
+    # Optional current-frame V-JEPA latent used by Con1's anchored transition head.
+    # It is an input-side feature (never a future label) and is kept separate from
+    # ``vjepa_target`` so the auxiliary objective cannot accidentally leak it.
+    con1_current_latent: at.Float[ArrayT, "*b d"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -131,6 +135,7 @@ class Observation(Generic[ArrayT]):
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             vjepa_target=data.get("vjepa_target"),
+            con1_current_latent=data.get("con1_current_latent"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -212,6 +217,7 @@ def preprocess_observation(
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
         vjepa_target=observation.vjepa_target,
+        con1_current_latent=observation.con1_current_latent,
     )
 
 
