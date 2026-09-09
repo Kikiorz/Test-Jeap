@@ -263,6 +263,21 @@ class Pi0(_model.BaseModel):
         aux_loss = jnp.mean(1.0 - jnp.sum(predicted_target * target, axis=-1), axis=-1)
         return flow_loss, aux_loss
 
+    def extract_predictive_tokens(self, observation: _model.Observation):
+        """Frozen current-only R, exactly the prefix used by action sampling.
+
+        No suffix, action labels, future images, or auxiliary targets enter.
+        This does not change the author's policy/action computation.
+        """
+        if not self.use_vjepa_aux:
+            raise ValueError("Predictive tokens require a JEPA-WAM checkpoint")
+        observation = _model.preprocess_observation(None, observation, train=False)
+        tokens, mask, ar_mask = self.embed_prefix(observation)
+        (prefix, _), _cache = self.PaliGemma.llm(
+            [tokens, None], mask=make_attn_mask(mask, ar_mask),
+            positions=jnp.cumsum(mask, axis=1) - 1)
+        return jax.lax.stop_gradient(prefix[:, -self.vjepa_num_queries:].astype(jnp.float32))
+
     def predict_vjepa_target(self, query_out: at.Float[at.Array, "b q emb"]) -> at.Float[at.Array, "b p d"]:
         value = self.vjepa_alignment_norm(query_out)
         value = nnx.gelu(self.vjepa_alignment_in(value))
