@@ -28,6 +28,34 @@ two independent signals.  `mean` reduction is the default to avoid a hidden
 
 ## Head-only training
 
+### Generate the offline feature cache first
+
+`scripts/cache_con1_features.py` uses the official pure **40k (`40000`)**
+checkpoint in the provided launcher, not an old Con1 checkpoint. It extracts
+the last 64 prefix tokens on current observations, with no action suffix or
+future labels. The input transform and frozen model are from the pinned author
+checkout. A read-only accessor was added; the policy sampling code is unchanged.
+
+Existing independent V-JEPA `[o_k,o_k]` raw frame states can be reused after
+checking dataset identity, dimensions, finite values and episode commit records.
+The legacy state-cache manifest describes an orthogonal downstream loader; the
+stored arrays are raw latents, copied without normalization or projection.
+The large future-pair auxiliary cache is NOT used as R or current anchor.
+
+```bash
+PYTHONPATH=src:packages/openpi-client/src python scripts/cache_con1_features.py \
+  --dataset /path/to/lerobot_libero --states /path/to/independent_frame_states \
+  --checkpoint /path/to/official/checkpoint/40000 \
+  --output /path/to/anchored_40k_features_v1 --gpus 0,1,2,3 --batch-size 8
+```
+
+The coordinator records checkpoint/source/teacher SHA-256 hashes, runs one worker
+per GPU on disjoint episodes, and commits `[T,64,2048]` R and `[T,2816]` z files.
+The final manifest is marked complete only after all episodes and hashes pass.
+No training starts automatically. `scripts/con1-feature-cache.conf` is an example
+Supervisor configuration; replace its paths/python environment for a new server.
+The Python environment's directory name does not select the checkpoint.
+
 Prepare a completed cache with manifest schema `con1-anchored-features-v1`:
 
 ```
