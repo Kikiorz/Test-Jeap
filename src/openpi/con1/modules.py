@@ -36,13 +36,20 @@ class AnchoredDeltaHead(nn.Module):
         # Raw anchor projection retains magnitude information; normalize hidden,
         # not the teacher latent defining the delta/reconstruction target.
         anchor_hidden = nn.Dense(self.width, name="anchor_in")(anchor)
-        slots = anchor_hidden[:, None] + horizon_encoding(self.horizon, self.width)[None]
+        slots = nn.Dense(self.horizon * self.width, name="chunk_expand")(nn.gelu(anchor_hidden))
+        slots = slots.reshape(anchor.shape[0], self.horizon, self.width)
         q = nn.Dense(self.width, use_bias=False, name="temporal_query")(
             nn.LayerNorm(name="slot_norm")(slots))
         k = nn.Dense(self.width, use_bias=False, name="r_key")(r)
         v = nn.Dense(self.width, use_bias=False, name="r_value")(r)
-        attention = jax.nn.softmax(jnp.einsum("bhd,bnd->bhn", q, k) / math.sqrt(self.width), -1)
-        hidden = slots + attention @ v
+        if self.width % 4:
+            raise ValueError("Width must be divisible by four attention heads")
+        q = q.reshape(q.shape[0], q.shape[1], 4, self.width // 4)
+        k = k.reshape(k.shape[0], k.shape[1], 4, self.width // 4)
+        v = v.reshape(v.shape[0], v.shape[1], 4, self.width // 4)
+        attention = jax.nn.softmax(jnp.einsum("bmhd,bnhd->bhmn", q, k) / math.sqrt(self.width // 4), -1)
+        context = jnp.einsum("bhmn,bnhd->bmhd", attention, v).reshape(slots.shape)
+        hidden = slots + context
         hidden = hidden + nn.Dense(self.width, name="ff_out")(
             nn.gelu(nn.Dense(2 * self.width, name="ff_in")(nn.LayerNorm(name="ff_norm")(hidden))))
         delta = nn.Dense(self.latent_dim, name="delta_out",

@@ -1,6 +1,7 @@
 """Episode-local feature cache. No future frame is exposed as a head input."""
 import hashlib
 import json
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -48,21 +49,24 @@ class FeatureDataset:
         self.index = [(e, t) for e in self.episodes for t in range(e["length"] - 1)]
         if not self.index:
             raise ValueError("No supervised transitions")
-        self._cached_id = None
-        self._arrays = None
+        self._cache = OrderedDict()
 
     def __len__(self):
         return len(self.index)
 
     def __getitem__(self, index):
         episode, frame = self.index[index]
-        if self._cached_id != episode["id"]:
+        if episode["id"] not in self._cache:
             r = np.load(self.root / episode["r"], mmap_mode="r", allow_pickle=False)
             z = np.load(self.root / episode["z"], mmap_mode="r", allow_pickle=False)
             if r.shape != (episode["length"], *self.manifest["r_shape"]) or z.shape != (episode["length"], self.manifest["latent_dim"]):
                 raise ValueError("Cache shapes disagree with manifest")
-            self._arrays, self._cached_id = (r, z), episode["id"]
-        return anchored_example(*self._arrays, frame, self.horizon)
+            self._cache[episode["id"]] = (r, z)
+        arrays = self._cache.pop(episode["id"])
+        self._cache[episode["id"]] = arrays
+        while len(self._cache) > 256:
+            self._cache.popitem(last=False)
+        return anchored_example(*arrays, frame, self.horizon)
 
 
 def batch(dataset, indices):
