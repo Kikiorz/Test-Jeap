@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pure JEPA-WAM only: full Plus, 4 policy servers, 16 environments per GPU."""
+import argparse
 import fcntl
 import hashlib
 import json
@@ -11,6 +12,8 @@ import time
 
 from run_con1_full_plus import build_manifest
 from run_paper_con1_eval import PLUS, REPO, atomic_json
+from run_con1_dynamic_eval import category_suffix
+from con1_dynamic_queue import PRIORITY, OTHER
 
 ROOT = Path('/workspace/artifacts/research_reports/con/pure_jepawam_full_plus_4x16_20260909')
 CHECKPOINT = Path('/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999')
@@ -27,11 +30,16 @@ def audit_metadata(metadata):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--category', choices=PRIORITY+OTHER)
+    args = parser.parse_args()
+    suffix = category_suffix(args.category)
     ROOT.mkdir(parents=True, exist_ok=True)
     with (ROOT/'run.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = dict(pid=os.getpid(), model='pure_jepa_wam_pi05_60k', checkpoint=str(CHECKPOINT),
-                      training_enabled=False, slots_per_gpu=[16]*4, expected_episodes=10030)
+                      training_enabled=False, slots_per_gpu=[16]*4, expected_episodes=10030,
+                      category=args.category)
         def event(state, **extra):
             status.update(state=state, unix_time=time.time(), **extra)
             atomic_json(ROOT/'status.json', status)
@@ -65,6 +73,9 @@ def main():
                           use_jepa_ttt_adapter=False)
             atomic_json(ROOT/'purity_audit.json', purity)
             manifest = build_manifest(json.loads((PLUS/'libero/libero/benchmark/task_classification.json').read_text()))
+            expected = sum(args.category is None or r['category']==args.category
+                           for rows in manifest['final'].values() for r in rows)
+            status['expected_episodes'] = expected
             panels = ROOT/'panels.json'
             if panels.exists() and json.loads(panels.read_text()) != manifest:
                 raise RuntimeError('Existing task and seed contract differs')
@@ -75,18 +86,20 @@ def main():
                        '--config', CONFIG, '--checkpoint', str(CHECKPOINT), '--panels', str(panels),
                        '--panel', 'final', '--output', str(ROOT/'baseline'), '--port-base', '8900',
                        '--concurrency', str(concurrency)]
+            if args.category:
+                command += ['--category', args.category]
             with (ROOT/'evaluation.log').open('a') as log:
                 child = subprocess.Popen(command, cwd=REPO, stdout=log, stderr=subprocess.STDOUT)
                 while True:
                     event('running', child_pid=child.pid)
-                    progress = ROOT/'baseline/progress.json'
+                    progress = ROOT/'baseline'/f'progress{suffix}.json'
                     if progress.exists():
                         try:
                             value = json.loads(progress.read_text())
                         except json.JSONDecodeError:
                             value = None
                         if value is not None:
-                            with (ROOT/'throughput_history.jsonl').open('a') as history:
+                            with (ROOT/f'throughput_history{suffix}.jsonl').open('a') as history:
                                 history.write(json.dumps(value)+'\n')
                     try:
                         result = child.wait(timeout=10)
@@ -95,9 +108,9 @@ def main():
                         pass
             if result:
                 raise RuntimeError(f'Evaluation exited {result}; journals retained')
-            summary = json.loads((ROOT/'baseline/summary.json').read_text())
-            if not summary['complete'] or summary['completed_episodes'] != 10030:
-                raise RuntimeError('Incomplete full Plus evaluation')
+            summary = json.loads((ROOT/'baseline'/f'summary{suffix}.json').read_text())
+            if not summary['complete'] or summary['completed_episodes'] != expected:
+                raise RuntimeError('Incomplete selected Plus evaluation')
             event('complete', child_pid=None, successes=summary['successes'])
         except Exception as error:
             event('error', error=repr(error))

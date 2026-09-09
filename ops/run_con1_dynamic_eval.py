@@ -9,7 +9,7 @@ import socket
 import subprocess
 import time
 
-from con1_dynamic_queue import collect, create_queue, export_canonical, make_batches, queue_status, totals, effective_limits
+from con1_dynamic_queue import collect, create_queue, export_canonical, make_batches, queue_status, totals, effective_limits, PRIORITY, OTHER
 from run_paper_con1_eval import PLUS, PLUS_REVISION, REPO, STANDARD_REVISION, atomic_json, wait_ready
 
 
@@ -21,6 +21,19 @@ def policy_command(config, checkpoint, port):
     return command + ['policy:checkpoint', '--policy.config', config, '--policy.dir', str(checkpoint)]
 
 
+def category_suffix(category):
+    return '' if category is None else '_'+category.lower().replace(' ', '_')
+
+
+def selected_records(records, category):
+    return records if category is None else {k:r for k,r in records.items() if r['category']==category}
+
+
+def selected_batches(manifest, records, category):
+    batches = make_batches(manifest, records, size=4 if category else 32)
+    return batches if category is None else [b for b in batches if b[1]==category]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
@@ -30,6 +43,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--port-base', type=int, default=8800)
     parser.add_argument('--concurrency', type=Path)
+    parser.add_argument('--category', choices=PRIORITY+OTHER)
     args = parser.parse_args()
     manifest = json.loads(args.panels.read_text())
     actual = subprocess.check_output(['git', '-C', str(PLUS), 'rev-parse', 'HEAD'], text=True).strip()
@@ -50,7 +64,10 @@ def main():
         raise ValueError('Existing model/benchmark contract differs')
     atomic_json(contract_path, contract)
     records, headers = collect(args.output, manifest)
-    batches = make_batches(manifest, records)
+    batches = selected_batches(manifest, records, args.category)
+    expected = sum(args.category is None or r['category']==args.category
+                   for rows in manifest['final'].values() for r in rows)
+    suffix = category_suffix(args.category)
     queue = args.output/'runtime'/f'queue_{time.time_ns()}.sqlite'
     create_queue(queue, batches)
     processes, servers, workers, handles = [], [], [], []
@@ -58,6 +75,7 @@ def main():
     def publish():
         nonlocal last_limits
         rows, hdr = collect(args.output, manifest)
+        rows = selected_records(rows, args.category)
         groups = totals(rows)
         limits = effective_limits(args.concurrency) if args.concurrency else [1]*4
         if limits != last_limits:
@@ -67,9 +85,9 @@ def main():
             last_limits = limits
         value = dict(unix_time=time.time(), groups=groups, completed=len(rows),
                      successes=sum(r['status']=='success' for r in rows.values()),
-                     scheduler='dynamic_batches_32', workers=queue_status(queue),
-                     slots_per_gpu=limits)
-        atomic_json(args.output/'progress.json', value)
+                     scheduler='dynamic_batches_4' if args.category else 'dynamic_batches_32', workers=queue_status(queue),
+                     slots_per_gpu=limits, category=args.category, expected_episodes=expected)
+        atomic_json(args.output/f'progress{suffix}.json', value)
         return rows, hdr, value
     publish()
     try:
@@ -123,13 +141,15 @@ def main():
                 time.sleep(10)
         records, headers, live = publish()
         errors = sum(r['status']=='error' for r in records.values())
-        complete = len(records)==manifest['expected_episodes'] and errors==0
-        report = dict(expected_episodes=manifest['expected_episodes'], completed_episodes=len(records),
-                      successes=live['successes'], errors=errors, groups=live['groups'], complete=complete)
-        atomic_json(args.output/'summary.json',report)
+        complete = len(records)==expected and errors==0
+        report = dict(expected_episodes=expected, completed_episodes=len(records),
+                      successes=live['successes'], errors=errors, groups=live['groups'], complete=complete,
+                      category=args.category, scope='category' if args.category else 'full_plus')
+        atomic_json(args.output/f'summary{suffix}.json',report)
         if not complete:
             raise RuntimeError('Evaluation incomplete; journals retained')
-        export_canonical(args.output,records,headers)
+        if args.category is None:
+            export_canonical(args.output,records,headers)
     finally:
         for process in processes:
             if process.poll() is None:
