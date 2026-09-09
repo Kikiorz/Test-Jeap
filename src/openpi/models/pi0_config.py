@@ -1,7 +1,8 @@
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import flax.nnx as nnx
+import flax.traverse_util as traverse_util
 import jax
 import jax.numpy as jnp
 from typing_extensions import override
@@ -61,6 +62,36 @@ class Pi0Config(_model.BaseModelConfig):
     # The first control-aligned TTT experiment updates only this adapter.
     use_jepa_ttt_adapter: bool = False
     jepa_ttt_adapter_rank: int = 8
+
+    # final_1 Reciprocal Action--Predictive Routing (RAPR).  This is an
+    # incremental module on top of a pretrained JEPA-WAM Pi0.5 checkpoint.
+    # Continuous residual coefficient.  The pretrained stream is always kept
+    # in the computation; this scalar only scales the learned Con1 residual.
+    use_rapr: bool = False
+    rapr_delta_dim: int = 128
+    rapr_width: int = 256
+    rapr_loss_weight: float = 0.1
+    # Historical runs sum feature errors; the new branch averages only D,
+    # preserving the detached q weighting over valid future steps.
+    rapr_prediction_reduction: Literal["sum", "mean"] = "sum"
+    rapr_beta: float = 0.5
+    rapr_temperature: float = 1.0
+    rapr_gate: float = 0.05
+    rapr_learnable_alpha: bool = False
+    rapr_inference_gate: float = 1.0
+    rapr_nonregression_weight: float = 1.0
+    rapr_gate_max_rms: float = 0.05
+    rapr_gate_max_abs: float = 0.2
+    # New manuscript variant, kept separate from historical RAPR checkpoints.
+    rapr_paper_orthogonal: bool = False
+    rapr_train_action_expert: bool = False
+    # Do not silently equate a training-time final layer with the last step
+    # of iterative denoising. The run protocol must choose explicitly.
+    rapr_control_stage: Literal["unresolved", "final_expert_layer", "final_denoise"] = "unresolved"
+    rapr_control_num_steps: int = 10
+    # Two shared retrievals after the last two Action blocks; r uses the
+    # second A from the same sampled-time training forward, never extra sampling.
+    rapr_late_layer_count: int = 0
 
     # Observable point-flow interface.  Stage 1 decodes the already learned
     # JEPA future-query representation into short, image-plane trajectories.
@@ -135,6 +166,40 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("JEPA TTT adapter requires the JEPA-WAM future-query branch")
             if self.jepa_ttt_adapter_rank < 1:
                 raise ValueError("jepa_ttt_adapter_rank must be positive")
+        if self.rapr_paper_orthogonal and not self.use_rapr:
+            raise ValueError("Paper orthogonal Con1 requires use_rapr=True")
+        if self.rapr_prediction_reduction not in ("sum", "mean"):
+            raise ValueError("Con1 prediction reduction must be sum or mean")
+        if self.rapr_prediction_reduction == "mean" and not self.rapr_paper_orthogonal:
+            raise ValueError("Mean-feature prediction loss requires paper Con1")
+        if self.rapr_control_num_steps < 1:
+            raise ValueError("Control retrieval needs at least one denoising step")
+        if self.rapr_late_layer_count not in (0, 2):
+            raise ValueError("Supported retrieval placement is legacy output-only or late-two")
+        if self.rapr_late_layer_count and (
+            not self.rapr_paper_orthogonal or self.rapr_control_stage != "final_expert_layer"
+            or _gemma.get_config(self.action_expert_variant).depth < 2
+        ):
+            raise ValueError("Late-two paper retrieval requires final_expert_layer supervision")
+        if self.rapr_train_action_expert and not self.rapr_paper_orthogonal:
+            raise ValueError("Action expert joint training is only configured for paper Con1")
+        if self.use_rapr:
+            if not self.pi05 or not self.use_vjepa_aux:
+                raise ValueError("RAPR requires a Pi0.5 JEPA-WAM future-query branch")
+            if self.use_action_change_mmdit or self.use_jepa_ttt_adapter:
+                raise ValueError("RAPR cannot be combined with the legacy Change or image-TTT branches")
+            if min(self.rapr_delta_dim, self.rapr_width) < 1:
+                raise ValueError("RAPR Delta-Z dimensions must be positive")
+            if self.rapr_loss_weight < 0 or self.rapr_nonregression_weight < 0 or not 0 <= self.rapr_beta < 1:
+                raise ValueError("RAPR loss weight must be nonnegative and beta must lie in [0, 1)")
+            if self.rapr_temperature <= 0:
+                raise ValueError("RAPR sensitivity temperature must be positive")
+            if not 0 < self.rapr_gate < 1:
+                raise ValueError("rapr_gate must lie strictly inside (0, 1)")
+            if not 0 <= self.rapr_inference_gate <= 1:
+                raise ValueError("rapr_inference_gate must lie in [0, 1]")
+            if self.rapr_gate_max_rms < 0 or self.rapr_gate_max_abs < 0:
+                raise ValueError("RAPR gate drift limits must be nonnegative")
 
     @property
     @override
@@ -148,6 +213,35 @@ class Pi0Config(_model.BaseModelConfig):
         from openpi.models.pi0 import Pi0
 
         return Pi0(self, rngs=nnx.Rngs(rng))
+
+    def load(self, params: at.Params, *, remove_extra_params: bool = True) -> "Pi0":
+        """Load a base checkpoint while retaining freshly initialized RAPR leaves.
+
+        A pretrained JEPA-WAM checkpoint predates ``use_rapr`` and therefore
+        has no Delta-Z/router leaves.  The generic base loader requires an
+        exact tree and would reject that valid warm start.  Existing leaves
+        are loaded verbatim; only missing RAPR leaves keep their deterministic
+        initialization (including the zero residual readout and closed runtime
+        gate).
+        """
+        if not self.use_rapr:
+            return super().load(params, remove_extra_params=remove_extra_params)
+        model = nnx.eval_shape(self.create, jax.random.key(0))
+        graphdef, state = nnx.split(model)
+        reference = traverse_util.flatten_dict(state.to_pure_dict(), sep="/")
+        loaded = traverse_util.flatten_dict(params, sep="/")
+        if remove_extra_params:
+            merged = {key: loaded.get(key, value) for key, value in reference.items()}
+        else:
+            merged = {**reference, **loaded}
+        at.check_pytree_equality(
+            expected=reference,
+            got=merged,
+            check_shapes=True,
+            check_dtypes=False,
+        )
+        state.replace_by_pure_dict(traverse_util.unflatten_dict(merged, sep="/"))
+        return nnx.merge(graphdef, state)
 
     @override
     def inputs_spec(self, *, batch_size: int = 1) -> tuple[_model.Observation, _model.Actions]:
@@ -175,6 +269,19 @@ class Pi0Config(_model.BaseModelConfig):
                     )
                     if self.use_vjepa_aux and not self.use_action_change_mmdit
                     else None
+                ),
+                transition_target=(
+                    jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.rapr_delta_dim], jnp.float32)
+                    if self.use_rapr
+                    else None
+                ),
+                transition_valid=(
+                    jax.ShapeDtypeStruct([batch_size, self.action_horizon], jnp.bool_)
+                    if self.rapr_paper_orthogonal else None
+                ),
+                task_index=(
+                    jax.ShapeDtypeStruct([batch_size], jnp.int32)
+                    if self.rapr_paper_orthogonal else None
                 ),
                 change_target=(
                     jax.ShapeDtypeStruct(
@@ -209,6 +316,20 @@ class Pi0Config(_model.BaseModelConfig):
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Returns the freeze filter based on the model config."""
+        if self.use_rapr:
+            # Incremental learning starts from a pretrained base. Alpha is an
+            # ordinary non-Param variable when fixed, so the optimizer sees
+            # only Delta-Z/router residual parameters.
+            if self.rapr_train_action_expert:
+                return nnx.Not(nnx_utils.PathRegex(
+                    ".*(rapr_delta_head|rapr_router|llm.*_1|action_in_proj|action_out_proj|"
+                    "time_mlp_in|time_mlp_out|state_proj|action_time_mlp_in|action_time_mlp_out).*"
+                ))
+            return nnx.Not(nnx_utils.PathRegex(".*(rapr_delta_head|rapr_router).*"))
+        if self.use_jepa_ttt_adapter:
+            # Only the newly added residual and its scalar gate are trainable;
+            # every released JEPA-WAM/π0.5 parameter remains frozen.
+            return nnx.Not(nnx_utils.PathRegex(".*jepa_ttt_adapter.*"))
         if self.use_achieved_change_adapter:
             trainable = nnx_utils.PathRegex(".*change_to_action_(k|v)_(down|up).*")
             return nnx.Not(trainable)

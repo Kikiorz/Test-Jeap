@@ -48,10 +48,19 @@ class CheckpointWeightLoader(WeightLoader):
     params_path: str
     # Existing loaders only initialize missing LoRA weights. Specialized configs may explicitly allow other new params.
     missing_regex: str = ".*lora.*"
+    # Continuation must not silently initialize any missing trained parameter.
+    require_complete: bool = False
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
         loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        if self.require_complete:
+            expected = flax.traverse_util.flatten_dict(params, sep="/")
+            restored = flax.traverse_util.flatten_dict(loaded_params, sep="/")
+            missing = sorted(k for k, v in expected.items() if v is not None and restored.get(k) is None)
+            if missing:
+                raise KeyError(f"Continuation checkpoint is missing {len(missing)} trained parameters: {missing[:8]}")
+            logger.info("Complete continuation checkpoint: all %d parameter leaves restored", len(expected))
         return _merge_params(loaded_params, params, missing_regex=self.missing_regex)
 
 
@@ -131,9 +140,19 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
     flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep="/")
 
     # First, take all weights that are a subset of the reference weights.
-    result = {}
+    # Disabled NNX biases are structural None entries, not missing weights.
+    # Preserve these entries without asking them for an array dtype.
+    result = {k: None for k, v in flat_ref.items() if v is None}
     for k, v in flat_loaded.items():
+        # Orbax quick-smoke artifacts may contain explicit ``None`` leaves for
+        # newly introduced optional biases.  Treat those as absent so the
+        # declared missing-parameter policy can initialize them from the
+        # current model template; never call ``astype`` on a placeholder.
+        if v is None:
+            continue
         if k in flat_ref:
+            if flat_ref[k] is None:
+                raise ValueError(f"Checkpoint supplies an array for disabled parameter: {k}")
             result[k] = v.astype(flat_ref[k].dtype) if v.dtype != flat_ref[k].dtype else v
 
     flat_loaded.clear()

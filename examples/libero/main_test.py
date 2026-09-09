@@ -178,6 +178,13 @@ class TaskSelectionTest(unittest.TestCase):
         self.assertEqual(libero_eval._select_task_ids(12, 2, 11, 3, 1), [4, 7, 10])
         self.assertEqual(libero_eval._select_task_ids(4, 0, None, 1, 0), [0, 1, 2, 3])
 
+    def test_explicit_panel_preserves_order_and_sharding(self):
+        self.assertEqual(libero_eval._select_task_ids(20, 0, None, 1, 0, [17, 1, 5]), [1, 5, 17])
+        self.assertEqual(libero_eval._select_task_ids(20, 0, None, 2, 1, [2, 17, 1]), [1, 17])
+        for ids in ([1, 1], [-1], [20], [True]):
+            with self.assertRaises(ValueError):
+                libero_eval._select_task_ids(20, 0, None, 1, 0, ids)
+
     def test_invalid_range_or_shard_fails_early(self):
         invalid_arguments = [
             (10, -1, None, 1, 0),

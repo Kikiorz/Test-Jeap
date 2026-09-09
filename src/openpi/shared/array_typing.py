@@ -32,12 +32,22 @@ Array = jax.Array | torch.Tensor
 
 
 def _check_dataclass_annotations(self, typechecker):
-    if not any(
-        frame.frame.f_globals.get("__name__") in {"jax._src.tree_util", "flax.nnx.transforms.compilation"}
-        for frame in inspect.stack()
-    ):
+    # Newer JAX AOT APIs also reconstruct PyTrees with stages.ArgInfo leaves.
+    # Walk frames directly: inspect.stack() additionally reads source context
+    # for every frame, which is unnecessary on this frequently called path.
+    frame = inspect.currentframe()
+    try:
+        while frame is not None:
+            if frame.f_globals.get("__name__") in {
+                "jax._src.tree_util",
+                "jax._src.stages",
+                "flax.nnx.transforms.compilation",
+            }:
+                return None
+            frame = frame.f_back
         return _original_check_dataclass_annotations(self, typechecker)
-    return None
+    finally:
+        del frame
 
 
 jaxtyping._decorator._check_dataclass_annotations = _check_dataclass_annotations  # noqa: SLF001
@@ -57,8 +67,10 @@ def typecheck(t: T) -> T:
 def disable_typechecking():
     initial = config.jaxtyping_disable
     config.update("jaxtyping_disable", True)  # noqa: FBT003
-    yield
-    config.update("jaxtyping_disable", initial)
+    try:
+        yield
+    finally:
+        config.update("jaxtyping_disable", initial)
 
 
 def check_pytree_equality(*, expected: PyTree, got: PyTree, check_shapes: bool = False, check_dtypes: bool = False):

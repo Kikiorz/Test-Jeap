@@ -90,6 +90,7 @@ class Args:
     num_trials_per_task: int = 50  # Number of rollouts per task
     task_start: int = 0  # Inclusive global task index
     task_end: Optional[int] = None  # Exclusive global task index; defaults to the end of the suite
+    task_ids: Optional[List[int]] = None  # Explicit development/final panel, not just a contiguous prefix
     num_task_shards: int = 1  # Split selected task IDs into this many stable, strided shards
     task_shard_id: int = 0  # Zero-based shard to evaluate
 
@@ -283,6 +284,7 @@ def eval_libero(args: Args) -> None:
         args.task_end,
         args.num_task_shards,
         args.task_shard_id,
+        args.task_ids,
     )
     max_steps = _get_max_steps(args.task_suite_name)
     run_header = _make_run_header(
@@ -811,6 +813,8 @@ def _make_run_header(
             else None
         ),
     }
+    if args.task_ids is not None:
+        run_config["explicit_task_ids"] = sorted(args.task_ids)
     return {
         "schema_version": _RESULT_SCHEMA_VERSION,
         "record_type": "run",
@@ -1081,6 +1085,7 @@ def _select_task_ids(
     task_end: Optional[int],
     num_task_shards: int,
     task_shard_id: int,
+    task_ids: Optional[Sequence[int]] = None,
 ) -> List[int]:
     resolved_end = num_tasks if task_end is None else task_end
     if task_start < 0 or task_start > num_tasks:
@@ -1094,7 +1099,15 @@ def _select_task_ids(
     if task_shard_id < 0 or task_shard_id >= num_task_shards:
         raise ValueError(f"task_shard_id must be in [0, {num_task_shards}), got {task_shard_id}")
 
-    return [task_id for task_id in range(task_start, resolved_end) if task_id % num_task_shards == task_shard_id]
+    candidates = range(task_start, resolved_end)
+    if task_ids is not None:
+        if len(set(task_ids)) != len(task_ids):
+            raise ValueError("Explicit task IDs must be unique")
+        if any(isinstance(task_id, bool) or not isinstance(task_id, int)
+               or not task_start <= task_id < resolved_end for task_id in task_ids):
+            raise ValueError("Explicit task IDs must be integers within the selected task range")
+        candidates = sorted(task_ids)
+    return [task_id for task_id in candidates if task_id % num_task_shards == task_shard_id]
 
 
 def _episode_key(record: Dict[str, Any]) -> Optional[Tuple[str, int, int]]:

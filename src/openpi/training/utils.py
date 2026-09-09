@@ -23,6 +23,14 @@ class TrainState:
     ema_params: nnx.State | None = None
 
 
+@struct.dataclass
+class FrozenReference:
+    """Original checkpoint state, never included in an optimizer/checkpoint update."""
+
+    params: nnx.State
+    model_def: nnx.GraphDef[_model.BaseModel] = struct.field(pytree_node=False)
+
+
 @at.typecheck
 def tree_to_info(tree: at.PyTree, interp_func: Callable[[Any], str] = str) -> str:
     """Converts a PyTree into a human-readable string for logging. Optionally, `interp_func` can be provided to convert

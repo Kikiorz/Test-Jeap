@@ -21,6 +21,8 @@ import torch
 import openpi.models.model as _model
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
+from openpi.training.orthogonal_targets import OrthogonalTransitionDataset, episode_split_indices
+from openpi.training.seekable_sampler import SeekableBatchSampler
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
@@ -159,6 +161,42 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset)
 
 
+class IndexedDataset(Dataset[T_co]):
+    """Expose a deterministic, zero-copy row view of another dataset."""
+
+    def __init__(self, dataset: Dataset[T_co], indices: Sequence[int] | np.ndarray):
+        self._dataset = dataset
+        self._indices = np.asarray(indices, dtype=np.int64)
+        if self._indices.ndim != 1:
+            raise ValueError("Dataset indices must be one-dimensional")
+        if len(self._indices) and (
+            self._indices[0] < 0
+            or self._indices[-1] >= len(dataset)
+            or np.any(self._indices[1:] <= self._indices[:-1])
+        ):
+            raise ValueError("Dataset indices must be sorted, unique, and in bounds")
+
+    def __getitem__(self, index: SupportsIndex) -> T_co:
+        return self._dataset[int(self._indices[int(index)])]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+
+def _task_index_column(dataset: Dataset, column="task_index") -> np.ndarray:
+    """Read task ids without decoding image/video payloads."""
+    if isinstance(dataset, PackedLiberoDataset):
+        values = dataset.rows[column]
+    elif isinstance(dataset, lerobot_dataset.LeRobotDataset):
+        values = dataset.hf_dataset[column]
+    else:
+        raise ValueError("Task-index filtering is only supported for LeRobot datasets")
+    result = np.asarray(values, dtype=np.int64)
+    if result.shape != (len(dataset),):
+        raise ValueError(f"Invalid task-index column shape {result.shape}, expected {(len(dataset),)}")
+    return result
+
+
 class VJepaTargetDataset(Dataset):
     """Adds one precomputed V-JEPA target row to each LeRobot sample."""
 
@@ -186,10 +224,30 @@ class VJepaTargetDataset(Dataset):
             raise FileNotFoundError(f"V-JEPA target manifest not found: {manifest_path}")
         with manifest_path.open() as f:
             manifest = json.load(f)
-        if tuple(manifest.get("target_shape", ())) != expected_shape:
-            raise ValueError(
-                f"V-JEPA target shape mismatch: expected {expected_shape}, manifest has {manifest.get('target_shape')}"
+        manifest_shape = tuple(manifest.get("target_shape", ()))
+        if manifest_shape != expected_shape:
+            # Some exported JEPA targets concatenate the same spatial grid
+            # for two camera views (e.g. [128, 1408]), while the policy head
+            # consumes one grid (e.g. [64, 1408]).  Keep this adaptation
+            # explicit and lossless in feature dimension: rows are grouped
+            # and averaged only when the patch count is an integer multiple.
+            if (
+                len(manifest_shape) != 2
+                or len(expected_shape) != 2
+                or manifest_shape[1] != expected_shape[1]
+                or manifest_shape[0] % expected_shape[0] != 0
+            ):
+                raise ValueError(
+                    f"V-JEPA target shape mismatch: expected {expected_shape}, manifest has {manifest_shape}"
+                )
+            self._patch_reduction = manifest_shape[0] // expected_shape[0]
+            logging.warning(
+                "Reducing concatenated V-JEPA target patches %s to model shape %s by grouped mean",
+                manifest_shape,
+                expected_shape,
             )
+        else:
+            self._patch_reduction = 1
         if manifest.get("target_dtype") != "float16":
             raise ValueError(f"Expected float16 V-JEPA targets, got {manifest.get('target_dtype')}")
         if expected_future_offset is not None and manifest.get("future_offset") != expected_future_offset:
@@ -223,7 +281,10 @@ class VJepaTargetDataset(Dataset):
                 f"Frame {frame_index} is outside V-JEPA target episode {episode_index} with {target.shape[0]} rows"
             )
         # The copy decouples the row from an mmap that may be evicted before collation.
-        sample["vjepa_target"] = np.array(target[frame_index], copy=True)
+        value = np.array(target[frame_index], copy=True)
+        if self._patch_reduction > 1:
+            value = value.reshape(self._expected_shape[0], self._patch_reduction, self._expected_shape[1]).mean(axis=1)
+        sample["vjepa_target"] = value.astype(np.float16, copy=False)
         return sample
 
     def _get_episode(self, episode_index: int) -> np.memmap:
@@ -239,9 +300,16 @@ class VJepaTargetDataset(Dataset):
             / f"episode_{episode_index:06d}.npy"
         )
         target = np.load(path, mmap_mode="r", allow_pickle=False)
-        if target.ndim != 3 or tuple(target.shape[1:]) != self._expected_shape or target.dtype != np.float16:
+        raw_shape = (
+            self._expected_shape[0] * self._patch_reduction,
+            self._expected_shape[1],
+        )
+        if target.ndim != 3 or tuple(target.shape[1:]) != raw_shape or target.dtype != np.float16:
             self._close_mmap(target)
-            raise ValueError(f"Invalid V-JEPA target array: {path}, shape={target.shape}, dtype={target.dtype}")
+            raise ValueError(
+                f"Invalid V-JEPA target array: {path}, expected (*,{raw_shape[0]},{raw_shape[1]}), "
+                f"shape={target.shape}, dtype={target.dtype}"
+            )
         self._cache[episode_index] = target
         while len(self._cache) > self._mmap_cache_size:
             _, evicted = self._cache.popitem(last=False)
@@ -560,6 +628,52 @@ def create_torch_dataset(
             },
         )
 
+    source_num_frames = len(dataset)
+    split_indices = None
+    if data_config.episode_split != "all":
+        if data_config.change_target_root is not None:
+            raise ValueError("Episode splits cannot wrap legacy tail-filtered change targets")
+        split_indices = episode_split_indices(
+            _task_index_column(dataset), _task_index_column(dataset, "episode_index"),
+            split=data_config.episode_split, fraction=data_config.validation_fraction, seed=data_config.split_seed)
+        logging.info("Episode split %s: %d/%d source frames", data_config.episode_split,
+                     len(split_indices), source_num_frames)
+    task_min = data_config.task_index_min
+    task_max = data_config.task_index_max
+    if (task_min is None) != (task_max is None):
+        raise ValueError("task_index_min and task_index_max must be configured together")
+    if task_min is not None:
+        if isinstance(task_min, bool) or isinstance(task_max, bool) or task_min < 0 or task_min > task_max:
+            raise ValueError("Require integer task indices with 0 <= task_index_min <= task_index_max")
+        if data_config.change_target_root is not None:
+            raise ValueError("Task filtering cannot currently be combined with tail-filtered change targets")
+        task_ids = _task_index_column(dataset)
+        selected = np.flatnonzero((task_ids >= task_min) & (task_ids <= task_max))
+        if split_indices is not None:
+            selected = np.intersect1d(selected, split_indices)
+        if not len(selected):
+            raise ValueError(f"No rows found for inclusive task-index interval [{task_min}, {task_max}]")
+        logging.info(
+            "Selected %d/%d LeRobot rows for task indices [%d, %d]",
+            len(selected),
+            source_num_frames,
+            task_min,
+            task_max,
+        )
+        dataset = IndexedDataset(dataset, selected)
+    elif split_indices is not None:
+        dataset = IndexedDataset(dataset, split_indices)
+
+    if data_config.transition_state_root is not None:
+        if not getattr(model_config, "rapr_paper_orthogonal", False):
+            raise ValueError("Independent-state targets require the paper Con1 architecture")
+        dataset = OrthogonalTransitionDataset(
+            dataset, data_config.transition_state_root, horizon=action_horizon,
+            expected_dim=model_config.rapr_delta_dim, expected_num_frames=source_num_frames,
+            source_root=dataset_meta.root, target_mode=data_config.transition_target_mode)
+    elif getattr(model_config, "rapr_paper_orthogonal", False):
+        raise ValueError("Paper Con1 requires real per-frame states; old repeated targets are not allowed")
+
     use_vjepa_aux = bool(getattr(model_config, "use_vjepa_aux", False))
     use_action_change = bool(getattr(model_config, "use_action_change_mmdit", False))
     if use_vjepa_aux and not use_action_change and data_config.vjepa_target_root is None:
@@ -575,7 +689,7 @@ def create_torch_dataset(
             expected_shape=(model_config.vjepa_target_grid_size**2, model_config.vjepa_target_dim),
             expected_future_offset=data_config.vjepa_future_offset,
             expected_image_key=data_config.vjepa_image_key,
-            expected_num_frames=len(dataset),
+            expected_num_frames=source_num_frames,
             mmap_cache_size=data_config.vjepa_mmap_cache_size,
         )
 
@@ -591,7 +705,7 @@ def create_torch_dataset(
             data_config.change_target_root,
             expected_shape=(model_config.change_num_tokens, model_config.change_token_dim),
             expected_future_offset=data_config.change_future_offset,
-            expected_num_frames=len(dataset),
+            expected_num_frames=source_num_frames,
             mmap_cache_size=data_config.change_mmap_cache_size,
         )
 
@@ -609,7 +723,7 @@ def create_torch_dataset(
             expected_num_points=model_config.point_flow_num_points,
             expected_horizon=data_config.point_flow_horizon,
             expected_image_key=data_config.point_flow_image_key,
-            expected_num_frames=len(dataset),
+            expected_num_frames=source_num_frames,
             mmap_cache_size=data_config.point_flow_mmap_cache_size,
         )
 
@@ -800,6 +914,7 @@ def create_torch_data_loader(
         num_workers=num_workers,
         seed=seed,
         framework=framework,
+        seekable_batches=data_config.seekable_batches,
     )
 
     return DataLoaderImpl(data_config, data_loader)
@@ -861,6 +976,7 @@ class TorchDataLoader:
         num_workers: int = 0,
         seed: int = 0,
         framework: str = "jax",
+        seekable_batches: bool = False,
     ):
         """Create a PyTorch data loader.
 
@@ -899,19 +1015,29 @@ class TorchDataLoader:
 
         generator = torch.Generator()
         generator.manual_seed(seed)
+        self._seekable_sampler = None
+        batching = dict(batch_size=local_batch_size, shuffle=(sampler is None and shuffle),
+                        sampler=sampler, drop_last=True)
+        if seekable_batches:
+            if sampler is not None:
+                raise ValueError("Seekable batching cannot be combined with another sampler")
+            self._seekable_sampler = SeekableBatchSampler(len(dataset), local_batch_size, seed=seed, shuffle=shuffle)
+            batching = dict(batch_sampler=self._seekable_sampler)
         self._data_loader = torch.utils.data.DataLoader(
             typing.cast(torch.utils.data.Dataset, dataset),
-            batch_size=local_batch_size,
-            shuffle=(sampler is None and shuffle),  # Don't shuffle if using sampler
-            sampler=sampler,
+            **batching,
             num_workers=num_workers,
             multiprocessing_context=mp_context,
             persistent_workers=num_workers > 0,
             collate_fn=_collate_fn,
             worker_init_fn=_worker_init_fn,
-            drop_last=True,
             generator=generator,
         )
+
+    def set_start_batch(self, completed_batches):
+        if self._seekable_sampler is None:
+            raise ValueError("This loader does not use the seekable data-order protocol")
+        self._seekable_sampler.seek(completed_batches)
 
     @property
     def torch_loader(self) -> torch.utils.data.DataLoader:
@@ -1002,6 +1128,9 @@ class DataLoaderImpl(DataLoader):
 
     def data_config(self) -> _config.DataConfig:
         return self._data_config
+
+    def set_start_batch(self, completed_batches):
+        self._data_loader.set_start_batch(completed_batches)
 
     def __iter__(self):
         for batch in self._data_loader:

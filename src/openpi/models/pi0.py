@@ -11,6 +11,8 @@ from typing_extensions import override
 from openpi.models import model as _model
 from openpi.models import pi0_config
 from openpi.models import point_flow as _point_flow
+from openpi.models import predictive_routing as _predictive_routing
+from openpi.models import orthogonal_con1 as _orthogonal_con1
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -22,6 +24,74 @@ logger = logging.getLogger("openpi")
 # identical GraphDefs.
 _ZERO_KERNEL_INIT = nnx.initializers.zeros_init()
 _SMALL_CHANGE_KERNEL_INIT = nnx.initializers.normal(stddev=1e-3)
+
+
+class DeltaZHead(nnx.Module):
+    """Chunk-aligned current-only foresight head (final_1 §3.1.1).
+
+    The input is the frozen JEPA-WAM query stream. Learned temporal queries
+    expose it as H transition slots; no future frame is accepted here.
+    """
+
+    def __init__(self, input_width: int, horizon: int, delta_dim: int, width: int, *, rngs: nnx.Rngs):
+        self.horizon = horizon
+        self.key = nnx.Linear(input_width, width, use_bias=False, rngs=rngs)
+        self.value = nnx.Linear(input_width, width, use_bias=False, rngs=rngs)
+        self.temporal_queries = nnx.Param(jax.random.normal(rngs.params(), (horizon, width)) * 0.02)
+        self.out = nnx.Linear(width, delta_dim, rngs=rngs)
+
+    def __call__(self, future_tokens: jax.Array) -> jax.Array:
+        tokens = future_tokens.astype(jnp.float32)
+        tokens = (tokens - tokens.mean(-1, keepdims=True)) * jax.lax.rsqrt(tokens.var(-1, keepdims=True) + 1e-6)
+        keys, values = self.key(tokens), self.value(tokens)
+        logits = jnp.einsum("hd,bqd->bhq", self.temporal_queries.value, keys) / jnp.sqrt(keys.shape[-1])
+        return self.out(nnx.gelu(jax.nn.softmax(logits, axis=-1) @ values)).astype(jnp.float32)
+
+
+class ActionPredictiveRouter(nnx.Module):
+    """Action-as-query residual route with a continuous coefficient alpha."""
+
+    def __init__(
+        self,
+        action_width: int,
+        delta_dim: int,
+        horizon: int,
+        width: int,
+        *,
+        learnable_alpha: bool = True,
+        rngs: nnx.Rngs,
+    ):
+        self.horizon = horizon
+        self.query = nnx.Linear(action_width, width, use_bias=False, rngs=rngs)
+        self.key = nnx.Linear(delta_dim, width, use_bias=False, rngs=rngs)
+        self.value = nnx.Linear(delta_dim, width, use_bias=False, rngs=rngs)
+        # Zero output means a released checkpoint is exactly the baseline.
+        self.out = nnx.Linear(width, action_width, use_bias=False, kernel_init=_ZERO_KERNEL_INIT, rngs=rngs)
+        self.relative_bias = nnx.Param(jnp.zeros((2 * horizon - 1,), dtype=jnp.float32))
+        # Store an unconstrained logit so alpha stays strictly inside (0, 1)
+        # and cannot become stuck on a hard clipping boundary.
+        alpha_logit = jnp.asarray(-2.944439, dtype=jnp.float32)
+        self.alpha_logit = nnx.Param(alpha_logit) if learnable_alpha else nnx.Variable(alpha_logit)
+
+    def __call__(self, action_hidden: jax.Array, delta: jax.Array, *, gate_override=None):
+        if action_hidden.shape[-2] != self.horizon or delta.shape[-2] != self.horizon:
+            raise ValueError("Action and Delta-Z horizons must match")
+        q, k, v = self.query(action_hidden), self.key(delta), self.value(delta)
+        offsets = jnp.arange(self.horizon)[None, :] - jnp.arange(self.horizon)[:, None] + self.horizon - 1
+        logits = jnp.einsum("bhd,bkd->bhk", q, k) / jnp.sqrt(q.shape[-1])
+        routes = jax.nn.softmax(logits + self.relative_bias.value[offsets], axis=-1)
+        gate = jax.nn.sigmoid(self.alpha_logit.value)
+        if gate_override is not None:
+            gate = gate * gate_override
+        gate = jnp.asarray(gate, dtype=jnp.float32)
+        residual = self.out(routes @ v)
+        candidate = action_hidden + (gate * residual).astype(action_hidden.dtype)
+        # The base stream is permanently retained.  Non-finite residuals are
+        # ignored for numerical safety, but there is no binary deployment
+        # decision in the normal Con1 path.
+        valid_residual = jnp.isfinite(residual).all() & jnp.isfinite(candidate).all()
+        routed = jnp.where(valid_residual & jnp.isfinite(gate), candidate, action_hidden)
+        return routed, routes
 
 
 class JepaTTTAdapter(nnx.Module):
@@ -36,13 +106,19 @@ class JepaTTTAdapter(nnx.Module):
             kernel_init=_ZERO_KERNEL_INIT,
             rngs=rngs,
         )
+        # Module-level bypass. Zero is exactly the pretrained base policy;
+        # positive values expose the residual gradually during adaptation.
+        # Residual weights start at zero, so gate=1 is still exactly the
+        # pretrained base and keeps useful gradients flowing into the adapter.
+        self.gate = nnx.Param(jnp.asarray(1.0, dtype=jnp.float32))
 
     def __call__(self, tokens: jax.Array) -> jax.Array:
         dtype = tokens.dtype
         value = tokens.astype(jnp.float32)
         value = value * jax.lax.rsqrt(jnp.mean(jnp.square(value), axis=-1, keepdims=True) + 1e-6)
         residual = self.up(nnx.silu(self.down(value)))
-        return tokens + residual.astype(dtype)
+        gate = jnp.clip(self.gate.value, 0.0, 1.0)
+        return tokens + (gate * residual).astype(dtype)
 
 
 def make_attn_mask(input_mask, mask_ar):
@@ -113,6 +189,19 @@ class Pi0(_model.BaseModel):
         self.use_achieved_change_adapter = config.use_achieved_change_adapter
         self.achieved_change_inverse_probability = config.achieved_change_inverse_probability
         self.use_jepa_ttt_adapter = config.use_jepa_ttt_adapter
+        self.use_rapr = config.use_rapr
+        self.rapr_paper_orthogonal = config.rapr_paper_orthogonal
+        self.rapr_control_stage = config.rapr_control_stage
+        self.rapr_control_num_steps = config.rapr_control_num_steps
+        self.rapr_late_layer_count = config.rapr_late_layer_count
+        self.rapr_loss_weight = config.rapr_loss_weight
+        self.rapr_prediction_reduction = config.rapr_prediction_reduction
+        self.rapr_delta_dim = config.rapr_delta_dim
+        self.rapr_beta = config.rapr_beta
+        self.rapr_temperature = config.rapr_temperature
+        self.rapr_nonregression_weight = config.rapr_nonregression_weight
+        self.rapr_gate_max_rms = config.rapr_gate_max_rms
+        self.rapr_gate_max_abs = config.rapr_gate_max_abs
         self.use_point_flow = config.use_point_flow
         self.point_flow_loss_weight = config.point_flow_loss_weight
         self.point_flow_visibility_weight = config.point_flow_visibility_weight
@@ -135,6 +224,7 @@ class Pi0(_model.BaseModel):
                 configs=llm_configs,
                 embed_dtype=config.dtype,
                 adarms=config.pi05,
+                capture_action_states=bool(config.rapr_late_layer_count),
             )
         )
         use_adarms = [False, True] if config.pi05 else [False, False]
@@ -165,6 +255,32 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        if self.use_rapr:
+            # The modules are initialized on top of (and never replace) the
+            # pretrained JEPA-WAM/Action Expert streams.  A zero output
+            # projection makes the initial candidate exactly the base model.
+            delta_head_type = _orthogonal_con1.OrthogonalDeltaHead if config.rapr_paper_orthogonal else DeltaZHead
+            router_type = _orthogonal_con1.ActionConditionedQFormer if config.rapr_paper_orthogonal else ActionPredictiveRouter
+            self.rapr_delta_head = delta_head_type(
+                paligemma_config.width,
+                self.action_horizon,
+                config.rapr_delta_dim,
+                config.rapr_width,
+                rngs=rngs,
+            )
+            self.rapr_router = router_type(
+                action_expert_config.width,
+                config.rapr_delta_dim,
+                self.action_horizon,
+                config.rapr_width,
+                learnable_alpha=config.rapr_learnable_alpha,
+                rngs=rngs,
+            )
+            alpha = jnp.asarray(config.rapr_gate, dtype=jnp.float32)
+            self.rapr_router.alpha_logit.value = jnp.log(alpha) - jnp.log1p(-alpha)
+            # Runtime value is a continuous residual multiplier (normally 1.0),
+            # not a binary promotion/deployment gate.
+            self.rapr_runtime_gate = nnx.Param(jnp.asarray(config.rapr_inference_gate, dtype=jnp.float32))
         if self.use_action_change_mmdit:
             self.change_in_proj = nnx.Linear(config.change_token_dim, action_expert_config.width, rngs=rngs)
             self.change_out_proj = nnx.Linear(
@@ -305,7 +421,13 @@ class Pi0(_model.BaseModel):
         observation: _model.Observation,
         noisy_actions: _model.Actions,
         timestep: at.Float[at.Array, " b"],
-    ) -> tuple[_model.Actions, at.Float[at.Array, "b q emb"] | None]:
+        *,
+        rapr_gate_override: float | jax.Array | None = None,
+    ) -> tuple[
+        _model.Actions,
+        at.Float[at.Array, "b q emb"] | None,
+        dict[str, jax.Array] | None,
+    ]:
         """Run the training-style joint forward without constructing a loss."""
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
@@ -320,30 +442,305 @@ class Pi0(_model.BaseModel):
             query_start = prefix_length - self.vjepa_num_queries
             attn_mask = attn_mask.at[:, prefix_length:, query_start:prefix_length].set(False)
             positions = positions.at[:, prefix_length:].add(-self.vjepa_num_queries)
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+        llm_result = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens],
             mask=attn_mask,
             positions=positions,
             adarms_cond=[None, adarms_cond],
+            return_action_states=bool(self.rapr_late_layer_count),
         )
-        velocity = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        (prefix_out, suffix_out), base_cache = llm_result[:2]
+        action_hidden = suffix_out[:, -self.action_horizon :]
+        base_velocity = self.action_out_proj(action_hidden)
         query_out = None
+        rapr_aux = None
         if self.use_vjepa_aux:
             query_out = prefix_out[:, -self.vjepa_num_queries :]
-        return velocity, query_out
+        if self.use_rapr:
+            assert query_out is not None
+            # The JEPA-WAM trunk is frozen; stop its gradient while keeping
+            # full gradients through the new Delta-Z head parameters.
+            delta = self.rapr_delta_head(jax.lax.stop_gradient(query_out))
+            runtime_gate = self._rapr_residual_scale(rapr_gate_override)
+            late_aux = {}
+            if self.rapr_late_layer_count:
+                prefix_length = prefix_tokens.shape[1]
+                context = self._late2_context(
+                    llm_result[2][-2], action_hidden, base_velocity,
+                    positions[:, prefix_length:], attn_mask[:, prefix_length:],
+                    tuple(value[-1, :, :prefix_length] for value in base_cache), adarms_cond,
+                )
+                velocity, routes, _, correction, late_aux = self._route_late2_velocity(
+                    context, delta, gate_override=runtime_gate)
+                action_hidden = late_aux["action_hidden"]
+                late_aux["late2_context"] = context
+            else:
+                velocity, routes, _, correction = self._route_action_velocity(
+                    action_hidden, delta, gate_override=runtime_gate)
+            rapr_aux = {
+                "base_velocity": base_velocity,
+                "action_hidden": action_hidden,
+                "delta": delta,
+                "routes": routes,
+                "runtime_gate": jnp.asarray(runtime_gate, dtype=jnp.float32),
+                **late_aux,
+                "velocity_correction": correction,
+            }
+        else:
+            velocity = base_velocity
+        return velocity, query_out, rapr_aux
+
+    def _route_action_velocity(self, action_hidden, delta, *, gate_override=None):
+        base_velocity = self.action_out_proj(action_hidden)
+        if self.rapr_paper_orthogonal:
+            residual, routes = self.rapr_router.residual(action_hidden, delta, gate_override=gate_override)
+            # W(H+alpha*R)+b = (WH+b)+alpha*WR. Evaluate the base term
+            # unchanged, and never round the small correction into bf16 H.
+            correction = residual @ self.action_out_proj.kernel.value.astype(jnp.float32)
+            velocity = base_velocity.astype(jnp.float32) + correction
+        else:
+            routed, routes = self.rapr_router(action_hidden, delta, gate_override=gate_override)
+            velocity = self.action_out_proj(routed)
+            correction = velocity.astype(jnp.float32) - base_velocity.astype(jnp.float32)
+        return velocity, routes, base_velocity, correction
+
+    def _late2_context(self, hidden17, base_hidden, base_velocity, positions, mask, cache, condition):
+        if hidden17.shape[1] != self.action_horizon:
+            raise ValueError("Late-two retrieval expects action-aligned suffix tokens")
+        return {"hidden17": hidden17, "base_hidden": base_hidden,
+                "base_velocity": base_velocity, "positions": positions, "mask": mask,
+                "cache": cache, "condition": condition}
+
+    def _route_late2_velocity(self, context, delta, *, gate_override=None):
+        """Shared Q-Former after blocks L-1 and L; final A defines r.
+
+        Main forward/caches stay unchanged. Only the affected last block is
+        replayed, with a fixed-precision difference to preserve small residuals.
+        Both retrievals and the intervening block are on the Action-loss path.
+        """
+        residual17, routes17 = self.rapr_router.residual(
+            context["hidden17"], delta, gate_override=gate_override)
+        # A single paired batch prevents the compiler using different fusion
+        # paths for F(H) and F(H+R), even when R is exactly zero. No duplicate
+        # weights, and no conversion of the original main stream to fp32.
+        hidden17 = context["hidden17"].astype(jnp.float32)
+        paired = lambda value: jnp.concatenate([value, value], axis=0)
+        tails = self.PaliGemma.llm(
+            jnp.concatenate([hidden17, hidden17 + residual17], axis=0),
+            paired(context["positions"]), paired(context["mask"]),
+            tuple(paired(value) for value in context["cache"]),
+            paired(context["condition"]) if context["condition"] is not None else None,
+            method="action_tail")
+        tail_base, changed_tail = jnp.split(tails, 2, axis=0)
+        tail_change = changed_tail - tail_base
+        hidden18 = context["base_hidden"].astype(jnp.float32) + tail_change
+        residual18, routes18 = self.rapr_router.residual(hidden18, delta, gate_override=gate_override)
+        projection = self.action_out_proj.kernel.value.astype(jnp.float32)
+        first_correction = tail_change @ projection
+        last_correction = residual18 @ projection
+        correction = first_correction + last_correction
+        base = context["base_velocity"]
+        return base.astype(jnp.float32) + correction, routes18, base, correction, {
+            "action_hidden": hidden18, "layer17_routes": routes17,
+            "layer17_residual": residual17, "layer18_residual": residual18,
+            "first_correction": first_correction, "last_correction": last_correction,
+        }
+
+    def _rapr_residual_scale(self, override=None):
+        # The paper's normal path is permanently H + alpha R. Alpha is
+        # inside the router; the old checkpoint deployment gate is not a
+        # second trainable/deployment decision for this method. An explicit
+        # continuous scale is retained only for controlled ablations.
+        if override is not None:
+            return override
+        return 1.0 if self.rapr_paper_orthogonal else self.rapr_runtime_gate.value
 
     def predict_action_velocity(
         self,
         observation: _model.Observation,
         noisy_actions: _model.Actions,
         timestep: at.Float[at.Array, " b"],
+        *,
+        rapr_gate_override: float | jax.Array | None = None,
     ) -> _model.Actions:
         """Return the frozen policy velocity for an explicit flow state."""
         observation = _model.preprocess_observation(None, observation, train=False)
-        velocity, _ = self._predict_action_velocity_from_preprocessed(
-            observation, noisy_actions, timestep
+        velocity, _, _ = self._predict_action_velocity_from_preprocessed(
+            observation, noisy_actions, timestep, rapr_gate_override=rapr_gate_override
         )
         return velocity
+
+    def predict_action_velocity_pair(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        timestep: at.Float[at.Array, " b"],
+    ) -> tuple[_model.Actions, _model.Actions]:
+        """Return base/candidate velocities under exactly the same flow state.
+
+        This is the deployment guard's comparison primitive.  The candidate
+        cannot consume a different observation or Gaussian flow sample.
+        """
+        if not self.use_rapr:
+            raise ValueError("Velocity pairing requires use_rapr=True")
+        observation = _model.preprocess_observation(None, observation, train=False)
+        candidate, _, aux = self._predict_action_velocity_from_preprocessed(
+            observation, noisy_actions, timestep, rapr_gate_override=1.0
+        )
+        assert aux is not None
+        return aux["base_velocity"], candidate
+
+    def predict_rapr_plan(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        timestep: at.Float[at.Array, " b"],
+    ) -> tuple[jax.Array, jax.Array]:
+        """Expose the committed Delta-Z trajectory and routes for final_3.
+
+        The returned prediction uses only the current observation.  The
+        explicit flow state is supplied by the caller so calibration and
+        monitoring can replay exactly the same action hypothesis.  This method
+        never opens the RAPR action residual gate.
+        """
+        if not self.use_rapr:
+            raise ValueError("RAPR plan prediction requires use_rapr=True")
+        observation = _model.preprocess_observation(None, observation, train=False)
+        _, _, aux = self._predict_action_velocity_from_preprocessed(
+            observation,
+            noisy_actions,
+            timestep,
+            rapr_gate_override=0.0,
+        )
+        assert aux is not None
+        return aux["delta"], aux["routes"]
+
+    def _rapr_transition_target(self, observation: _model.Observation) -> jax.Array:
+        """Obtain an H-aligned target without leaking future frames at inference.
+
+        New datasets provide an explicit current-anchored transition target. For
+        existing JEPA target stores we use a deterministic spatial mean and
+        resize it to the Delta-Z width; this keeps the incremental experiment
+        runnable before a separate transition-target extractor is available.
+        """
+        if observation.transition_target is not None:
+            return jax.lax.stop_gradient(observation.transition_target.astype(jnp.float32))
+        if self.rapr_paper_orthogonal:
+            raise ValueError("Paper Con1 requires true current-anchored transition_target; no legacy fallback")
+        if observation.vjepa_target is None:
+            raise ValueError("RAPR training requires transition_target or vjepa_target")
+        pooled = jnp.mean(observation.vjepa_target.astype(jnp.float32), axis=-2, keepdims=True)
+        pooled = jnp.broadcast_to(
+            pooled,
+            (pooled.shape[0], self.action_horizon, pooled.shape[-1]),
+        )
+        return jax.lax.stop_gradient(
+            jax.image.resize(
+                pooled,
+                (pooled.shape[0], self.action_horizon, self.rapr_delta_dim),
+                method="linear",
+            )
+        )
+
+    def update_rapr_runtime_gate(
+        self,
+        baseline_output: jax.Array,
+        candidate_output: jax.Array,
+        *,
+        baseline_score: float,
+        candidate_score: float,
+    ) -> tuple[jax.Array, dict[str, object]]:
+        """Fail-closed promotion of the RAPR residual.
+
+        The caller must predeclare the score and evaluate both outputs on the
+        same observation/noise.  A rejected or non-finite candidate closes the
+        gate, so subsequent sampling is the frozen base policy.
+        """
+        if not self.use_rapr:
+            raise ValueError("RAPR gate update requires use_rapr=True")
+        selected, info = _predictive_routing.module_output_gate(
+            baseline_output,
+            candidate_output,
+            baseline_score=baseline_score,
+            candidate_score=candidate_score,
+            max_rms=self.rapr_gate_max_rms,
+            max_abs=self.rapr_gate_max_abs,
+        )
+        self.rapr_runtime_gate.value = jnp.asarray(float(info["enabled"]), dtype=jnp.float32)
+        return selected, info
+
+    def sample_actions_guarded(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        baseline_score: float,
+        candidate_score: float,
+    ) -> tuple[_model.Actions, dict[str, object]]:
+        """Paired promotion gate over complete action chunks.
+
+        Both trajectories use the supplied noise (or one noise draw made once)
+        and the same observation.  Regressions, excessive residual drift, and
+        non-finite candidates close the runtime gate; the returned action is
+        then the baseline chunk.
+        """
+        if not self.use_rapr:
+            raise ValueError("Guarded sampling requires use_rapr=True")
+        if noise is None:
+            batch_size = observation.state.shape[0]
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        baseline = self.sample_actions(
+            jax.random.fold_in(rng, 0), observation, num_steps=num_steps, noise=noise,
+            rapr_gate_override=0.0,
+        )
+        candidate = self.sample_actions(
+            jax.random.fold_in(rng, 1), observation, num_steps=num_steps, noise=noise,
+            rapr_gate_override=1.0,
+        )
+        selected, info = self.update_rapr_runtime_gate(
+            baseline,
+            candidate,
+            baseline_score=baseline_score,
+            candidate_score=candidate_score,
+        )
+        return selected, info
+
+    def disable_rapr(self) -> None:
+        """Immediately restore the exact pretrained action path."""
+        if self.use_rapr:
+            self.rapr_runtime_gate.value = jnp.asarray(0.0, dtype=jnp.float32)
+
+    def update_jepa_ttt_runtime_gate(
+        self,
+        baseline_output: jax.Array,
+        candidate_output: jax.Array,
+        *,
+        baseline_score: float,
+        candidate_score: float,
+        max_rms: float = 0.05,
+        max_abs: float = 0.2,
+    ) -> tuple[jax.Array, dict[str, object]]:
+        """Apply the same fail-closed promotion rule to the image TTT adapter."""
+        if not self.use_jepa_ttt_adapter:
+            raise ValueError("JEPA TTT gate update requires use_jepa_ttt_adapter=True")
+        selected, info = _predictive_routing.module_output_gate(
+            baseline_output,
+            candidate_output,
+            baseline_score=baseline_score,
+            candidate_score=candidate_score,
+            max_rms=max_rms,
+            max_abs=max_abs,
+        )
+        self.jepa_ttt_adapter.gate.value = jnp.asarray(float(info["enabled"]), dtype=jnp.float32)
+        return selected, info
+
+    def disable_new_modules(self) -> None:
+        """Fail-closed emergency switch for every incremental residual."""
+        self.disable_rapr()
+        if self.use_jepa_ttt_adapter:
+            self.jepa_ttt_adapter.gate.value = jnp.asarray(0.0, dtype=jnp.float32)
 
     def predict_vjepa_from_observation(
         self, observation: _model.Observation
@@ -634,30 +1031,85 @@ class Pi0(_model.BaseModel):
         target = noise - repeated_actions
         return jnp.mean(jnp.square(action_velocity[..., :7] - target[..., :7]))
 
+    def _flow_training_inputs(self, rng, observation, actions, *, train):
+        """Shared randomization for the trainable policy and fixed reference."""
+        preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
+        observation = _model.preprocess_observation(
+            preprocess_rng, observation, train=train,
+            geometric_augmentation=not (self.use_vjepa_aux and self.vjepa_disable_geometric_augmentation))
+        noise = jax.random.normal(noise_rng, actions.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, actions.shape[:-2]) * 0.999 + 0.001
+        x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
+        return observation, noise, time, x_t, noise - actions
+
+    def reference_training_velocity(self, rng, observation, actions, *, train=True):
+        """Compute a fixed-checkpoint velocity with exactly the training bridge."""
+        if self.use_rapr:
+            raise ValueError("The original fixed reference must not contain a Con1 branch")
+        observation, _, time, x_t, _ = self._flow_training_inputs(rng, observation, actions, train=train)
+        return self._predict_action_velocity_from_preprocessed(observation, x_t, time)[0]
+
+    def _final_denoise_routes(self, observation, noise, delta):
+        """Final A_delta of actual sampling, used only for detached q weights.
+
+        r comes from the last inference step; s is the derivative of the
+        existing sampled-time flow objective. No endpoint-MSE objective or
+        derivative through the q weighting/denoising trajectory is added.
+        """
+        batch_size = noise.shape[0]
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        (_, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None], mask=make_attn_mask(prefix_mask, prefix_ar_mask),
+            positions=jnp.cumsum(prefix_mask, axis=1) - 1)
+        delta = jax.lax.stop_gradient(delta)
+        dt = -1.0 / self.rapr_control_num_steps
+
+        def step(index, carry):
+            x_t, time, _ = carry
+            tokens, mask, ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, (batch_size,)))
+            prefix_attention = einops.repeat(prefix_mask, "b p -> b s p", s=tokens.shape[1])
+            if not self.vjepa_action_attends_queries:
+                prefix_attention = prefix_attention.at[:, :, -self.vjepa_num_queries:].set(False)
+            attention = jnp.concatenate([prefix_attention, make_attn_mask(mask, ar_mask)], axis=-1)
+            positions = prefix_mask.sum(-1)[:, None] + jnp.cumsum(mask, axis=-1) - 1
+            if not self.vjepa_action_attends_queries:
+                positions -= self.vjepa_num_queries
+            (_, suffix), _ = self.PaliGemma.llm(
+                [None, tokens], mask=attention, positions=positions, kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond])
+            _, routes, base_velocity, correction = self._route_action_velocity(
+                suffix[:, -self.action_horizon:], delta, gate_override=1.0)
+            # Preserve the original sampler's base multiplication precision.
+            return x_t + dt * base_velocity + dt * correction, time + dt, routes
+
+        routes0 = jnp.zeros((batch_size, self.action_horizon, self.action_horizon), dtype=jnp.float32)
+        _, _, routes = jax.lax.fori_loop(
+            0, self.rapr_control_num_steps, step,
+            (jax.lax.stop_gradient(noise), jnp.asarray(1.0, dtype=jnp.float32), routes0))
+        return jax.lax.stop_gradient(routes)
+
     def compute_all_loss_components(
-        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
+        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False,
+        reference_velocity: jax.Array | None = None,
+        full_diagnostics: bool = True,
     ) -> tuple[
         at.Float[at.Array, "*b ah"],
         at.Float[at.Array, "*b"] | None,
         at.Float[at.Array, "*b"] | None,
         dict[str, at.Float[at.Array, "*b"]],
     ]:
-        preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
-        observation = _model.preprocess_observation(
-            preprocess_rng,
-            observation,
-            train=train,
-            geometric_augmentation=not (self.use_vjepa_aux and self.vjepa_disable_geometric_augmentation),
-        )
-
         batch_shape = actions.shape[:-2]
-        noise = jax.random.normal(noise_rng, actions.shape)
-        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
-        time_expanded = time[..., None, None]
-        x_t = time_expanded * noise + (1 - time_expanded) * actions
-        u_t = noise - actions
+        observation, noise, time, x_t, u_t = self._flow_training_inputs(rng, observation, actions, train=train)
 
-        v_t, query_out = self._predict_action_velocity_from_preprocessed(observation, x_t, time)
+        v_t, query_out, rapr_aux = self._predict_action_velocity_from_preprocessed(
+            observation,
+            x_t,
+            time,
+            # Train the normal continuous-residual path at full runtime scale;
+            # the learned alpha remains bounded inside the router.
+            rapr_gate_override=1.0 if self.use_rapr else None,
+        )
 
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
         if not self.use_vjepa_aux:
@@ -675,8 +1127,150 @@ class Pi0(_model.BaseModel):
         target /= jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
         aux_loss = jnp.mean(1.0 - jnp.sum(predicted_target * target, axis=-1), axis=-1)
 
+        metrics = {}
+        if self.use_rapr:
+            assert rapr_aux is not None
+            if self.rapr_paper_orthogonal and self.rapr_control_stage == "unresolved":
+                raise ValueError(
+                    "Paper Con1 control stage must be specified explicitly before training"
+                )
+            transition_target = self._rapr_transition_target(observation)
+            delta = rapr_aux["delta"]
+            if delta.shape != transition_target.shape:
+                raise ValueError(
+                    "RAPR Delta-Z/transition target shape mismatch: "
+                    f"{delta.shape} != {transition_target.shape}"
+                )
+            action_hidden = rapr_aux["action_hidden"]
+
+            def routed_action_loss(delta_value):
+                if self.rapr_late_layer_count:
+                    velocity_value, routes_value, *_ = self._route_late2_velocity(
+                        rapr_aux["late2_context"], delta_value)
+                else:
+                    velocity_value, routes_value, _, _ = self._route_action_velocity(action_hidden, delta_value)
+                return jnp.mean(jnp.square(velocity_value - u_t)), routes_value
+
+            (_, routes), action_gradient = jax.value_and_grad(
+                routed_action_loss, has_aux=True
+            )(delta)
+            if self.rapr_paper_orthogonal:
+                if self.rapr_control_stage == "final_denoise":
+                    routes = self._final_denoise_routes(observation, noise, delta)
+                if observation.transition_valid is None:
+                    raise ValueError("Paper Con1 requires an episode-tail validity mask")
+                weights = _orthogonal_con1.control_weights(
+                    routes, delta, action_gradient, beta=self.rapr_beta, valid=observation.transition_valid)
+                if not full_diagnostics:
+                    if self.use_point_flow:
+                        raise ValueError("Minimal paper Con1 diagnostics do not support point-flow training")
+                    # The normal forward, sensitivity, q and losses above are
+                    # unchanged. Skip auxiliary retrievals/reductions entirely,
+                    # not merely their serialization. Evaluation defaults full.
+                    metrics = _orthogonal_con1.prediction_metrics(
+                        delta, transition_target, weights, observation.transition_valid,
+                        full_diagnostics=False, feature_reduction=self.rapr_prediction_reduction)
+                    candidate7 = jnp.square(v_t[..., :7] - u_t[..., :7]).mean((-1, -2))
+                    metrics["rapr_residual_flow7_gain"] = (
+                        jnp.square(rapr_aux["base_velocity"][..., :7] - u_t[..., :7]).mean((-1, -2)) - candidate7)
+                    if self.rapr_nonregression_weight > 0:
+                        fixed_velocity = rapr_aux["base_velocity"] if reference_velocity is None else reference_velocity
+                        base_flow_loss = jnp.mean(
+                            jnp.square(jax.lax.stop_gradient(fixed_velocity) - u_t), axis=-1)
+                        metrics["rapr_nonregression_loss"] = jnp.mean(
+                            jax.nn.relu(flow_loss - jax.lax.stop_gradient(base_flow_loss)), axis=-1)
+                    metrics["rapr_route_gate"] = jnp.broadcast_to(
+                        jax.nn.sigmoid(self.rapr_router.alpha_logit.value), batch_shape)
+                    return flow_loss, aux_loss, None, metrics
+                metrics.update(_orthogonal_con1.prediction_metrics(
+                    delta, transition_target, weights, observation.transition_valid,
+                    feature_reduction=self.rapr_prediction_reduction))
+                route_entropy = -(routes * jnp.log(jnp.maximum(routes, 1e-30))).sum(-1).mean(-1)
+                metrics["rapr_route_entropy"] = route_entropy
+                metrics["rapr_action_sensitivity"] = jnp.abs((action_gradient * delta).sum(-1)).mean(-1)
+                metrics["rapr_residual_velocity_rms"] = jnp.sqrt(
+                    jnp.square(v_t - rapr_aux["base_velocity"]).mean((-1, -2)))
+                metrics["rapr_raw_velocity_correction_rms"] = jnp.sqrt(
+                    jnp.square(rapr_aux["velocity_correction"]).mean((-1, -2)))
+                diagnostics = self.rapr_router.diagnostic_retrieval(
+                    jax.lax.stop_gradient(action_hidden), jax.lax.stop_gradient(delta))
+                metrics["rapr_action_condition_kl"] = diagnostics["condition_kl"]
+                metrics["rapr_retrieval_max_mass"] = diagnostics["route_max_mass"]
+                projection = jax.lax.stop_gradient(self.action_out_proj.kernel.value.astype(jnp.float32))
+                candidate7 = jnp.square(v_t[..., :7] - u_t[..., :7]).mean((-1, -2))
+                before_last = rapr_aux["base_velocity"].astype(jnp.float32)
+                if self.rapr_late_layer_count:
+                    before_last = before_last + rapr_aux["first_correction"]
+                    for layer in (17, 18):
+                        metrics[f"rapr_layer{layer}_residual_rms"] = jnp.sqrt(
+                            jnp.square(rapr_aux[f"layer{layer}_residual"]).mean((-1, -2)))
+                    first_routes = rapr_aux["layer17_routes"]
+                    metrics["rapr_layer17_route_entropy"] = -(
+                        first_routes * jnp.log(jnp.maximum(first_routes, 1e-30))).sum(-1).mean(-1)
+                    metrics["rapr_layer18_route_entropy"] = route_entropy
+                    metrics["rapr_layer_routes_l1"] = jnp.abs(first_routes - routes).sum(-1).mean(-1)
+                    metrics["rapr_layer17_velocity_effect_rms"] = jnp.sqrt(
+                        jnp.square(rapr_aux["first_correction"]).mean((-1, -2)))
+                    first_only_error = jnp.square(before_last[..., :7] - u_t[..., :7]).mean((-1, -2))
+                    metrics["rapr_layer17_flow7_gain"] = jnp.square(
+                        rapr_aux["base_velocity"][..., :7] - u_t[..., :7]).mean((-1, -2)) - first_only_error
+                    metrics["rapr_layer18_flow7_gain"] = first_only_error - candidate7
+                for name in ("uniform", "unconditioned"):
+                    # Late-two: local ablation of the LAST retrieval, holding
+                    # the first residual/tail fixed, not an all-layer ablation.
+                    counterfactual = before_last + diagnostics[f"{name}_residual"] @ projection
+                    metrics[f"rapr_{name}_flow7_gain"] = (
+                        jnp.square(counterfactual[..., :7] - u_t[..., :7]).mean((-1, -2)) - candidate7)
+                metrics["rapr_residual_flow7_gain"] = (
+                    jnp.square(rapr_aux["base_velocity"][..., :7] - u_t[..., :7]).mean((-1, -2)) - candidate7)
+                # Exact output-level derivatives. Late-two action sensitivity
+                # includes the affected final block, not just the output head.
+                prediction_gradient = _orthogonal_con1.prediction_output_gradient(
+                    delta, transition_target, weights, loss_weight=self.rapr_loss_weight,
+                    feature_reduction=self.rapr_prediction_reduction)
+                action_gradient_rms = jnp.sqrt(jnp.square(action_gradient).mean((-1, -2)))
+                prediction_gradient_rms = jnp.sqrt(jnp.square(prediction_gradient).mean((-1, -2)))
+                metrics["rapr_delta_action_gradient_rms"] = action_gradient_rms
+                metrics["rapr_delta_prediction_gradient_rms"] = prediction_gradient_rms
+                metrics["rapr_delta_action_prediction_gradient_ratio"] = (
+                    action_gradient_rms / jnp.maximum(prediction_gradient_rms, 1e-30))
+                metrics["rapr_sensitivity_nonzero_fraction"] = (
+                    jnp.abs((action_gradient * delta).sum(-1)) > 0).astype(jnp.float32).mean(-1)
+                if observation.task_index is not None:
+                    # The LIBERO export orders suites as 10/goal/object/spatial.
+                    for suite_id, name in enumerate(("libero_10", "libero_goal", "libero_object", "libero_spatial")):
+                        belongs = (observation.task_index // 10 == suite_id).astype(jnp.float32)
+                        metrics[f"{name}_sample_fraction"] = belongs
+                        metrics[f"{name}_flow_numerator"] = flow_loss.mean(-1) * belongs
+            else:
+                weights = _predictive_routing.supervision_weights(
+                    routes, delta, action_gradient, beta=self.rapr_beta, temperature=self.rapr_temperature)
+                transition_error = jnp.mean(jnp.square(delta - transition_target), axis=-1)
+                metrics["rapr_prediction_loss"] = (weights * transition_error).sum(-1) / jnp.maximum(
+                    weights.sum(-1), 1e-12)
+            metrics["rapr_weight_min"] = weights.min(-1)
+            fixed_velocity = rapr_aux["base_velocity"] if reference_velocity is None else reference_velocity
+            base_flow_loss = jnp.mean(jnp.square(jax.lax.stop_gradient(fixed_velocity) - u_t), axis=-1)
+            if self.rapr_paper_orthogonal:
+                metrics["rapr_reference_flow_loss"] = base_flow_loss.mean(-1)
+                # LIBERO executes seven dimensions; report them separately
+                # from the unchanged, padded 32-dimensional training objective.
+                metrics["flow_mse_action7"] = jnp.square(v_t[..., :7] - u_t[..., :7]).mean((-1, -2))
+                metrics["reference_flow_mse_action7"] = jnp.square(
+                    fixed_velocity[..., :7] - u_t[..., :7]).mean((-1, -2))
+                metrics["reference_velocity_action7_rms"] = jnp.sqrt(jnp.square(
+                    v_t[..., :7] - fixed_velocity[..., :7]).mean((-1, -2)))
+                metrics["rapr_reference_velocity_rms"] = jnp.sqrt(
+                    jnp.square(v_t - jax.lax.stop_gradient(fixed_velocity)).mean((-1, -2)))
+            metrics["rapr_nonregression_loss"] = jnp.mean(
+                jax.nn.relu(flow_loss - jax.lax.stop_gradient(base_flow_loss)), axis=-1
+            )
+            metrics["rapr_route_gate"] = jnp.broadcast_to(
+                jax.nn.sigmoid(self.rapr_router.alpha_logit.value), batch_shape
+            )
+
         if not self.use_point_flow:
-            return flow_loss, aux_loss, None, {}
+            return flow_loss, aux_loss, None, metrics
         if (
             observation.point_flow_queries is None
             or observation.point_flow_target is None
@@ -694,7 +1288,7 @@ class Pi0(_model.BaseModel):
             visibility_weight=self.point_flow_visibility_weight,
             smoothness_weight=self.point_flow_smoothness_weight,
         )
-        return flow_loss, aux_loss, point_loss, point_metrics
+        return flow_loss, aux_loss, point_loss, {**point_metrics, **metrics}
 
     def compute_loss_components(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
@@ -726,10 +1320,14 @@ class Pi0(_model.BaseModel):
                 rng, observation, actions, train=train
             )
             return action_loss + self.change_loss_weight * change_loss[..., None]
-        flow_loss, aux_loss, point_loss, _ = self.compute_all_loss_components(rng, observation, actions, train=train)
+        flow_loss, aux_loss, point_loss, metrics = self.compute_all_loss_components(
+            rng, observation, actions, train=train
+        )
         if aux_loss is None:
             return flow_loss
         total_loss = flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
+        if self.use_rapr:
+            total_loss = total_loss + self.rapr_loss_weight * metrics["rapr_prediction_loss"][..., None]
         if point_loss is not None:
             total_loss = total_loss + self.point_flow_loss_weight * point_loss[..., None]
         return total_loss
@@ -742,6 +1340,7 @@ class Pi0(_model.BaseModel):
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
         noise: at.Float[at.Array, "b ah ad"] | None = None,
+        rapr_gate_override: float | jax.Array | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         if self.use_action_change_mmdit:
@@ -757,7 +1356,15 @@ class Pi0(_model.BaseModel):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        (prefix_out, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None], mask=prefix_attn_mask, positions=positions
+        )
+        delta = None
+        if self.use_rapr:
+            assert prefix_out is not None
+            query_out = prefix_out[:, -self.vjepa_num_queries :]
+            delta = self.rapr_delta_head(query_out)
+        runtime_gate = self._rapr_residual_scale(rapr_gate_override) if self.use_rapr else None
 
         def step(carry):
             x_t, time = carry
@@ -785,15 +1392,34 @@ class Pi0(_model.BaseModel):
             if self.use_vjepa_aux and not self.vjepa_action_attends_queries:
                 positions = positions - self.vjepa_num_queries
 
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+            llm_result = self.PaliGemma.llm(
                 [None, suffix_tokens],
                 mask=full_attn_mask,
                 positions=positions,
                 kv_cache=kv_cache,
                 adarms_cond=[None, adarms_cond],
+                return_action_states=bool(self.rapr_late_layer_count),
             )
+            (prefix_out, suffix_out), _ = llm_result[:2]
             assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            action_hidden = suffix_out[:, -self.action_horizon :]
+            if self.rapr_late_layer_count:
+                context = self._late2_context(
+                    llm_result[2][-2], action_hidden, self.action_out_proj(action_hidden),
+                    positions, full_attn_mask, tuple(value[-1] for value in kv_cache), adarms_cond)
+                _, _, base_velocity, correction, _ = self._route_late2_velocity(
+                    context, delta, gate_override=runtime_gate)
+                return x_t + dt * base_velocity + dt * correction, time + dt
+            if self.use_rapr and self.rapr_paper_orthogonal:
+                _, _, base_velocity, correction = self._route_action_velocity(
+                    action_hidden, delta, gate_override=runtime_gate)
+                return x_t + dt * base_velocity + dt * correction, time + dt
+            if self.use_rapr:
+                assert delta is not None and runtime_gate is not None
+                action_hidden, _ = self.rapr_router(
+                    action_hidden, delta, gate_override=runtime_gate
+                )
+            v_t = self.action_out_proj(action_hidden)
 
             return x_t + dt * v_t, time + dt
 

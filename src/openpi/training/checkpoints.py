@@ -18,8 +18,16 @@ import openpi.training.utils as training_utils
 
 
 def initialize_checkpoint_dir(
-    checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool
+    checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool,
+    keep_steps: tuple[int, ...] = (),
 ) -> tuple[ocp.CheckpointManager, bool]:
+    if any(not isinstance(step, int) or step < 0 for step in keep_steps):
+        raise ValueError("Explicit checkpoint keep steps must be nonnegative integers")
+    protected = frozenset(keep_steps)
+    # Directory names are zero-based. An evaluation at 5,000 completed
+    # updates uses 4999, which periodic step % 5000 preservation misses.
+    should_keep = ((lambda step: step in protected or (keep_period is not None and step % keep_period == 0))
+                   if protected else None)
     checkpoint_dir = epath.Path(checkpoint_dir).resolve()
     resuming = False
     if checkpoint_dir.exists():
@@ -46,7 +54,8 @@ def initialize_checkpoint_dir(
         },
         options=ocp.CheckpointManagerOptions(
             max_to_keep=1,
-            keep_period=keep_period,
+            keep_period=keep_period if not protected else None,
+            should_keep_fn=should_keep,
             create=False,
             async_options=ocp.AsyncOptions(timeout_secs=7200),
         ),

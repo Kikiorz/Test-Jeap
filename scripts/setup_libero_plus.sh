@@ -20,6 +20,13 @@ ASSET_SHA256="96764a4bfbdaea98d4411598caeab235458318fe0f549611b93d1a323027b3cf"
 ASSET_URL="https://huggingface.co/datasets/Sylvest/LIBERO-plus/resolve/${ASSET_REVISION}/assets.zip?download=true"
 ASSET_ARCHIVE="$DOWNLOAD_ROOT/assets-${ASSET_REVISION}.zip"
 ASSET_MARKER="$LIBERO_PLUS_ROOT/libero/libero/assets/.jepawam-assets-sha256"
+ASSET_DOWNLOADER="${LIBERO_PLUS_ASSET_DOWNLOADER:-curl}"
+if [[ "$ASSET_DOWNLOADER" == "hf" ]]; then
+    ASSET_ARCHIVE="$DOWNLOAD_ROOT/hf-${ASSET_REVISION}/assets.zip"
+elif [[ "$ASSET_DOWNLOADER" != "curl" ]]; then
+    echo "Unknown asset downloader: $ASSET_DOWNLOADER" >&2
+    exit 2
+fi
 
 require_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -101,8 +108,18 @@ git -C "$LIBERO_PLUS_ROOT" fetch --depth 1 origin "$LIBERO_PLUS_REVISION"
 git -C "$LIBERO_PLUS_ROOT" checkout --detach FETCH_HEAD
 
 if [[ ! -f "$ASSET_ARCHIVE" ]] || ! printf '%s  %s\n' "$ASSET_SHA256" "$ASSET_ARCHIVE" | sha256sum --check --status; then
-    curl --location --fail --retry 8 --retry-all-errors --continue-at - \
-        --output "$ASSET_ARCHIVE" "$ASSET_URL"
+    if [[ "$ASSET_DOWNLOADER" == "hf" ]]; then
+        # Isolated CLI environment: do not upgrade the training virtualenv's Hub client.
+        # Keep metadata/chunk cache between attempts; the checksum below is still mandatory.
+        HF_HUB_DISABLE_IMPLICIT_TOKEN=1 "$UV_BIN" tool run --from huggingface-hub==1.30.0 \
+            hf download Sylvest/LIBERO-plus assets.zip --type dataset \
+            --revision "$ASSET_REVISION" --local-dir "$(dirname "$ASSET_ARCHIVE")"
+    else
+        # A failed invocation leaves a resumable file. Do not use curl's internal
+        # retry here: it can rewind to the invocation's original offset after an
+        # HTTP/2 interruption, discarding hours of newly downloaded bytes.
+        curl --location --fail --continue-at - --output "$ASSET_ARCHIVE" "$ASSET_URL"
+    fi
 fi
 printf '%s  %s\n' "$ASSET_SHA256" "$ASSET_ARCHIVE" | sha256sum --check
 

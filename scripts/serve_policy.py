@@ -1,14 +1,17 @@
 import dataclasses
 import enum
 import logging
+import math
 import socket
 
 import tyro
 
-from openpi.policies import policy as _policy
+import jax.numpy as jnp
 from openpi.policies import achieved_change_adaptation
+from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
+from openpi.shared import nnx_utils
 from openpi.training import config as _config
 
 
@@ -49,6 +52,8 @@ class Args:
 
     # Port to serve the policy on.
     port: int = 8000
+    # Bind address; local research gates explicitly use 127.0.0.1.
+    host: str = "0.0.0.0"
     # Record the policy's behavior for debugging.
     record: bool = False
 
@@ -61,6 +66,10 @@ class Args:
     con2_learning_rate: float = 1e-5
     con2_proximal_weight: float = 1e-4
     con2_noise_samples: int = 4
+
+    # Optional deployment override for the final_1 RAPR promotion gate.
+    # None preserves the checkpoint/configured gate state.
+    rapr_runtime_gate: float | None = None
 
 
 # Default checkpoints that should be used for each environment.
@@ -118,6 +127,24 @@ def create_policy(args: Args) -> _policy.Policy:
 
 def main(args: Args) -> None:
     policy = create_policy(args)
+    if args.rapr_runtime_gate is not None:
+        gate = float(args.rapr_runtime_gate)
+        if not math.isfinite(gate) or not 0.0 <= gate <= 1.0:
+            raise ValueError(f"rapr_runtime_gate must be in [0, 1], got {gate}")
+        model = getattr(policy, "_model", None)
+        if model is None or not getattr(model, "use_rapr", False):
+            raise ValueError("--rapr-runtime-gate requires a policy loaded with use_rapr=True")
+        if getattr(model, "rapr_paper_orthogonal", False):
+            # Diagnostic continuous multiplier, separate from learned alpha.
+            # With a tuned action expert scale=0 is NOT the original model.
+            policy._sample_kwargs["rapr_gate_override"] = gate
+        else:
+            model.rapr_runtime_gate.value = jnp.asarray(gate, dtype=jnp.float32)
+        # This command-line override is immutable for the life of this
+        # diagnostic server.  Snapshotting it is therefore safe and restores
+        # the normal compiled inference speed; policies that can change their
+        # gate at runtime retain Policy's non-JIT path.
+        policy._sample_actions = nnx_utils.module_jit(model.sample_actions)
     policy_metadata = policy.metadata
 
     # Record the policy's behavior.
@@ -130,7 +157,7 @@ def main(args: Args) -> None:
 
     server = websocket_policy_server.WebsocketPolicyServer(
         policy=policy,
-        host="0.0.0.0",
+        host=args.host,
         port=args.port,
         metadata=policy_metadata,
     )

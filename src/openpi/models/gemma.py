@@ -359,6 +359,7 @@ class Block(nn.Module):
 
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()
+    capture_action_states: bool = False
 
     @nn.compact
     def __call__(
@@ -423,7 +424,7 @@ class Block(nn.Module):
         ]
         xs = sharding.activation_sharding_constraint(xs)
 
-        return xs, kv_cache
+        return xs, (kv_cache, xs[1]) if self.capture_action_states else kv_cache
 
 
 KVCache: TypeAlias = tuple[at.Float[at.Array, "l b _t _k _h"], at.Float[at.Array, "l b _t _v _h"]]
@@ -439,6 +440,7 @@ class Module(nn.Module):
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()  # Every float is dropped independently.
     adarms: bool = False
+    capture_action_states: bool = False
 
     def setup(self):
         # all experts must have the same depth
@@ -473,6 +475,7 @@ class Module(nn.Module):
             configs=self.configs,
             dropout=self.dropout,
             dropout_bdims=self.dropout_bdims,
+            capture_action_states=self.capture_action_states,
         )
         self.final_norms = [RMSNorm(name=_name("final_norm", i)) for i in range(len(self.configs))]
 
@@ -494,7 +497,8 @@ class Module(nn.Module):
         injections: Sequence[at.Float[at.Array, "l b _t _d"] | None] | None = None,
         active_experts: at.Bool[at.Array, "l e"] | None = None,
         deterministic: bool = True,
-    ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
+        return_action_states: bool = False,
+    ):
         embedded = jax.tree.map(lambda e: e.astype(self.embed_dtype), embedded)
         mask = jnp.asarray(mask)[:, None, :, :]
         if layer_masks is None:
@@ -524,12 +528,39 @@ class Module(nn.Module):
             active_experts,
             deterministic,
         )
+        action_states = None
+        if self.capture_action_states:
+            kv_cache, action_states = kv_cache
+        elif return_action_states:
+            raise ValueError("Action-state capture was not enabled when constructing Gemma")
 
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
 
-        return [
+        outputs = [
             f(e, a)[0] if e is not None else e for f, e, a in zip(self.final_norms, embedded, adarms_cond, strict=True)
-        ], kv_cache
+        ]
+        return (outputs, kv_cache, action_states) if return_action_states else (outputs, kv_cache)
+
+    def action_tail(self, hidden, positions, mask, kv_cache, adarms_cond):
+        """Apply only the final Action block and norm, reusing original weights.
+
+        This pure fp32 tail supports F(H + residual) - F(H), added to the
+        unchanged bf16 main stream. It creates no duplicate parameter leaves.
+        Prefix K/V is from the same main forward, with Action K/V excluded.
+        """
+        if len(self.configs) != 2 or self.dropout:
+            raise ValueError("Late-two retrieval requires two experts and deterministic blocks")
+        params = jax.tree.map(lambda value: value[-1], self.variables["params"]["layers"])
+        hidden = hidden.astype(jnp.float32)
+        cache = jax.tree.map(lambda value: value.astype(jnp.float32), kv_cache)
+        block = Block(configs=tuple(self.configs), parent=None)
+        (_, output), _ = block.apply(
+            {"params": params}, [None, hidden], cache, positions, mask[:, None],
+            [None, adarms_cond], [None, jnp.zeros_like(hidden)], [False, True], True,
+        )
+        return RMSNorm(parent=None).apply(
+            {"params": self.variables["params"]["final_norm_1"]}, output, adarms_cond,
+        )[0]
 
     def init(self, use_adarms: Sequence[bool]):
         """Convenience method for initializing all parameters, necessary due to the quirks of linen."""
@@ -540,7 +571,6 @@ class Module(nn.Module):
             jnp.zeros((1, len(self.configs), len(self.configs)), dtype=bool),
             adarms_cond=[jnp.zeros((1, c.width)) if u else None for u, c in zip(use_adarms, self.configs, strict=True)],
         )
-
 
 def _apply_rope(x, *, positions, max_wavelength=10_000):
     """Applies RoPE positions [B, L] to x [B, L, H, D]."""

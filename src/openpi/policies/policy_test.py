@@ -11,6 +11,19 @@ from openpi.policies import policy_config as _policy_config
 from openpi.training import config as _config
 
 
+@pytest.mark.parametrize("paper", [False, True])
+def test_paper_residual_inference_compiles_but_legacy_mutable_gate_does_not(monkeypatch, paper):
+    from types import SimpleNamespace
+
+    def sample(*args, **kwargs):
+        return None
+    sentinel = object()
+    monkeypatch.setattr(_policy.nnx_utils, "module_jit", lambda fn: sentinel)
+    model = SimpleNamespace(use_rapr=True, rapr_paper_orthogonal=paper, sample_actions=sample)
+    policy = _policy.Policy(model)
+    assert policy._sample_actions is (sentinel if paper else sample)
+
+
 def test_seeded_jax_inference_rng_is_stable_and_does_not_advance_global_rng():
     initial_rng = jax.random.key(0)
 

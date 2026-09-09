@@ -98,6 +98,9 @@ TASK_END="${TASK_END:-}"
 NUM_TASK_SHARDS="${NUM_TASK_SHARDS:-1}"
 TASK_SHARD_ID="${TASK_SHARD_ID:-0}"
 REPLAN_STEPS="${REPLAN_STEPS:-5}"
+# Keep the historical Python default, but make the rollout seed explicit and
+# configurable. A task-selection seed or RUN_ID suffix does not seed the env.
+SEED="${SEED:-7}"
 SAVE_VIDEO="${SAVE_VIDEO:-0}"
 EVAL_GPU="${EVAL_GPU:-0}"
 
@@ -114,11 +117,16 @@ eval_args=(
     --args.num-task-shards "$NUM_TASK_SHARDS"
     --args.task-shard-id "$TASK_SHARD_ID"
     --args.replan-steps "$REPLAN_STEPS"
+    --args.seed "$SEED"
     --args.results-path "$RESULTS_PATH"
     --args.video-out-path "$VIDEO_ROOT"
 )
 if [[ -n "$TASK_END" ]]; then
     eval_args+=(--args.task-end "$TASK_END")
+fi
+if [[ -n "${TASK_IDS:-}" ]]; then
+    read -r -a selected_task_ids <<< "$TASK_IDS"
+    eval_args+=(--args.task-ids "${selected_task_ids[@]}")
 fi
 if [[ "$SAVE_VIDEO" == "0" ]]; then
     eval_args+=(--args.no-save-video)

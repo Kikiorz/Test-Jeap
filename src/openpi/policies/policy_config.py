@@ -54,7 +54,11 @@ def create_trained_policy(
         model = train_config.model.load_pytorch(train_config, weight_path)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
     else:
-        model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+        # Preserve the paper Con1 checkpoint's mixed precision: frozen base
+        # stays bf16, while learned residuals/alpha/action expert retain their
+        # saved precision. Casting alpha to bf16 would change fixed 0.05.
+        restore_dtype = None if getattr(train_config.model, "rapr_paper_orthogonal", False) else jnp.bfloat16
+        model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=restore_dtype))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure

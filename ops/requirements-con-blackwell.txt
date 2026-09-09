@@ -1,0 +1,12 @@
+# Runtime override for the existing Vast RTX 5090 instance, not upstream defaults.
+# Use with https://download.pytorch.org/whl/cu129 as an extra index.
+# JAX-only upgrades previously left Torch's CUDA 12.6 libraries installed.
+jax[cuda12]==0.7.2
+jaxlib==0.7.2
+ml-dtypes==0.5.4
+numpy==2.2.6
+orbax-checkpoint==0.11.28
+flax==0.10.2
+torch==2.8.0+cu129
+torchvision==0.23.0+cu129
+torchcodec==0.7.0+cu129

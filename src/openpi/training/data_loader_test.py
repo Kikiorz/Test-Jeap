@@ -64,6 +64,24 @@ def test_vjepa_target_dataset(tmp_path):
         )
 
 
+def test_indexed_dataset_is_sorted_zero_copy_view():
+    source = _ListDataset(
+        [
+            {"index": np.int64(0), "value": "zero"},
+            {"index": np.int64(1), "value": "one"},
+            {"index": np.int64(2), "value": "two"},
+            {"index": np.int64(3), "value": "three"},
+        ]
+    )
+    dataset = _data_loader.IndexedDataset(source, np.asarray([1, 3]))
+
+    assert len(dataset) == 2
+    assert dataset[0] is source[1]
+    assert dataset[1] is source[3]
+    with pytest.raises(ValueError, match="sorted, unique, and in bounds"):
+        _data_loader.IndexedDataset(source, [3, 1])
+
+
 def test_point_flow_target_dataset(tmp_path):
     target_root = tmp_path / "point_flow_root"
     episode_dir = target_root / "targets" / "chunk-000"

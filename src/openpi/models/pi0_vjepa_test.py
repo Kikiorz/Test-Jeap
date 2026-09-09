@@ -4,6 +4,7 @@ from flax import nnx
 import flax.traverse_util
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from openpi.models import pi0_config
 
@@ -104,3 +105,52 @@ def test_point_flow_stage_one_loss_uses_jepa_queries():
         "visibility_accuracy",
     }
     assert all(jnp.all(jnp.isfinite(value)) for value in metrics.values())
+
+
+def test_rapr_loss_uses_chunk_transition_targets_and_runtime_bypass():
+    config = _dummy_config(
+        use_vjepa_aux=True,
+        vjepa_num_queries=4,
+        vjepa_query_grid_size=2,
+        vjepa_target_grid_size=2,
+        vjepa_target_dim=8,
+        use_rapr=True,
+        rapr_delta_dim=6,
+        rapr_width=8,
+        rapr_gate=1.0,
+        rapr_inference_gate=0.0,
+    )
+    model = config.create(jax.random.key(0))
+    observation, actions = config.fake_obs(1), config.fake_act(1)
+    observation = dataclasses.replace(
+        observation,
+        vjepa_target=jnp.ones((1, 4, 8), dtype=jnp.float16),
+        transition_target=jnp.zeros((1, 2, 6), dtype=jnp.float32),
+    )
+    base = model.predict_action_velocity(
+        observation, actions, jnp.ones((1,), dtype=jnp.float32), rapr_gate_override=0.0
+    )
+    candidate = model.predict_action_velocity(
+        observation, actions, jnp.ones((1,), dtype=jnp.float32), rapr_gate_override=1.0
+    )
+    delta, routes = model.predict_rapr_plan(
+        observation, actions, jnp.ones((1,), dtype=jnp.float32)
+    )
+    assert delta.shape == (1, 2, 6)
+    assert routes.shape == (1, 2, 2)
+    np.testing.assert_allclose(routes.sum(-1), 1.0, atol=1e-6)
+    assert float(model.rapr_runtime_gate.value) == 0.0
+    # Zero-initialized router output means a fresh candidate is exactly base.
+    np.testing.assert_array_equal(base, candidate)
+    loss = model.compute_loss(jax.random.key(1), observation, actions)
+    assert loss.shape == (1, 2)
+    assert jnp.all(jnp.isfinite(loss))
+    selected, info = model.update_rapr_runtime_gate(
+        base,
+        candidate,
+        baseline_score=1.0,
+        candidate_score=1.1,
+    )
+    np.testing.assert_array_equal(selected, base)
+    assert not info["enabled"]
+    assert float(model.rapr_runtime_gate.value) == 0.0

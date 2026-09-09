@@ -69,6 +69,7 @@ IMAGE_RESOLUTION = (224, 224)
 #     "token_ar_mask": int32[*b, l],  # Optional, autoregressive mask for FAST model
 #     "token_loss_mask": bool[*b, l],  # Optional, loss mask for FAST model
 #     "vjepa_target": float16[*b, p, d],  # Optional, frozen future-pair target used only during training
+#     "transition_target": float32[*b, h, d],  # Optional chunk-aligned Delta-Z target for RAPR
 #     "change_target": float16[*b, ct, cd],  # Optional frozen Stage-1 endpoint used only during training
 #     "point_flow_queries": float32[*b, k, 2],  # Optional normalized tracker query coordinates
 #     "point_flow_target": float32[*b, k, h, 2],  # Optional normalized future point tracks
@@ -114,6 +115,13 @@ class Observation(Generic[ArrayT]):
     # Optional frozen visual target used by the Pi0.5 V-JEPA auxiliary objective.
     vjepa_target: at.Float[ArrayT, "*b p d"] | None = None
 
+    # Optional current-anchored transition target for RAPR/Delta-Z.  It is deliberately
+    # separate from ``vjepa_target``: the latter is a spatial future feature,
+    # while this field is already aligned to the action chunk [H, D].
+    transition_target: at.Float[ArrayT, "*b th td"] | None = None
+    transition_valid: at.Bool[ArrayT, "*b th"] | None = None
+    task_index: at.Int[ArrayT, "*b"] | None = None
+
     # Optional Con1 Stage-1 change endpoint. It is absent at deployment.
     # ``ct``/``cd`` must remain distinct from the image-channel axis ``c``.
     change_target: at.Float[ArrayT, "*b ct cd"] | None = None
@@ -148,6 +156,9 @@ class Observation(Generic[ArrayT]):
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             vjepa_target=data.get("vjepa_target"),
+            transition_target=data.get("transition_target"),
+            transition_valid=data.get("transition_valid"),
+            task_index=data.get("task_index"),
             change_target=data.get("change_target"),
             point_flow_queries=data.get("point_flow_queries"),
             point_flow_target=data.get("point_flow_target"),
@@ -233,6 +244,9 @@ def preprocess_observation(
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
         vjepa_target=observation.vjepa_target,
+        transition_target=observation.transition_target,
+        transition_valid=observation.transition_valid,
+        task_index=observation.task_index,
         change_target=observation.change_target,
         point_flow_queries=observation.point_flow_queries,
         point_flow_target=observation.point_flow_target,
@@ -344,17 +358,33 @@ def restore_params(
 
     with ocp.PyTreeCheckpointer() as ckptr:
         metadata = ckptr.metadata(params_path)
-        item = {"params": metadata["params"]}
+        # Orbax <=0.11.13 returned a mapping from ``metadata`` while newer
+        # releases return ``StepMetadata`` with the tree under
+        # ``item_metadata.tree``.  Keep both formats readable so checkpoints
+        # can be moved between training environments without re-exporting.
+        if isinstance(metadata, dict):
+            item = {"params": metadata["params"]}
+        elif metadata is not None and getattr(metadata, "item_metadata", None) is not None:
+            item = {"params": metadata.item_metadata.tree["params"]}
+        else:
+            # Some older/exported checkpoints omit ``_CHECKPOINT_METADATA``.
+            # Orbax can still infer the tree from the OCDBT manifest when no
+            # restore item is supplied; keeping this fallback makes those
+            # pretrained artifacts usable for warm-starts.
+            item = None
 
-        params = ckptr.restore(
-            params_path,
-            ocp.args.PyTreeRestore(
-                item=item,
-                restore_args=jax.tree.map(
-                    lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+        if item is None:
+            params = ckptr.restore(params_path)["params"]
+        else:
+            params = ckptr.restore(
+                params_path,
+                ocp.args.PyTreeRestore(
+                    item=item,
+                    restore_args=jax.tree.map(
+                        lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+                    ),
                 ),
-            ),
-        )["params"]
+            )["params"]
 
     # If the params were saved with `save_state` during openpi training, every key path will end with "value", which is
     # added by `nnx.State`. We remove the "value" suffix here and always return what NNX calls a "pure dict".

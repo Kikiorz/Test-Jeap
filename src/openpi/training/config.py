@@ -111,6 +111,19 @@ class DataConfig:
     point_flow_mmap_cache_size: int = 16
     point_flow_horizon: int | None = None
     point_flow_image_key: str | None = None
+    # Optional inclusive task-index interval.  This is a zero-copy training
+    # view over the underlying LeRobot dataset; target manifests continue to
+    # be validated against the complete source dataset.
+    task_index_min: int | None = None
+    task_index_max: int | None = None
+
+    # New paper Con1: independent frame states, with episode-level holdout.
+    transition_state_root: str | None = None
+    transition_target_mode: Literal["orthogonal", "direct"] = "orthogonal"
+    episode_split: Literal["all", "train", "validation"] = "all"
+    validation_fraction: float = 0.1
+    split_seed: int = 42
+    seekable_batches: bool = False
 
 
 class GroupFactory(Protocol):
@@ -321,6 +334,13 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     point_flow_mmap_cache_size: int = 16
     point_flow_horizon: int | None = None
     point_flow_image_key: str | None = None
+    task_index_min: int | None = None
+    task_index_max: int | None = None
+    transition_state_root: str | None = None
+    transition_target_mode: Literal["orthogonal", "direct"] = "orthogonal"
+    episode_split: Literal["all", "train", "validation"] = "all"
+    validation_fraction: float = 0.1
+    split_seed: int = 42
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -341,6 +361,9 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         }
         if self.vjepa_target_root is not None:
             repack_mapping["vjepa_target"] = "vjepa_target"
+        if self.transition_state_root is not None:
+            for key in ("transition_target", "transition_valid", "task_index"):
+                repack_mapping[key] = key
         if self.change_target_root is not None:
             repack_mapping["change_target"] = "change_target"
         if self.point_flow_target_root is not None:
@@ -399,6 +422,13 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             point_flow_mmap_cache_size=self.point_flow_mmap_cache_size,
             point_flow_horizon=self.point_flow_horizon,
             point_flow_image_key=self.point_flow_image_key,
+            task_index_min=self.task_index_min,
+            task_index_max=self.task_index_max,
+            transition_state_root=self.transition_state_root,
+            transition_target_mode=self.transition_target_mode,
+            episode_split=self.episode_split,
+            validation_fraction=self.validation_fraction,
+            split_seed=self.split_seed,
         )
 
 
@@ -541,6 +571,19 @@ class TrainConfig:
     # parameters.  The optimizer schedule is the Change learning rate; this
     # factor is applied only to Action-layer updates after AdamW.
     action_change_late_action_lr_scale: float = 1.0
+    # Paper Con1 stage 2: fixed original reference and post-Adam LR ratios.
+    rapr_reference_params: str | None = None
+    rapr_action_lr_scale: float = 0.1
+    rapr_alpha_lr_scale: float = 0.1
+    # Training telemetry only: do not change model state, objectives, or sampling.
+    # Full diagnostics remain available for fixed checkpoint validation.
+    rapr_minimal_diagnostics: bool = False
+    # Slice-aware 8k continuation. Keep the optimizer tree/dtypes for exact
+    # restore; action_freeze masks differentiation and final AdamW updates.
+    rapr_action_train_last_n: int = 0
+    rapr_action_freeze_anchor: str | None = None
+    # Explicit new phase from complete stage-1 weights, not the legacy 8k resume.
+    rapr_action_freeze_from_start: bool = False
 
     # Specifies which weights should be frozen.
     freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
@@ -562,6 +605,7 @@ class TrainConfig:
     num_workers: int = 2
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
+    training_step_offset: int = 0
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -569,6 +613,8 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+    # Explicit zero-based checkpoint IDs, in addition to periodic retention.
+    keep_steps: tuple[int, ...] = ()
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -609,10 +655,165 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
         if self.action_change_late_action_lr_scale <= 0:
             raise ValueError("action_change_late_action_lr_scale must be positive")
+        if self.rapr_action_lr_scale <= 0 or self.rapr_alpha_lr_scale <= 0:
+            raise ValueError("Paper Con1 learning-rate scales must be positive")
+        if self.rapr_action_train_last_n not in (0, 2):
+            raise ValueError("Supported Action training scopes are whole expert or last two blocks")
+        if self.rapr_action_train_last_n and not (
+            getattr(self.model, "rapr_train_action_expert", False)
+            and getattr(self.model, "rapr_late_layer_count", 0) == 2
+        ):
+            raise ValueError("Last-two Action training requires joint late-two Con1")
+        if self.rapr_action_freeze_from_start and (
+            not self.rapr_action_train_last_n or not self.rapr_action_freeze_anchor
+        ):
+            raise ValueError("Freeze-from-start requires a late Action scope and checkpoint anchor")
+
+
+PAPER_CON1_BASE_PARAMS = (
+    "/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/pi05_libero_vjepa_aux/"
+    "pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999/params"
+)
+PAPER_CON1_STAGE1_NAME = "pi05_libero_paper_con1_stage1"
+PAPER_CON1_STAGE2_NAME = "pi05_libero_paper_con1_stage2"
+PAPER_CON1_STAGE1_EXP = "all4_orthogonal_fixed005_5k"
+PAPER_CON1_STAGE2_EXP = "all4_orthogonal_joint_action_15k_after5k"
+PAPER_CON1_STAGE1_STEPS = 5_000
+PAPER_CON1_STAGE2_STEPS = 15_000
+PAPER_CON1_LATE2_STAGE1_NAME = "pi05_libero_paper_con1_late2_stage1"
+PAPER_CON1_LATE2_STAGE2_NAME = "pi05_libero_paper_con1_late2_stage2"
+PAPER_CON1_LATE2_STAGE1_EXP = "all4_orthogonal_late2_fixed005_5k"
+PAPER_CON1_LATE2_STAGE2_EXP = "all4_orthogonal_late2_joint_action_15k_after5k"
+PAPER_CON1_DIRECT_STAGE1_NAME = "pi05_libero_paper_con1_direct_delta_stage1"
+PAPER_CON1_DIRECT_STAGE2_NAME = "pi05_libero_paper_con1_direct_delta_stage2"
+PAPER_CON1_DIRECT_STAGE1_EXP = "all4_direct_delta_late2_fixed005_5k"
+PAPER_CON1_DIRECT_STAGE2_EXP = "all4_direct_delta_late2_joint_action_15k_after5k"
+
+
+def paper_con1_config(*, joint: bool, late2: bool = False, direct_delta: bool = False,
+                      no_training_reference: bool = False, train_action_last2: bool = False) -> TrainConfig:
+    if train_action_last2 and not (joint and late2 and direct_delta):
+        raise ValueError("Last-two-only Action continuation requires joint direct-delta late-two Con1")
+    if no_training_reference and not joint:
+        raise ValueError("Disabling the independent training reference is a joint-stage option")
+    if direct_delta and not late2:
+        raise ValueError("Direct-delta restart retains the agreed last-two-layer architecture")
+    phase_steps = PAPER_CON1_STAGE2_STEPS if joint else PAPER_CON1_STAGE1_STEPS
+    stage1_name = PAPER_CON1_LATE2_STAGE1_NAME if late2 else PAPER_CON1_STAGE1_NAME
+    stage2_name = PAPER_CON1_LATE2_STAGE2_NAME if late2 else PAPER_CON1_STAGE2_NAME
+    stage1_exp = PAPER_CON1_LATE2_STAGE1_EXP if late2 else PAPER_CON1_STAGE1_EXP
+    stage2_exp = PAPER_CON1_LATE2_STAGE2_EXP if late2 else PAPER_CON1_STAGE2_EXP
+    if direct_delta:
+        stage1_name, stage2_name = PAPER_CON1_DIRECT_STAGE1_NAME, PAPER_CON1_DIRECT_STAGE2_NAME
+        stage1_exp, stage2_exp = PAPER_CON1_DIRECT_STAGE1_EXP, PAPER_CON1_DIRECT_STAGE2_EXP
+    if train_action_last2:
+        stage2_exp = "all4_direct_delta_late2_joint_action_last2_from8k"
+    control_stage = "final_expert_layer" if late2 else "final_denoise"
+    model = pi0_config.Pi0Config(
+        pi05=True, action_horizon=10, discrete_state_input=False,
+        use_vjepa_aux=True, vjepa_num_queries=64, vjepa_query_grid_size=8,
+        vjepa_target_grid_size=8, vjepa_target_dim=1408, vjepa_action_attends_queries=False,
+        use_rapr=True, rapr_paper_orthogonal=True, rapr_delta_dim=2816, rapr_width=512,
+        rapr_gate=0.05, rapr_learnable_alpha=joint, rapr_inference_gate=1.0,
+        rapr_train_action_expert=joint, rapr_control_stage=control_stage, rapr_control_num_steps=10,
+        rapr_late_layer_count=2 if late2 else 0,
+        rapr_loss_weight=0.1, rapr_nonregression_weight=0.0 if no_training_reference else 1.0,
+    )
+    stage1_params = (
+        f"/workspace/artifacts/checkpoints/{stage1_name}/{stage1_exp}/{PAPER_CON1_STAGE1_STEPS-1}/params"
+    )
+    return TrainConfig(
+        name=stage2_name if joint else stage1_name,
+        exp_name=stage2_exp if joint else stage1_exp,
+        model=model,
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(assets_dir="/workspace/artifacts/openpi_cache/openpi-assets/checkpoints/pi05_libero/assets"),
+            base_config=DataConfig(prompt_from_task=True, seekable_batches=True), extra_delta_transform=False,
+            vjepa_target_root="/workspace/artifacts/vjepa_targets/libero_vjepa2_1_vitg_384_offset10_base_wrist",
+            vjepa_future_offset=10, vjepa_image_key="image",
+            transition_state_root="/workspace/artifacts/con1/orthogonal_all4_frame_states_v1",
+            transition_target_mode="direct" if direct_delta else "orthogonal",
+            task_index_min=0, task_index_max=39, episode_split="train", validation_fraction=0.1, split_seed=42,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            stage1_params if joint else PAPER_CON1_BASE_PARAMS,
+            missing_regex="$^" if joint else ".*rapr_.*", require_complete=joint),
+        freeze_filter=model.get_freeze_filter(),
+        rapr_reference_params=PAPER_CON1_BASE_PARAMS if joint and not no_training_reference else None,
+        rapr_minimal_diagnostics=direct_delta,
+        rapr_action_train_last_n=2 if train_action_last2 else 0,
+        rapr_action_freeze_anchor=(
+            "/workspace/artifacts/checkpoint_archives/paper_con1_direct_delta_all4_20k_20260908/"
+            "before_no_training_reference/3000/params" if train_action_last2 else None),
+        rapr_action_lr_scale=0.1, rapr_alpha_lr_scale=0.1,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500, peak_lr=5e-5, decay_steps=phase_steps, decay_lr=5e-6),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0), ema_decay=None,
+        batch_size=128, num_workers=8, fsdp_devices=2, num_train_steps=phase_steps,
+        training_step_offset=PAPER_CON1_STAGE1_STEPS if joint else 0,
+        log_interval=10, save_interval=1000, keep_period=5000, wandb_enabled=False,
+        keep_steps=((3000, 4999, 9999, 14999) if train_action_last2 else (
+            (4999, 9999, 14999) if joint else (4999,))) if direct_delta else (),
+        checkpoint_base_dir="/workspace/artifacts/checkpoints",
+        policy_metadata={"method": "paper_direct_delta_con1" if direct_delta else "paper_orthogonal_con1",
+                         "transition_target_mode": "direct" if direct_delta else "orthogonal",
+                         "stage": 2 if joint else 1,
+                         "control_stage": control_stage, "alpha_initial": 0.05,
+                         "training_nonregression_weight": model.rapr_nonregression_weight,
+                         "action_training_scope": "last_two_blocks_only" if train_action_last2 else (
+                             "whole_expert" if joint else "frozen"),
+                         "retrieval_layers": "last_two_shared" if late2 else "output_only"},
+    )
+
+
+def paper_con1_mean_from5k_config() -> TrainConfig:
+    """New host branch: complete 5k weights, fresh joint optimizer, late two only.
+
+    Historical sum/8k configurations remain unchanged. This branch changes
+    feature reduction AND freezes the front sixteen immediately at global 5k;
+    it is not a single-variable comparison with the historical 5k->8k phase.
+    """
+    base = paper_con1_config(joint=True, late2=True, direct_delta=True, no_training_reference=True)
+    model = dataclasses.replace(base.model, rapr_prediction_reduction="mean")
+    return dataclasses.replace(
+        base, name="pi05_libero_paper_con1_direct_delta_mean_stage2",
+        exp_name="all4_direct_delta_mean_last2_from5k_15k", model=model,
+        freeze_filter=model.get_freeze_filter(), rapr_action_train_last_n=2,
+        rapr_action_freeze_anchor=base.weight_loader.params_path,
+        rapr_action_freeze_from_start=True,
+        policy_metadata={**base.policy_metadata,
+                         "prediction_feature_reduction": "mean",
+                         "prediction_loss_weight": model.rapr_loss_weight,
+                         "action_training_scope": "last_two_blocks_only",
+                         "action_frozen_from_global_update": 5000,
+                         "initial_checkpoint": base.weight_loader.params_path,
+                         "optimizer_transition": "fresh_stage2_optimizer_from_stage1_weights"},
+    )
+
+
+def paper_con1_reference_config() -> TrainConfig:
+    config = paper_con1_config(joint=False)
+    model = dataclasses.replace(config.model, use_rapr=False, rapr_paper_orthogonal=False)
+    return dataclasses.replace(
+        config, name="pi05_libero_paper_reference", model=model,
+        data=dataclasses.replace(config.data, transition_state_root=None, episode_split="all"),
+        freeze_filter=nnx.Everything,
+        weight_loader=weight_loaders.CheckpointWeightLoader(PAPER_CON1_BASE_PARAMS, require_complete=True),
+        policy_metadata={"method": "pure_jepa_wam_pi05_60k"},
+    )
 
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    paper_con1_config(joint=False),
+    paper_con1_config(joint=True),
+    paper_con1_config(joint=False, late2=True),
+    paper_con1_config(joint=True, late2=True),
+    paper_con1_config(joint=False, late2=True, direct_delta=True),
+    paper_con1_config(joint=True, late2=True, direct_delta=True),
+    paper_con1_mean_from5k_config(),
+    paper_con1_reference_config(),
     #
     # Inference Aloha configs.
     #
@@ -859,6 +1060,71 @@ _CONFIGS = [
             missing_regex=".*vjepa_.*",
         ),
         num_train_steps=30_000,
+        num_workers=2,
+    ),
+    TrainConfig(
+        # final_1 RAPR: bounded continuous residual routing on a frozen
+        # pretrained JEPA-WAM Pi0.5 stream.
+        name="pi05_libero_rapr",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_vjepa_aux=True,
+            vjepa_num_queries=64,
+            vjepa_query_grid_size=8,
+            vjepa_target_grid_size=8,
+            vjepa_target_dim=1408,
+            vjepa_action_attends_queries=False,
+            use_rapr=True,
+            rapr_delta_dim=128,
+            rapr_width=256,
+            rapr_gate=0.05,
+            rapr_learnable_alpha=False,
+            rapr_inference_gate=1.0,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/openpi_cache/openpi-assets/checkpoints/pi05_libero/assets"
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            vjepa_target_root=(
+                "/workspace/artifacts/vjepa_targets/libero_vjepa2_1_vitg_384_offset10_base_wrist"
+            ),
+            vjepa_mmap_cache_size=16,
+            vjepa_future_offset=10,
+            vjepa_image_key="image",
+            task_index_min=10,
+            task_index_max=29,
+        ),
+        batch_size=128,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=100_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            use_vjepa_aux=True,
+            use_rapr=True,
+        ).get_freeze_filter(),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_60k/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/"
+            "pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/59999/params",
+            missing_regex=".*rapr_.*",
+        ),
+        checkpoint_base_dir="/workspace/artifacts/checkpoints",
+        num_train_steps=10_000,
+        fsdp_devices=2,
+        save_interval=1_000,
+        keep_period=5_000,
+        wandb_enabled=False,
         num_workers=2,
     ),
     TrainConfig(

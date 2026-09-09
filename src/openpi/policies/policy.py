@@ -67,7 +67,17 @@ class Policy(BasePolicy):
             self._sample_actions = model.sample_actions
         else:
             # JAX model setup
-            self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            # RAPR/TTT own mutable fail-closed runtime gates.  ``module_jit``
+            # snapshots NNX state at construction, which would make a later
+            # gate rollback invisible to inference.  Keep this one model on
+            # the regular bound method so disabling the candidate immediately
+            # restores the pretrained base path.
+            self._sample_actions = (
+                model.sample_actions
+                if (getattr(model, "use_rapr", False) and not getattr(model, "rapr_paper_orthogonal", False))
+                or getattr(model, "use_jepa_ttt_adapter", False)
+                else nnx_utils.module_jit(model.sample_actions)
+            )
             self._rng = rng or jax.random.key(0)
 
     @override
