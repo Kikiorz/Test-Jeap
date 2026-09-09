@@ -29,20 +29,33 @@ def audit_metadata(metadata):
     return dict(parameter_leaves=len(tree), forbidden_parameters=forbidden)
 
 
+def seeded_manifest(classification, seed):
+    if type(seed) is not int or not 0 <= seed < 2**32:
+        raise ValueError('Evaluation seed must be a uint32 integer')
+    manifest = build_manifest(classification)
+    manifest['final_episode_seed'] = seed
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--category', choices=PRIORITY+OTHER)
+    parser.add_argument('--seed', type=int, default=743)
+    parser.add_argument('--output-root', type=Path, default=ROOT)
     args = parser.parse_args()
+    root = args.output_root
+    if args.seed != 743 and root.resolve() == ROOT.resolve():
+        parser.error('A changed seed requires a separate --output-root')
     suffix = category_suffix(args.category)
-    ROOT.mkdir(parents=True, exist_ok=True)
-    with (ROOT/'run.lock').open('a') as lock:
+    root.mkdir(parents=True, exist_ok=True)
+    with (root/'run.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = dict(pid=os.getpid(), model='pure_jepa_wam_pi05_60k', checkpoint=str(CHECKPOINT),
                       training_enabled=False, slots_per_gpu=[16]*4, expected_episodes=10030,
-                      category=args.category)
+                      category=args.category, evaluation_seed=args.seed)
         def event(state, **extra):
             status.update(state=state, unix_time=time.time(), **extra)
-            atomic_json(ROOT/'status.json', status)
+            atomic_json(root/'status.json', status)
             print(json.dumps(status), flush=True)
         try:
             event('preflight')
@@ -71,35 +84,35 @@ def main():
                           hub_revision='ca10ccbc191d8f56b4346487913e043b2722b6d2',
                           use_rapr=False, use_point_flow=False, use_action_change_mmdit=False,
                           use_jepa_ttt_adapter=False)
-            atomic_json(ROOT/'purity_audit.json', purity)
-            manifest = build_manifest(json.loads((PLUS/'libero/libero/benchmark/task_classification.json').read_text()))
+            atomic_json(root/'purity_audit.json', purity)
+            manifest = seeded_manifest(json.loads((PLUS/'libero/libero/benchmark/task_classification.json').read_text()), args.seed)
             expected = sum(args.category is None or r['category']==args.category
                            for rows in manifest['final'].values() for r in rows)
             status['expected_episodes'] = expected
-            panels = ROOT/'panels.json'
+            panels = root/'panels.json'
             if panels.exists() and json.loads(panels.read_text()) != manifest:
                 raise RuntimeError('Existing task and seed contract differs')
             atomic_json(panels, manifest)
-            concurrency = ROOT/'concurrency.json'
+            concurrency = root/'concurrency.json'
             atomic_json(concurrency, dict(slots_per_gpu=[16]*4, trial=None))
             command = [sys.executable, '-u', str(REPO/'ops/run_con1_dynamic_eval.py'),
                        '--config', CONFIG, '--checkpoint', str(CHECKPOINT), '--panels', str(panels),
-                       '--panel', 'final', '--output', str(ROOT/'baseline'), '--port-base', '8900',
+                       '--panel', 'final', '--output', str(root/'baseline'), '--port-base', '8900',
                        '--concurrency', str(concurrency)]
             if args.category:
                 command += ['--category', args.category]
-            with (ROOT/'evaluation.log').open('a') as log:
+            with (root/'evaluation.log').open('a') as log:
                 child = subprocess.Popen(command, cwd=REPO, stdout=log, stderr=subprocess.STDOUT)
                 while True:
                     event('running', child_pid=child.pid)
-                    progress = ROOT/'baseline'/f'progress{suffix}.json'
+                    progress = root/'baseline'/f'progress{suffix}.json'
                     if progress.exists():
                         try:
                             value = json.loads(progress.read_text())
                         except json.JSONDecodeError:
                             value = None
                         if value is not None:
-                            with (ROOT/f'throughput_history{suffix}.jsonl').open('a') as history:
+                            with (root/f'throughput_history{suffix}.jsonl').open('a') as history:
                                 history.write(json.dumps(value)+'\n')
                     try:
                         result = child.wait(timeout=10)
@@ -108,7 +121,7 @@ def main():
                         pass
             if result:
                 raise RuntimeError(f'Evaluation exited {result}; journals retained')
-            summary = json.loads((ROOT/'baseline'/f'summary{suffix}.json').read_text())
+            summary = json.loads((root/'baseline'/f'summary{suffix}.json').read_text())
             if not summary['complete'] or summary['completed_episodes'] != expected:
                 raise RuntimeError('Incomplete selected Plus evaluation')
             event('complete', child_pid=None, successes=summary['successes'])
