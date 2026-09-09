@@ -23,9 +23,11 @@ def main():
     copies.append((SOURCE/conf, Path('/etc/supervisor/conf.d/pure-jepawam-full-plus-4x16.conf')))
     for src, dst in copies:
         if dst.exists() and dst.read_bytes() != src.read_bytes():
-            prior = subprocess.check_output(['git', '-C', str(SOURCE), 'show',
-                     '32f08c4bda808c82a1f83cedaafa145e0a34a07c:'+str(src.relative_to(SOURCE))])
-            if dst.read_bytes() != prior:
+            prior_versions = [subprocess.check_output(['git', '-C', str(SOURCE), 'show',
+                              commit+':'+str(src.relative_to(SOURCE))]) for commit in (
+                              '32f08c4bda808c82a1f83cedaafa145e0a34a07c',
+                              '0fed5badcda67a4c00fa85b7eaae215e45576a70')]
+            if dst.read_bytes() not in prior_versions:
                 raise RuntimeError('Preserving unexpected local file: '+str(dst))
     for src, dst in copies:
         dst.parent.mkdir(parents=True, exist_ok=True)
