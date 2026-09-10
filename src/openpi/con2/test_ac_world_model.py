@@ -189,6 +189,31 @@ def test_adapt_rejects_a_predictor_without_parameters():
         wm.adapt(wm.ACWorldModel(predictor=StubPredictor(), device="cpu"), None, None, None, None)
 
 
+def test_token_adapter_starts_as_identity_and_can_be_trained():
+    import torch
+
+    adapter = wm.build_token_adapter(dim=64, width=32, device="cpu")
+    x = torch.randn(2, 5, 64)
+    torch.testing.assert_close(adapter(x), x, rtol=0, atol=0)
+
+    # It must be trainable through the same objective as the rest of Con2.
+    predictor = TinyActionPredictor(dim=64)
+    model = wm.ACWorldModel(predictor=predictor, device="cpu", normalize_reps=False,
+                            context_transform=adapter)
+    optimizer = torch.optim.Adam(list(predictor.parameters()) + list(adapter.parameters()), lr=0.02)
+    tokens = torch.randn(3, 3, wm.TOKENS_PER_FRAME, 64)
+    actions = torch.randn(3, 3, wm.ACTION_DIM)
+    states = torch.zeros(3, 3, wm.STATE_DIM)
+    before = float(wm.teacher_forced_loss(model, tokens, actions, states, auto_steps=1,
+                                          context_transform=adapter).detach())
+    wm.adapt(model, optimizer, tokens, actions, states, steps=5, auto_steps=1,
+             context_transform=adapter, parameters=list(predictor.parameters()) + list(adapter.parameters()))
+    after = float(wm.teacher_forced_loss(model, tokens, actions, states, auto_steps=1,
+                                         context_transform=adapter).detach())
+    assert after < before
+    assert float(adapter.up.weight.abs().sum()) > 0.0, "adapter never moved"
+
+
 def test_action_candidates_keeps_the_executed_action_and_count():
     rng = np.random.default_rng(0)
     pool = np.tile(np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32), (5, 1))

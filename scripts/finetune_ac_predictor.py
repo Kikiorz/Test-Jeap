@@ -33,7 +33,12 @@ sys.path.insert(0, str(VJEPA_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import src.hub.backbones as hub  # noqa: E402
-from openpi.con2.ac_world_model import ACWorldModel, load_predictor, teacher_forced_loss  # noqa: E402
+from openpi.con2.ac_world_model import (  # noqa: E402
+    ACWorldModel,
+    build_token_adapter,
+    load_predictor,
+    teacher_forced_loss,
+)
 
 TOKENS_PER_FRAME = 256
 FEATURE_DIM = 1408
@@ -86,7 +91,7 @@ def normalize(x):
 
 @torch.no_grad()
 def evaluate(predictor, store, context, horizons, windows_per_episode, device, action_mode="true",
-             stride=1, input_mode="free"):
+             stride=1, input_mode="free", adapter=None):
     """Roll out from a real context and score against the true future frames.
 
     The context is ``context`` frames spaced ``stride`` apart (``stride=1`` is
@@ -120,8 +125,11 @@ def evaluate(predictor, store, context, horizons, windows_per_episode, device, a
             context_index = start + stride * np.arange(context)
             base = int(context_index[-1])
             window = np.asarray(frames[context_index], dtype=np.float32)
-            hidden = normalize(torch.from_numpy(window).to(device).reshape(
-                1, context * TOKENS_PER_FRAME, FEATURE_DIM))
+            context_tensor = torch.from_numpy(window).to(device).reshape(
+                1, context * TOKENS_PER_FRAME, FEATURE_DIM)
+            if adapter is not None:
+                context_tensor = adapter(context_tensor)
+            hidden = normalize(context_tensor)
             action = torch.from_numpy(actions[context_index]).unsqueeze(0).to(device)
             state = torch.from_numpy(states[context_index]).unsqueeze(0).to(device)
             if action_mode == "shuffled":
@@ -130,7 +138,10 @@ def evaluate(predictor, store, context, horizons, windows_per_episode, device, a
                 action = torch.zeros_like(action)
             current = normalize(torch.from_numpy(np.asarray(frames[base], dtype=np.float32)).to(device)).reshape(-1)
             for step in range(1, maximum + 1):
-                prediction = normalize(predictor(hidden, action, state)[:, -TOKENS_PER_FRAME:])
+                raw = predictor(hidden, action, state)[:, -TOKENS_PER_FRAME:]
+                if adapter is not None:
+                    raw = adapter(raw)
+                prediction = normalize(raw)
                 single = prediction.reshape(1, 1, TOKENS_PER_FRAME, FEATURE_DIM)
                 hidden = torch.cat([hidden.reshape(1, -1, TOKENS_PER_FRAME, FEATURE_DIM), single], dim=1)
                 hidden = hidden.reshape(1, hidden.shape[1] * TOKENS_PER_FRAME, FEATURE_DIM)
@@ -171,6 +182,10 @@ def main():
     parser.add_argument("--eval-input-mode", choices=["free", "true"], default="free",
                         help="Rollout conditioning: 'free' repeats the last action/state, "
                              "'true' feeds the executed actions and proprioceptive states.")
+    parser.add_argument("--token-adapter", type=int, default=0,
+                        help="Train a zero-initialised residual adapter on the frozen encoder tokens.")
+    parser.add_argument("--adapter-width", type=int, default=512)
+    parser.add_argument("--adapter-from", type=Path, default=None)
     parser.add_argument("--auto-steps", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.04)
@@ -206,12 +221,20 @@ def main():
     if args.activation_checkpointing:
         predictor.use_activation_checkpointing = True
     predictor.train()
-    world_model = ACWorldModel(predictor=predictor, device=str(device), normalize_reps=True)
+    adapter = None
+    if args.token_adapter:
+        adapter = build_token_adapter(width=args.adapter_width, device=device)
+        if args.adapter_from is not None:
+            adapter.load_state_dict(torch.load(args.adapter_from, map_location="cpu", weights_only=False)["adapter"])
+        adapter.train()
+    world_model = ACWorldModel(predictor=predictor, device=str(device), normalize_reps=True,
+                               context_transform=adapter)
     parameters = sum(p.numel() for p in predictor.parameters())
 
     train_store = EpisodeStore(args.cache, args.train_episodes, action_scale=args.action_scale)
     eval_store = EpisodeStore(args.cache, args.eval_episodes, action_scale=args.action_scale)
-    optimizer = torch.optim.AdamW(predictor.parameters(), lr=args.learning_rate,
+    trainable = list(predictor.parameters()) + (list(adapter.parameters()) if adapter is not None else [])
+    optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate,
                                   weight_decay=args.weight_decay, betas=(0.9, 0.95))
     def schedule(step):
         if step < args.warmup:
@@ -228,9 +251,10 @@ def main():
         tokens, actions, states = tokens.to(device), actions.to(device), states.to(device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = teacher_forced_loss(world_model, tokens, actions, states, args.auto_steps)
+            loss = teacher_forced_loss(world_model, tokens, actions, states, args.auto_steps,
+                                       context_transform=adapter)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
         optimizer.step()
         scheduler.step()
         if step % 25 == 0 or step == args.steps - 1:
@@ -242,28 +266,32 @@ def main():
         if (step + 1) % args.eval_every == 0 or step == args.steps - 1:
             results = {"true": evaluate(predictor, eval_store, args.context, args.horizons,
                                         args.eval_windows, device, stride=args.frame_stride,
-                                        input_mode=args.eval_input_mode)}
+                                        input_mode=args.eval_input_mode, adapter=adapter)}
             for mode in args.action_ablation:
                 results[mode] = evaluate(predictor, eval_store, args.context, args.horizons,
                                          args.eval_windows, device, action_mode=mode,
-                                         stride=args.frame_stride, input_mode=args.eval_input_mode)
+                                         stride=args.frame_stride, input_mode=args.eval_input_mode,
+                                         adapter=adapter)
             record = {"step": step, "eval": results, "seconds": time.time() - started,
                       "parameters": parameters, "init": args.init}
             print(json.dumps(record), flush=True)
             with log_path.open("a") as handle:
                 handle.write(json.dumps(record) + "\n")
-            torch.save({"predictor": predictor.state_dict(), "step": step, "args": vars(args)},
-                       args.output / "predictor.pt")
+            torch.save({"predictor": predictor.state_dict(),
+                        "adapter": adapter.state_dict() if adapter is not None else None,
+                        "step": step, "args": vars(args)}, args.output / "predictor.pt")
     final = {"true": evaluate(predictor, eval_store, args.context, args.horizons, args.eval_windows,
-                              device, stride=args.frame_stride, input_mode=args.eval_input_mode)}
+                              device, stride=args.frame_stride, input_mode=args.eval_input_mode,
+                              adapter=adapter)}
     for mode in args.action_ablation:
         final[mode] = evaluate(predictor, eval_store, args.context, args.horizons,
                                args.eval_windows, device, action_mode=mode, stride=args.frame_stride,
-                               input_mode=args.eval_input_mode)
+                               input_mode=args.eval_input_mode, adapter=adapter)
     (args.output / "final.json").write_text(json.dumps(
         {"eval": final, "args": {k: str(v) for k, v in vars(args).items()}}, indent=2, sort_keys=True) + "\n")
-    torch.save({"predictor": predictor.state_dict(), "step": args.steps, "args": vars(args)},
-               args.output / "predictor.pt")
+    torch.save({"predictor": predictor.state_dict(),
+                "adapter": adapter.state_dict() if adapter is not None else None,
+                "step": args.steps, "args": vars(args)}, args.output / "predictor.pt")
 
 
 if __name__ == "__main__":

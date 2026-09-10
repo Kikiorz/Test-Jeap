@@ -191,6 +191,34 @@ def load_predictor(source: Path | str, *, root: Path | str | None = None, device
     return predictor.to(device).eval()
 
 
+def build_token_adapter(dim: int = FEATURE_DIM, width: int = 512, device="cpu"):
+    """Zero-initialised residual MLP over encoder tokens.
+
+    This is the cheap part of encoder adaptation: the encoder stays frozen (so
+    the cached tokens stay valid and the target side cannot collapse), and only
+    the mapping into the predictor's preferred space is learned. The output
+    projection is zero-initialised, so an untrained adapter is exactly the
+    identity and cannot regress the released model.
+    """
+    import torch  # noqa: PLC0415
+    import torch.nn as nn  # noqa: PLC0415
+    import torch.nn.functional as F  # noqa: PLC0415
+
+    class _TokenAdapter(nn.Module):
+        def __init__(self, dim: int, width: int):
+            super().__init__()
+            self.norm = nn.LayerNorm(dim)
+            self.down = nn.Linear(dim, width)
+            self.up = nn.Linear(width, dim)
+            nn.init.zeros_(self.up.weight)
+            nn.init.zeros_(self.up.bias)
+
+        def forward(self, x):
+            return x + self.up(F.gelu(self.down(self.norm(x))))
+
+    return _TokenAdapter(dim, width).to(device)
+
+
 @dataclass
 class ACWorldModel:
     """Con2 interface: encode frames, roll the future out, score candidate actions.
@@ -206,6 +234,7 @@ class ACWorldModel:
     device: str = "cpu"
     tokens_per_frame: int = TOKENS_PER_FRAME
     normalize_reps: bool = True
+    context_transform: "object | None" = None
 
     @staticmethod
     def _normalize(tokens):
@@ -223,6 +252,8 @@ class ACWorldModel:
         """One predictor call on already-tensorised inputs."""
         import torch  # noqa: PLC0415
 
+        if self.context_transform is not None:
+            context = self.context_transform(context)
         context = self._normalize(context)
         with torch.no_grad():
             prediction = self.predictor(context, action, state)[:, -self.tokens_per_frame:]
@@ -334,7 +365,7 @@ def action_candidates(true_action: np.ndarray, pool: np.ndarray, count: int, rng
 
 
 def teacher_forced_loss(model: "ACWorldModel", tokens, actions, states, auto_steps: int = 2,
-                        loss_exp: float = 1.0) -> "object":
+                        loss_exp: float = 1.0, context_transform=None) -> "object":
     """The released cooldown objective on a batch of windows (training path).
 
     ``tokens`` is ``[B, K+1, tokens_per_frame, D]``; block ``k`` of the window
@@ -344,6 +375,11 @@ def teacher_forced_loss(model: "ACWorldModel", tokens, actions, states, auto_ste
 
     Unlike :meth:`ACWorldModel.predict` this keeps the graph and supports a batch
     dimension, so it is what both fine-tuning and test-time adaptation minimise.
+
+    ``context_transform`` is applied to the context tokens only; the target side
+    always stays the frozen encoder's own representation, which is what keeps
+    representation adaptation from collapsing (the same reason the released
+    recipe predicts the EMA target encoder rather than itself).
     """
     import torch  # noqa: PLC0415
     import torch.nn.functional as F  # noqa: PLC0415
@@ -354,7 +390,10 @@ def teacher_forced_loss(model: "ACWorldModel", tokens, actions, states, auto_ste
     context_frames = frames - 1
     if context_frames < 1:
         raise ValueError("A window needs at least two frames")
-    hidden = model._normalize(tokens[:, :context_frames].reshape(batch, context_frames * n_tokens, dim))
+    context_tokens = tokens[:, :context_frames].reshape(batch, context_frames * n_tokens, dim)
+    if context_transform is not None:
+        context_tokens = context_transform(context_tokens)
+    hidden = model._normalize(context_tokens)
     teacher = model._normalize(model.predictor(hidden, actions[:, :context_frames],
                                               states[:, :context_frames]).reshape(
         batch, context_frames, n_tokens, dim))
@@ -364,13 +403,22 @@ def teacher_forced_loss(model: "ACWorldModel", tokens, actions, states, auto_ste
 
     rollout_losses = []
     if auto_steps > 1:
-        current = torch.cat([model._normalize(tokens[:, :1]).reshape(batch, 1, n_tokens, dim),
+        first = tokens[:, :1].reshape(batch, 1, n_tokens, dim)
+        if context_transform is not None:
+            first = context_transform(first.reshape(batch, n_tokens, dim)).reshape(batch, 1, n_tokens, dim)
+        current = torch.cat([model._normalize(first),
                              teacher[:, :1]], dim=1)
         for step in range(1, min(auto_steps, context_frames)):
             flat = current.reshape(batch, current.shape[1] * n_tokens, dim)
-            next_hidden = model._normalize(model.predictor(
-                flat, actions[:, :step + 1], states[:, :step + 1]).reshape(
-                    batch, step + 1, n_tokens, dim))[:, -1:]
+            raw = model.predictor(flat, actions[:, :step + 1], states[:, :step + 1]).reshape(
+                batch, step + 1, n_tokens, dim)[:, -1:]
+            if context_transform is not None:
+                # The rollout feeds predictions back into the context, so the
+                # adapter has to be applied to them exactly as inference does;
+                # skipping this makes the AR term train on a mixed-space
+                # context that never occurs at eval.
+                raw = context_transform(raw.reshape(batch, n_tokens, dim)).reshape(batch, 1, n_tokens, dim)
+            next_hidden = model._normalize(raw)
             current = torch.cat([current, next_hidden], dim=1)
             rollout_losses.append((current[:, -1] - target[:, step]).abs().pow(loss_exp).mean() / loss_exp)
     if rollout_losses:
@@ -379,7 +427,8 @@ def teacher_forced_loss(model: "ACWorldModel", tokens, actions, states, auto_ste
 
 
 def adapt(model: "ACWorldModel", optimizer, tokens, actions, states, *, steps: int = 1,
-          auto_steps: int = 2, clip: float = 1.0) -> list:
+          auto_steps: int = 2, clip: float = 1.0, context_transform=None,
+          parameters=None) -> list:
     """Test-time training: gradient steps on the cooldown objective.
 
     ``tokens/actions/states`` is a batch of *already observed* windows; nothing
@@ -391,13 +440,15 @@ def adapt(model: "ACWorldModel", optimizer, tokens, actions, states, *, steps: i
     model_name = type(model.predictor).__name__
     if not hasattr(model.predictor, "parameters"):
         raise TypeError(f"{model_name} has no parameters to adapt")
+    trainable = list(parameters) if parameters is not None else list(model.predictor.parameters())
     losses = []
     for _ in range(steps):
         optimizer.zero_grad(set_to_none=True)
-        loss = teacher_forced_loss(model, tokens, actions, states, auto_steps=auto_steps)
+        loss = teacher_forced_loss(model, tokens, actions, states, auto_steps=auto_steps,
+                                   context_transform=context_transform)
         loss.backward()
         if clip:
-            torch.nn.utils.clip_grad_norm_(model.predictor.parameters(), clip)
+            torch.nn.utils.clip_grad_norm_(trainable, clip)
         optimizer.step()
         losses.append(float(loss.detach()))
     return losses

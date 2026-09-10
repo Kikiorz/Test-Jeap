@@ -286,6 +286,29 @@ it was trained at is worth far more than any schedule tweak tried above, which
 is the strongest argument for keeping the world model's timebase explicit in
 the Con2 design.
 
+### 3.8c Representation adaptation (negative result)
+
+The cheap half of encoder adaptation is a trainable residual adapter on the
+frozen encoder tokens (``build_token_adapter``, zero-initialised so it starts as
+the identity and can only help). Same recipe as the stride-2/auto_steps=4 row
+above, 500 steps, adapter width 512, adapter trained jointly with the predictor:
+
+| model | h=1 (0.2 s) | h=2 (0.4 s) | h=5 (1.0 s) | action zeroed at 1 s |
+|---|---:|---:|---:|---:|
+| no adapter (baseline) | 0.7301 | 0.6863 | **0.7423** | 0.8292 |
+| + token adapter | 0.7374 | 0.6905 | 0.7560 | 0.8356 |
+
+The adapter does not help - it is marginally worse at every horizon, so the
+frozen representation is not what limits this model at this data scale.
+
+One trap worth recording: the first run of this experiment scored 0.96 at 1 s,
+which looked like a collapse. It was a train/eval inconsistency - the
+autoregressive branch appended *unadapted* predictions to an adapted context,
+so training never saw the context that inference produces. ``teacher_forced_loss``
+now applies ``context_transform`` to fed-back predictions as well, and the
+experiment above is the corrected one. Anything that transforms tokens must
+transform them on both the teacher-forced *and* the fed-back path.
+
 The last row is the operational setting rather than a free-running rollout: the
 policy always has proprioception and its own planned actions at test time, so
 conditioning on them removes state-propagation error (0.752 -> 0.722 at 1 s).
@@ -358,9 +381,11 @@ in section 3.8.
    0.73 on the 100-episode eval set, with `ft_440_stride2_ar4` running on the
    400-episode cache for the headline number. Still open: whether a 16-frame
    context or encoder adaptation pushes it below 0.7.
-2. Encoder adaptation: only the predictor has been trained; the AC encoder is
-   still a DROID model. Unfreezing its last blocks is the obvious next lever if
-   token-level NMSE saturates.
+2. Encoder adaptation: a trainable token adapter on the frozen encoder was
+   tried and does not help (section 3.8c), so the next version of this lever is
+   a real unfreeze - last encoder blocks trained against the frozen EMA
+   ``target_encoder`` (the released recipe) to avoid collapse. That needs the
+   two-encoder setup and a re-extract, so it is a separate work item.
 3. Wire the adapted predictor into Con2/TTT: `ACWorldModel.score_actions` is the
    energy objective TTT would optimise, and the cached tokens already contain
    everything needed. This is the remaining integration step.
