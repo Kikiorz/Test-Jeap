@@ -15,6 +15,27 @@ def test_no_q0_and_zero_residual():
     assert out["attention"].shape == (2, 4, 4)
 
 
+def test_action_adapter_is_a_no_op_at_init_but_gets_gradient():
+    plain = ActionDeltaCrossAttention(12, width=8)
+    adapted = ActionDeltaCrossAttention(12, width=8, use_action_adapter=True)
+    h = jax.random.normal(jax.random.key(41), (2, 4, 12))
+    d = jax.random.normal(jax.random.key(42), (2, 4, 8))
+    plain_vars = plain.init(jax.random.key(43), h, d)
+    adapted_vars = adapted.init(jax.random.key(43), h, d)
+    np.testing.assert_allclose(
+        np.asarray(adapted.apply(adapted_vars, h, d)["hidden"]),
+        np.asarray(plain.apply(plain_vars, h, d)["hidden"]), rtol=0, atol=1e-6)
+
+    def loss(vars):
+        return jnp.mean(jnp.square(adapted.apply(vars, h, d)["hidden"]))
+
+    grads = jax.grad(loss)(adapted_vars)
+    import flax.traverse_util as traverse_util
+    flat = traverse_util.flatten_dict(grads, sep="/")
+    assert float(jnp.abs(flat["params/adapter_in/kernel"]).max()) > 0.0
+    assert float(jnp.abs(flat["params/adapter_out/kernel"]).max()) > 0.0
+
+
 def test_anchor_delta_shapes_and_loss():
     model = AnchoredDeltaHead(horizon=3, latent_dim=6, width=8)
     r = jnp.ones((2, 5, 7)); z = jnp.ones((2, 6))

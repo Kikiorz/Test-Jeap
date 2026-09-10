@@ -68,6 +68,9 @@ class Pi0Config(_model.BaseModelConfig):
     # Feed the pooled full VLM prefix (image patches, language, state) into the
     # delta head alongside the predictive queries.
     con1_vlm_context: bool = False
+    # Zero-initialised, bounded action-side adapter (Con1's LoRA analogue).
+    con1_action_adapter: bool = False
+    con1_adapter_scale: float = 1.0
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
     # then 5k joint flow with the action-sensitivity weighting enabled.

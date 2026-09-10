@@ -135,6 +135,11 @@ class ActionDeltaCrossAttention(nn.Module):
     action_width: int
     width: int = 512
     alpha_initial: float = .05
+    # Bounded, zero-initialised action-side adapter. It is the Con1 analogue of
+    # a LoRA bottleneck on the action expert: it starts as an exact no-op and
+    # adds capacity that does not depend on the latent prediction at all.
+    use_action_adapter: bool = False
+    adapter_scale: float = 1.0
 
     @nn.compact
     def __call__(self, action_hidden, predicted_delta):
@@ -155,6 +160,15 @@ class ActionDeltaCrossAttention(nn.Module):
         logit = self.param("alpha_logit", lambda _: jnp.asarray(
             math.log(self.alpha_initial / (1 - self.alpha_initial)), dtype=jnp.float32))
         correction = jax.nn.sigmoid(logit) * residual
+        if self.use_action_adapter:
+            normed = nn.LayerNorm(name="adapter_norm")(action_hidden.astype(jnp.float32))
+            # Input projection zero-initialised so the branch is an exact no-op
+            # at step zero while still receiving gradient on the first update.
+            hidden = nn.Dense(self.width, name="adapter_in",
+                              kernel_init=nn.initializers.zeros_init())(normed)
+            hidden = nn.gelu(hidden)
+            adapter = nn.Dense(self.action_width, name="adapter_out")(hidden)
+            correction = correction + self.adapter_scale * adapter
         return {"hidden": action_hidden.astype(jnp.float32) + correction,
                 "correction": correction, "attention": attention,
                 "alpha": jax.nn.sigmoid(logit)}
