@@ -147,14 +147,16 @@ def main() -> None:
     cols = np.tile(np.arange(horizon), n)
     keep = valid.reshape(-1)
     rows, cols = rows[keep], cols[keep]
-    order = rng.permutation(len(rows))
-    rows, cols = rows[order], cols[order]
+    # Split by SAMPLE. Splitting (sample, horizon) pairs leaks a sample across
+    # train and eval, letting a fitted estimator interpolate between horizons
+    # and report a spuriously low NMSE.
+    rows = rows.copy()
     n_rows = len(rows)
-    n_train, n_val = int(0.6 * n_rows), int(0.2 * n_rows)
+    n_train_s, n_val_s = int(0.6 * n), int(0.2 * n)
     splits = {
-        "train": slice(0, n_train),
-        "val": slice(n_train, n_train + n_val),
-        "eval": slice(n_train + n_val, n_rows),
+        "train": rows < n_train_s,
+        "val": (rows >= n_train_s) & (rows < n_train_s + n_val_s),
+        "eval": rows >= n_train_s + n_val_s,
     }
 
     def design(name):
@@ -171,7 +173,8 @@ def main() -> None:
         "restored_step": int(state.step),
         "samples": int(n),
         "valid_pairs": int(n_rows),
-        "split": {"train": n_train, "val": n_val, "eval": n_rows - n_train - n_val},
+        "split": {"train_samples": n_train_s, "val_samples": n_val_s,
+                  "eval_samples": n - n_train_s - n_val_s, "unit": "sample"},
         "zero_predictor_nmse": 1.0,
         "head_nmse_eval": None,
         "probes": {},

@@ -154,13 +154,13 @@ def main() -> None:
     cols = np.tile(np.arange(horizon), n)
     keep = valid.reshape(-1)
     rows, cols = rows[keep], cols[keep]
-    order = rng.permutation(len(rows))
-    rows, cols = rows[order], cols[order]
+    # Split by SAMPLE; see probe_con1_feature_sufficiency.py for why splitting
+    # pairs injects horizon leakage.
     n_rows = len(rows)
-    n_train, n_val = int(0.6 * n_rows), int(0.2 * n_rows)
-    tr = slice(0, n_train)
-    va = slice(n_train, n_train + n_val)
-    ev = slice(n_train + n_val, n_rows)
+    n_train_s, n_val_s = int(0.6 * n), int(0.2 * n)
+    tr = rows < n_train_s
+    va = (rows >= n_train_s) & (rows < n_train_s + n_val_s)
+    ev = rows >= n_train_s + n_val_s
 
     def design(name):
         parts = {
@@ -186,7 +186,8 @@ def main() -> None:
         "restored_step": int(state.step),
         "samples": int(n),
         "valid_pairs": int(n_rows),
-        "split": {"train": n_train, "val": n_val, "eval": n_rows - n_train - n_val},
+        "split": {"train_samples": n_train_s, "val_samples": n_val_s,
+                  "eval_samples": n - n_train_s - n_val_s, "unit": "sample"},
         "zero_predictor_nmse": 1.0,
         "head_nmse_eval": float(_nmse(head_delta[rows[ev], cols[ev]], target[rows[ev], cols[ev]])),
         "probes": {},
