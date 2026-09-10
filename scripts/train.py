@@ -32,18 +32,16 @@ def _mask_con1_frozen_action_layers(grads, *, freeze_before=14, depth=18):
     """Mask the scanned action-expert prefix before the optimizer update."""
     if not 0 <= freeze_before <= depth:
         raise ValueError("Invalid Con1 action-layer split")
-    pure = grads.to_pure_dict()
-
-    def walk(value, path):
-        if isinstance(value, dict):
-            return {k: walk(v, path + (str(k),)) for k, v in value.items()}
-        if ("PaliGemma" in path and "llm" in path and "layers" in path
-                and any(str(k).endswith("_1") for k in path)
+    leaves, treedef = jax.tree_util.tree_flatten_with_path(grads)
+    masked = []
+    for path, value in leaves:
+        names = tuple(str(getattr(k, "key", getattr(k, "idx", k))) for k in path)
+        if ("PaliGemma" in names and "llm" in names and "layers" in names
+                and any(name.endswith("_1") for name in names)
                 and hasattr(value, "shape") and value.ndim >= 1 and value.shape[0] == depth):
-            return value.at[:freeze_before].set(0)
-        return value
-
-    return grads.replace_by_pure_dict(walk(pure, ()))
+            value = value.at[:freeze_before].set(0)
+        masked.append(value)
+    return jax.tree_util.tree_unflatten(treedef, masked)
 
 
 def init_logging():
