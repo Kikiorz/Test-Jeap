@@ -74,23 +74,55 @@ class VjepaFrameEncoder:
             interpolate_rope=True,
         )
         checkpoint_blob = torch.load(str(checkpoint), map_location="cpu", weights_only=True, mmap=True)
-        state = checkpoint_blob.get("encoder", checkpoint_blob) if isinstance(checkpoint_blob, dict) else checkpoint_blob
+        # The offline cache is produced by the EMA *target* encoder, not the
+        # online one. Loading `encoder` instead leaves a systematic mismatch
+        # (measured mean |diff| 0.093 vs 0.0045) that is easy to mistake for
+        # preprocessing error.
+        if isinstance(checkpoint_blob, dict) and "target_encoder" in checkpoint_blob:
+            state = checkpoint_blob["target_encoder"]
+        elif isinstance(checkpoint_blob, dict) and "encoder" in checkpoint_blob:
+            state = checkpoint_blob["encoder"]
+        else:
+            state = checkpoint_blob
         if isinstance(state, dict):
-            state = {key.replace("module.", "").replace("encoder.", ""): value for key, value in state.items()}
+            # Training checkpoints store the encoder under
+            # "module.backbone.<param>"; the model itself uses bare names.
+            state = {key.split("backbone.", 1)[-1] if "backbone." in key else key: value
+                     for key, value in state.items()}
         missing, unexpected = model.load_state_dict(state, strict=False)
         if missing:
             raise RuntimeError(f"V-JEPA checkpoint is missing {len(missing)} tensors, e.g. {missing[:3]}")
         if unexpected:
             raise RuntimeError(f"V-JEPA checkpoint has {len(unexpected)} unexpected tensors, e.g. {unexpected[:3]}")
-        model.to(self.device).eval()
+        # The offline recipe feeds bfloat16 clips, so the encoder must be
+        # bfloat16 as well; float32 weights raise a dtype mismatch in conv3d.
+        model.to(self.device, dtype=torch.bfloat16).eval()
         self.model = model
 
     @property
     def output_dim(self) -> int:
         return self.target_dim * self.views
 
+    IMAGENET_MEAN = np.asarray([0.485, 0.456, 0.406], np.float32)
+    IMAGENET_STD = np.asarray([0.229, 0.224, 0.225], np.float32)
+
+    def _preprocess(self, image: "np.ndarray") -> np.ndarray:
+        """RGB uint8 HWC -> the exact array the offline cache used (CHW float32)."""
+        from PIL import Image
+
+        pil = Image.fromarray(np.asarray(image, dtype=np.uint8)).convert("RGB")
+        pil = pil.resize((384, 384), resample=Image.Resampling.BICUBIC)
+        value = np.asarray(pil, dtype=np.float32) / 255.0
+        value = (value - self.IMAGENET_MEAN) / self.IMAGENET_STD
+        return np.ascontiguousarray(value.transpose(2, 0, 1))
+
     def encode(self, frames: np.ndarray) -> np.ndarray:
-        """frames: [B, V, H, W, 3] uint8 (one frame per view) -> [B, V*1408] float32."""
+        """frames: [B, V, H, W, 3] uint8 RGB -> [B, V*1408] float32.
+
+        Mirrors the offline pipeline exactly: bicubic resize to 384, /255,
+        ImageNet normalisation, CHW, two identical frames stacked on the temporal
+        axis, then spatial mean of the encoder output.
+        """
         torch = self.torch
         frames = np.asarray(frames)
         if frames.ndim != 5 or frames.shape[-1] != 3:
@@ -100,10 +132,17 @@ class VjepaFrameEncoder:
         with torch.inference_mode():
             for index in range(batch):
                 for view in range(self.views):
-                    frame = frames[index, view]
-                    video = torch.from_numpy(np.stack((frame, frame), axis=2)).to(
+                    prep = self._preprocess(frames[index, view])
+                    # Single CHW image: stack two identical frames on a NEW
+                    # temporal axis (axis=1) then add the batch dim, giving
+                    # [1, 3, 2, H, W] as the model expects.
+                    video = torch.from_numpy(
+                        np.stack((prep, prep), axis=1)[None].copy()).to(
                         self.device, dtype=torch.bfloat16)
-                    feature = self.model(video).float().mean(dim=1)
+                    output = self.model(video)
+                    if isinstance(output, list):
+                        output = output[-1]
+                    feature = output.float().mean(dim=1)
                     if feature.shape[-1] != self.target_dim:
                         raise ValueError(f"Unexpected V-JEPA width {feature.shape[-1]}")
                     out[index, view * self.target_dim:(view + 1) * self.target_dim] = (

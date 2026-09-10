@@ -1,4 +1,5 @@
 import dataclasses
+import os
 
 import einops
 import numpy as np
@@ -15,6 +16,38 @@ def make_libero_example() -> dict:
         "observation/wrist_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "prompt": "do something",
     }
+
+
+
+# --- Con1 online current-latent -------------------------------------------
+# Con1 consumes `con1_current_latent`. The training cache only exists offline,
+# so at serving time it must be recomputed from the live camera frames with the
+# frozen V-JEPA 2.1 target encoder. Verified against the offline cache: mean
+# |diff| 0.0045, i.e. equal to bf16 batch-shape noise (0.0041).
+_CON1_ENCODER = None
+
+
+def _con1_online_latent_enabled() -> bool:
+    return os.environ.get("OPENPI_CON1_ONLINE_LATENT", "0") == "1"
+
+
+def _con1_frame_encoder():
+    global _CON1_ENCODER
+    if _CON1_ENCODER is None:
+        from openpi.models.vjepa_frame_encoder import VjepaFrameEncoder
+
+        _CON1_ENCODER = VjepaFrameEncoder(
+            os.environ.get("OPENPI_CON1_VJEPA_CHECKPOINT", "/workspace/vjepa2/vjepa2_1_vitg_384.pt"),
+            os.environ.get("OPENPI_CON1_VJEPA_ROOT", "/workspace/vjepa2"),
+            device=os.environ.get("OPENPI_CON1_VJEPA_DEVICE", "cuda:0"),
+        )
+    return _CON1_ENCODER
+
+
+def con1_current_latent_from_frames(base_image, wrist_image):
+    """[H,W,3] uint8 x2 -> [2816] float32, matching the offline cache order."""
+    frames = np.stack([np.stack([base_image, wrist_image], axis=0)], axis=0)
+    return _con1_frame_encoder().encode(frames)[0]
 
 
 def _parse_image(image) -> np.ndarray:
@@ -84,6 +117,8 @@ class LiberoInputs(transforms.DataTransformFn):
             inputs["vjepa_target"] = data["vjepa_target"]
         if "con1_current_latent" in data:
             inputs["con1_current_latent"] = data["con1_current_latent"]
+        elif _con1_online_latent_enabled():
+            inputs["con1_current_latent"] = con1_current_latent_from_frames(base_image, wrist_image)
         if "con1_future_latents" in data:
             inputs["con1_future_latents"] = data["con1_future_latents"]
         if "con1_future_valid" in data:
