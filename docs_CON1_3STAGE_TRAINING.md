@@ -150,6 +150,33 @@ the run instead of corrupting it. The prior `floww` run is stopped and kept.
 
 ### Outcome of the 10x attempt (stopped)
 
+### Corrected alpha scan: the residual effect is null (2026-09-10)
+
+The single-batch scan reported below was repeated over 24 batches x 16 samples,
+pairing every alpha against `alpha=0` *within* each batch and then aggregating,
+so the numbers now carry standard errors:
+
+| variant | correction RMS | mean delta-flow | stderr |
+|---|---:|---:|---:|
+| alpha=0 | 0 | 0 | - |
+| alpha learned (0.050) | 0.00286 | +3.4e-7 | 1.8e-6 |
+| alpha=0.25 | 0.0143 | -3.4e-6 | 8.1e-6 |
+| alpha=0.5 | 0.0286 | +9.9e-6 | 1.5e-5 |
+| alpha=1.0 | 0.0572 | +5.1e-5 | 3.3e-5 |
+| learned alpha, residual x10 | 0.0286 | +1.1e-5 | 1.6e-5 |
+
+Every effect is within about one standard error of zero, and the signs drift
+positive (worse) rather than negative. The earlier claim from a single batch
+that "the optimal residual magnitude improves flow by ~2e-5" **does not
+replicate** and is withdrawn. The defensible bound is that the residual changes
+flow loss by less than roughly 1e-4 (0.6% of the flow) for every gate value up
+to alpha=1.
+
+Combined with the step-3000 scan, where a ten-times-larger residual *was*
+measurably harmful (+3.2e-3 at alpha=1), the Con1 conclusion is: **the residual
+contributes no measurable improvement at any magnitude, and can only hurt once
+it grows.** Its value is limited to being exactly a no-op at alpha=0.
+
 `con1_b128_lr10x_floww_17k_from1k` was stopped after 91 updates (last logged
 step 1091) because the residual branch grew without bound instead of settling:
 `con1_residual_energy` rose 1041 -> 1091 as 5.7e-5, 1.6e-4, 4.9e-4, 1.3e-3,
