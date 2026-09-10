@@ -60,6 +60,7 @@ def main() -> None:
     parser.add_argument("--batches", type=int, default=16)
     parser.add_argument("--checkpoint-step", type=int, default=None)
     parser.add_argument("--proj-dim", type=int, default=1024)
+    parser.add_argument("--rff-dim", type=int, default=512)
     parser.add_argument("--seed", type=int, default=20260910)
     args = parser.parse_args()
 
@@ -116,6 +117,11 @@ def main() -> None:
     future = np.concatenate(fut_list, 0)
     valid = np.concatenate(valid_list, 0)
     actions = np.concatenate(act_list, 0)
+    # Actions are padded to the model width; only the physical dims are real.
+    physical = int(config.model.con1_action_dims)
+    if actions.shape[-1] < physical:
+        raise ValueError(f"Action width {actions.shape[-1]} below physical dims {physical}")
+    actions = actions[..., :physical]
     target = future - z0[:, None, :]
     r_mean = queries.mean(1)
     n, horizon, dim = target.shape
@@ -133,26 +139,35 @@ def main() -> None:
     n_train, n_val = int(0.6 * n_rows), int(0.2 * n_rows)
     tr, va, ev = slice(0, n_train), slice(n_train, n_train + n_val), slice(n_train + n_val, n_rows)
 
+    # Every feature set is built per (sample, horizon) pair so slices line up.
     step_idx = np.arange(horizon)[None, :]
-    # per-row causal prefix over actions a_{t..t+j-1}
+    causal_mask = (step_idx <= cols[:, None]).astype(np.float32)[:, :, None]
     A = actions[rows]
-    causal_mask = (step_idx < (cols + 1)[:, None]).astype(np.float32)[:, :, None]
     prefix_sum = (A * causal_mask).sum(1)
     prefix_mean = prefix_sum / np.maximum(causal_mask.sum(1), 1.0)
-    prefix_last = A[np.arange(n_rows), np.maximum(cols, 0)]
+    prefix_last = A[np.arange(n_rows), np.maximum(cols - 1, 0)]
     prefix_first = A[:, 0, :]
-    act_all = actions[rows].reshape(n_rows, -1)
     act_causal = np.concatenate([prefix_mean, prefix_sum, prefix_last, prefix_first], axis=1)
+    act_all = actions[rows].reshape(n_rows, -1)
+    z_pair = z0[rows]
+    r_pair = r_mean[rows]
 
     parts = {
-        "z": z0,
-        "r_mean": r_mean,
+        "z": z_pair,
+        "r_mean": r_pair,
         "act_all": act_all,
         "act_causal": act_causal,
     }
 
     def design(name):
         return np.concatenate([parts[k] for k in name.split("+")], axis=1)
+
+    def rff(x, dim, seed):
+        proj = np.random.default_rng(seed).normal(
+            0.0, 1.0 / np.sqrt(x.shape[1]), size=(x.shape[1], dim)
+        ).astype(np.float32)
+        z = x.astype(np.float32) @ proj
+        return np.concatenate([np.cos(z), np.sin(z)], axis=1)
 
     designs = [
         "z",
@@ -163,6 +178,7 @@ def main() -> None:
         "z+r_mean+act_all",
         "z+r_mean+act_causal",
     ]
+    nonlinear = ["z+r_mean+act_causal", "z+r_mean+act_all"]
     lambdas = [1e-2, 0.1, 1.0, 10.0, 100.0, 1000.0]
     report = {
         "exp_name": args.exp_name,
@@ -178,13 +194,31 @@ def main() -> None:
     for name in designs:
         x = design(name)
         score, lam = _fit_ridge(
-            x[rows[tr]], target[rows[tr], cols[tr]],
-            x[rows[va]], target[rows[va], cols[va]],
-            x[rows[ev]], target[rows[ev], cols[ev]],
+            x[tr], target[rows[tr], cols[tr]],
+            x[va], target[rows[va], cols[va]],
+            x[ev], target[rows[ev], cols[ev]],
             lambdas, args.proj_dim, args.seed,
         )
         report["probes"][name] = {"eval_nmse": score, "lambda": lam, "dim": int(x.shape[1])}
         print(json.dumps({"probe": name, "eval_nmse": score, "lambda": lam}), flush=True)
+
+    # Interaction-aware probes: the effect of an action depends on the state, so
+    # an additive linear map cannot express it. Random Fourier features capture
+    # those products without training a network.
+    for name in nonlinear:
+        base = design(name)
+        x = rff(base, args.rff_dim, args.seed)
+        score, lam = _fit_ridge(
+            x[tr], target[rows[tr], cols[tr]],
+            x[va], target[rows[va], cols[va]],
+            x[ev], target[rows[ev], cols[ev]],
+            lambdas, args.proj_dim, args.seed,
+        )
+        key = f"rff({name})"
+        report["probes"][key] = {
+            "eval_nmse": score, "lambda": lam, "dim": int(x.shape[1]), "rff_dim": args.rff_dim
+        }
+        print(json.dumps({"probe": key, "eval_nmse": score, "lambda": lam}), flush=True)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
