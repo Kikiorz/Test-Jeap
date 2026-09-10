@@ -77,6 +77,44 @@ def test_head_with_flags_off_keeps_the_legacy_parameter_tree():
     assert any("action_in" in k for k in names)
 
 
+def test_action_branch_is_a_no_op_at_initialisation():
+    """With the value projection zeroed, enabling conditioning must not change
+    the head's output until it has been trained."""
+    horizon, latent_dim, width, action_dim = 3, 6, 8, 3
+    plain = AnchoredDeltaHead(horizon=horizon, latent_dim=latent_dim, width=width)
+    cond = AnchoredDeltaHead(horizon=horizon, latent_dim=latent_dim, width=width,
+                             action_dim=action_dim, use_action_conditioning=True)
+    r = jax.random.normal(jax.random.key(11), (2, 5, 7))
+    z = jax.random.normal(jax.random.key(12), (2, latent_dim))
+    actions = jax.random.normal(jax.random.key(13), (2, horizon, action_dim))
+    plain_vars = plain.init(jax.random.key(14), r, z)
+    cond_vars = cond.init(jax.random.key(14), r, z, actions)
+    reference = plain.apply(plain_vars, r, z)["delta"]
+    forward = cond.apply(cond_vars, r, z, actions)["delta"]
+    # Shared branches have the same parameters, and the action branch adds zero,
+    # so the two outputs must agree exactly.
+    np.testing.assert_allclose(np.asarray(forward), np.asarray(reference), rtol=0, atol=1e-6)
+
+
+def test_action_gradient_reaches_the_conditioning_parameters():
+    horizon, latent_dim, width, action_dim = 3, 6, 8, 3
+    head = AnchoredDeltaHead(horizon=horizon, latent_dim=latent_dim, width=width,
+                             action_dim=action_dim, use_action_conditioning=True)
+    r = jax.random.normal(jax.random.key(21), (2, 5, 7))
+    z = jax.random.normal(jax.random.key(22), (2, latent_dim))
+    actions = jax.random.normal(jax.random.key(23), (2, horizon, action_dim))
+    variables = head.init(jax.random.key(24), r, z, actions)
+
+    def loss(vars):
+        return jnp.mean(jnp.square(head.apply(vars, r, z, actions)["delta"]))
+
+    grads = jax.grad(loss)(variables)
+    import flax.traverse_util as traverse_util
+    flat = traverse_util.flatten_dict(grads, sep="/")
+    value_grad = flat["params/action_value/kernel"]
+    assert float(jnp.abs(value_grad).max()) > 0.0
+
+
 def test_two_terms_are_not_claimed_independent():
     z = jnp.zeros((1, 2)); target = jnp.ones((1, 1, 2)); d = jnp.zeros_like(target)
     valid = jnp.ones((1, 1), dtype=bool)

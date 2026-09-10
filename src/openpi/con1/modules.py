@@ -87,7 +87,11 @@ class AnchoredDeltaHead(nn.Module):
             action_hidden = nn.LayerNorm(name="action_norm")(action_hidden)
             aq = nn.Dense(self.width, use_bias=False, name="action_query")(hidden)
             ak = nn.Dense(self.width, use_bias=False, name="action_key")(action_hidden)
-            av = nn.Dense(self.width, use_bias=False, name="action_value")(action_hidden)
+            # Zero-initialised value projection: at step zero the action branch
+            # contributes exactly nothing, so the head still reproduces the
+            # pretrained head and only gains action conditioning as it trains.
+            av = nn.Dense(self.width, use_bias=False, name="action_value",
+                          kernel_init=nn.initializers.zeros_init())(action_hidden)
             heads = 4
             aq = aq.reshape(*aq.shape[:2], heads, self.width // heads)
             ak = ak.reshape(*ak.shape[:2], heads, self.width // heads)
