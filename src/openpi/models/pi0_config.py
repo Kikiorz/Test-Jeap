@@ -43,6 +43,15 @@ class Pi0Config(_model.BaseModelConfig):
     vjepa_action_attends_queries: bool = False
     vjepa_disable_geometric_augmentation: bool = True
 
+    # Con1 reciprocal action-latent adapter.  Kept disabled by default so an
+    # unmodified JEPA-WAM checkpoint remains bit-compatible until the explicit
+    # Con1 training configuration enables it.
+    use_con1: bool = False
+    con1_latent_dim: int = 2816
+    con1_width: int = 512
+    con1_alpha_initial: float = 0.05
+    con1_train_action_layers_from: int = 14
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
@@ -66,6 +75,16 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("V-JEPA target grid size and dimension must be positive")
             if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
                 raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
+        if self.use_con1:
+            if not self.pi05:
+                raise ValueError("Con1 currently requires Pi0.5")
+            if self.con1_latent_dim < 1 or self.con1_width < 8:
+                raise ValueError("Con1 dimensions must be positive")
+            if not 0 < self.con1_alpha_initial < 1:
+                raise ValueError("Con1 alpha initial must be inside (0,1)")
+            depth = _gemma.get_config(self.action_expert_variant).depth
+            if not 0 <= self.con1_train_action_layers_from < depth:
+                raise ValueError("Con1 action-layer split is outside expert depth")
 
     @property
     @override
