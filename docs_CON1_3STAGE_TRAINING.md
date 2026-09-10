@@ -43,3 +43,21 @@ The first attempted launch was discarded: passing a non-contiguous episode list
 directly to LeRobot renumbered its action index table. The current loader reads
 the complete table and applies an original-index `Subset`, preserving episode
 boundaries and the cache's episode IDs.
+
+## Authorized continuation: 12k to 17k
+
+After the initial 12,000 updates, continue for 5,000 more using `--resume
+--num-train-steps=17000`. Restore both model and Adam state from checkpoint
+`11999` (directory name is the zero-based loop index; saved optimizer step is
+12,000). Keep the existing experiment directory; do not use `--overwrite`.
+
+This extends stage 3: beta stays at 0.5; there is no new warm-up or reinitialization.
+The LR after the first 100 updates remains 1e-5 for the latent head, 5e-6 for
+the fusion projections, and 1e-6 for alpha, action blocks 14--17 and action_out_proj.
+Blocks 0--13, the VLM and the teacher remain frozen. Global batch stays 4 across
+four GPUs. `--keep-period=1` preserves the 12k checkpoint `11999` as well as the
+new checkpoints despite its non-multiple-of-1000 directory name.
+
+The optimizer resumes exactly; the current data loader does not checkpoint its
+iterator position and restarts its deterministic shuffled order. Training-loss
+decline alone does not establish held-out improvement or lack of convergence.
