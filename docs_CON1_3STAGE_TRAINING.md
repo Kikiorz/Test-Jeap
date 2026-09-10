@@ -152,6 +152,42 @@ the run instead of corrupting it. The prior `floww` run is stopped and kept.
 
 ### Corrected alpha scan: the residual effect is null (2026-09-10)
 
+### The bounded action adapter is the first real gain (2026-09-10)
+
+`probe_con1_residual_causal.py --config=pi05_libero_con1_action_adapter_40k`
+on the stage-1 checkpoint 1000, 24 batches x 16 samples, every variant paired
+against the same batch's frozen base (`alpha_0` also relaxes the adapter, so it
+is the exact official model):
+
+| variant | correction RMS | mean delta-flow | stderr |
+|---|---:|---:|---:|
+| alpha_0 (residual off, adapter off = exact base) | 0.00145 | 0 | - |
+| **alpha learned (adapter on)** | 0.345 | **-3.47e-4** | 7.8e-5 |
+| adapter off (latent residual only) | 0.00158 | -8.0e-7 | 4.0e-6 |
+| alpha=0.25 | 0.346 | -3.49e-4 | 7.9e-5 |
+| alpha=0.5 | 0.346 | -3.46e-4 | 7.9e-5 |
+| alpha=1.0 | 0.346 | -3.55e-4 | 7.9e-5 |
+| learned alpha, residual x10 | 0.346 | -3.49e-4 | 7.9e-5 |
+
+Three things this establishes:
+
+1. The bounded action-side adapter **improves the flow loss by 3.5e-4, i.e. a
+   2.0% relative reduction, at 4.5 standard errors**. This is the first
+   statistically solid action-accuracy gain found in the whole investigation.
+2. The latent residual path contributes nothing: with the adapter disabled its
+   effect is -8.0e-7 +- 4.0e-6, indistinguishable from zero. This independently
+   confirms the multi-batch null result above.
+3. The gate alpha is now irrelevant (0.25/0.5/1.0 all give -3.5e-4) and the
+   correction RMS is identical (0.345) across those settings, which means the
+   **5% relative budget is the binding constraint** on the correction magnitude,
+   exactly as designed. The bound, not the gate, is what keeps the perturbation
+   in a useful range.
+
+Important caveat: this is a paired measurement on training-distribution batches,
+not closed-loop LIBERO-Plus rollouts, and the adapter was trained on that
+distribution. It establishes a real mechanism-level improvement; a claim about
+task success still needs the paired rollout that the earlier work used.
+
 The single-batch scan reported below was repeated over 24 batches x 16 samples,
 pairing every alpha against `alpha=0` *within* each batch and then aggregating,
 so the numbers now carry standard errors:
