@@ -188,3 +188,18 @@ ramp to 0.5 at 12000). Batch 64 halves per-step cost, so wall-clock should be
 roughly half the batch-128 runs if the step is compute bound.
 
 Experiment: `con1_b64_lr2x_floww_17k`.
+
+### Stage 2 action-expert rate raised to 1e-5
+
+The user judged 2e-6 for the unfrozen action blocks too slow and asked for
+1e-5. `TrainConfig.con1_action_lr_multiplier` now controls that group separately
+from alpha (which stays at its 0.1 factor). Setting
+`--con1-action-lr-multiplier=0.5` over the 2e-5 base gives exactly 1e-5 for
+action blocks 14-17 and `action_out_proj`; the delta head stays 2e-5,
+cross-attention stays 2e-5 / 1e-5, and alpha stays 2e-6.
+
+The running experiment is resumed in place from its own checkpoint `1000` with
+`--resume` (never `--overwrite`) so the schedule, Adam state, and experiment
+directory continue. Only the stage-2 action rate changes; stage 1 behavior is
+identical because those parameters are masked until update 2000. The ~41
+unsaved updates past checkpoint 1000 are not recovered.
