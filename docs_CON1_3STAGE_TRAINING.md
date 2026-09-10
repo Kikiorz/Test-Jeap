@@ -223,6 +223,34 @@ trained delta head at 0.474 (held out, sample split). Consequences:
 * NMSE measured for a *fixed* model is unaffected by this bug, so the head's
   0.4739 held-out number and the earlier alpha-scan stay valid.
 
+### Corrected probe numbers (sample-level split)
+
+`probe_con1_action_conditioning.py` re-run with the fixed split, 1536 samples,
+lambda chosen on a held-out validation split:
+
+| probe | eval NMSE |
+|---|---:|
+| trained delta head (fixed model, unaffected by the bug) | 0.4908 |
+| rff(z_t + R_t), no action | 0.9362 |
+| rff(z_t + R_t + causal actions) | 0.8842 |
+| rff(z_t + R_t + full action chunk) | 0.9197 |
+| linear z_t + R_t + causal actions | 0.9803 |
+
+Two conclusions, both opposite to the leak-inflated run:
+
+1. The trained head beats every fitted probe by a wide margin (0.49 against a
+   best of 0.88). The head is **not** underfit, and the "extra readout" and
+   "ridge warm start" work was aimed at a problem that does not exist. The ridge
+   warm start is abandoned.
+2. Action conditioning is still a real effect and is *larger* than the leaked
+   estimate suggested: 0.9362 -> 0.8842, i.e. 0.052 NMSE (5.6% relative). Causal
+   conditioning also beats the non-causal full chunk (0.8842 vs 0.9197), so the
+   causal mask is doing work.
+
+Note lambda sits at the top of the grid for these probes, so the fitted numbers
+are conservative; this does not change the ordering or the fact that the head
+remains far better than any probe.
+
 Measured first with the kernel-ridge probe `scripts/probe_con1_action_conditioning.py`
 (1024 samples, 60/20/20 split, matched pipeline):
 
