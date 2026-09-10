@@ -1,7 +1,9 @@
 import dataclasses
 import functools
 import logging
+import json
 import platform
+import time
 from typing import Any
 
 import etils.epath as epath
@@ -307,6 +309,7 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
+    log_started = time.time()
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
@@ -317,6 +320,15 @@ def main(config: _config.TrainConfig):
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
+            if getattr(config.model, "use_con1", False):
+                values = {k: float(v) for k, v in reduced_info.items()}
+                if not all(np.isfinite(v) for v in values.values()):
+                    raise FloatingPointError(f"Nonfinite Con1 metrics at step {step}: {values}")
+                values.update(completed_updates=step + 1, unix_time=time.time(),
+                              seconds_per_update=(time.time() - log_started) / len(infos))
+                with (config.checkpoint_dir / 'metrics.jsonl').open('a') as f:
+                    f.write(json.dumps(values) + '\n')
+                log_started = time.time()
             infos = []
         batch = next(data_iter)
 
