@@ -37,11 +37,21 @@ def test_action_adapter_is_a_no_op_at_init_but_gets_gradient():
 
 def test_residual_budget_caps_the_forward_perturbation():
     """With a huge adapter the correction must still respect the relative cap."""
+    import flax.traverse_util as traverse_util
+
+    def with_large_adapter(variables):
+        # Both correction branches are zero-initialised, so drive them away from
+        # zero before testing the cap.
+        flat = dict(traverse_util.flatten_dict(variables, sep="/"))
+        for key in ("params/adapter_out/kernel", "params/out/kernel"):
+            flat[key] = 10.0 * jnp.ones_like(flat[key])
+        return traverse_util.unflatten_dict(flat, sep="/")
+
     model = ActionDeltaCrossAttention(12, width=8, use_action_adapter=True,
-                                      adapter_scale=1e3, residual_budget=0.05)
+                                      adapter_scale=1.0, residual_budget=0.05)
     h = jax.random.normal(jax.random.key(51), (2, 4, 12))
     d = jax.random.normal(jax.random.key(52), (2, 4, 8))
-    variables = model.init(jax.random.key(53), h, d)
+    variables = with_large_adapter(model.init(jax.random.key(53), h, d))
     out = model.apply(variables, h, d)
     corr = np.asarray(out["correction"], np.float64)
     hid = np.asarray(h, np.float64)
@@ -50,8 +60,8 @@ def test_residual_budget_caps_the_forward_perturbation():
     assert np.all(corr_rms <= 0.05 * base_rms + 1e-6), (corr_rms, base_rms)
     # Unbounded, the same setup must violate the cap, proving the test bites.
     loose = ActionDeltaCrossAttention(12, width=8, use_action_adapter=True,
-                                      adapter_scale=1e3, residual_budget=0.0)
-    loose_out = loose.apply(loose.init(jax.random.key(53), h, d), h, d)
+                                      adapter_scale=1.0, residual_budget=0.0)
+    loose_out = loose.apply(with_large_adapter(loose.init(jax.random.key(53), h, d)), h, d)
     loose_rms = np.sqrt((np.asarray(loose_out["correction"], np.float64) ** 2).mean(-1))
     assert np.any(loose_rms > 0.05 * base_rms + 1e-6)
 
