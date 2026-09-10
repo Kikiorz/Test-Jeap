@@ -51,6 +51,26 @@ def test_fusion_lr_multiplier_does_not_change_other_groups():
             np.testing.assert_array_equal(raised[name]["kernel"], normal[name]["kernel"])
 
 
+def test_action_lr_multiplier_touches_only_action_groups():
+    updates = {
+        "con1_cross_attention": {"out": jnp.ones(2), "alpha_logit": jnp.array(1.)},
+        "con1_delta_head": {"kernel": jnp.ones(2)},
+        "action_out_proj": {"kernel": jnp.ones(2)},
+        "PaliGemma": {"llm": {"layers": {"mlp_1": {"w": jnp.ones(2)}}}},
+    }
+    normal = jax.jit(lambda u: scale_group_updates(u, 2500))(updates)
+    raised = jax.jit(lambda u: scale_group_updates(u, 2500, action_multiplier=.5))(updates)
+    np.testing.assert_allclose(raised["action_out_proj"]["kernel"], 5 * normal["action_out_proj"]["kernel"])
+    np.testing.assert_allclose(raised["PaliGemma"]["llm"]["layers"]["mlp_1"]["w"],
+                               5 * normal["PaliGemma"]["llm"]["layers"]["mlp_1"]["w"])
+    for name in ("con1_delta_head",):
+        np.testing.assert_array_equal(raised[name]["kernel"], normal[name]["kernel"])
+    np.testing.assert_array_equal(raised["con1_cross_attention"]["alpha_logit"],
+                                  normal["con1_cross_attention"]["alpha_logit"])
+    np.testing.assert_array_equal(raised["con1_cross_attention"]["out"],
+                                  normal["con1_cross_attention"]["out"])
+
+
 def test_adam_state_and_freeze_are_exact_under_jit():
     model = nnx.Dict(
         PaliGemma=nnx.Dict(llm=nnx.Dict(layers=nnx.Dict(mlp_1=nnx.Dict(w=nnx.Param(jnp.ones((18, 2))))))),

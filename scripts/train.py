@@ -218,6 +218,7 @@ def train_step(
         updates = scale_group_updates(
             updates, state.step, warmup=config.model.con1_stage1_steps,
             fusion_multiplier=config.con1_cross_attention_lr_multiplier,
+            action_multiplier=config.con1_action_lr_multiplier,
         )
         updates = mask_action_updates(
             updates,
