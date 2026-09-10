@@ -196,6 +196,13 @@ Fine-tuned predictor, 12 candidates, horizon 1:
 | before the gripper fix | 400 | 0.1525 | 0.0833 | 0.253 |
 | `ft_fix2_pre` step 999, horizon 1 | 200 | **0.3100** | 0.0833 | 0.161 |
 | `ft_fix2_pre` step 999, horizon 4 | 100 | **0.3900** | 0.0833 | **0.115** |
+| `ft_stride2_ar4`, 5 Hz, horizon 1 (0.2 s) | 200 | **0.4900** | 0.0833 | 0.090 |
+| `ft_stride2_ar4`, 5 Hz, horizon 2 (0.4 s) | 200 | **0.6700** | 0.0833 | **0.054** |
+
+The last two rows are the model used with the timebase it was trained at, and
+they are the numbers to quote: with 12 candidates the executed action is
+ranked best **49% of the time at 0.2 s and 67% at 0.4 s** (chance 8.3%), and it
+sits in the top 5-9% of the ranking on average.
 
 The executed action is the best-scoring candidate 3.7x more often than chance
 (4.7x at a 0.4 s horizon) and sits, on average, in the top sixth of the ranking,

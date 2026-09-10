@@ -51,6 +51,9 @@ def main():
     parser.add_argument("--horizon", type=int, default=1, help="Steps to roll out before scoring.")
     parser.add_argument("--candidates", type=int, default=16)
     parser.add_argument("--windows", type=int, default=40)
+    parser.add_argument("--frame-stride", type=int, default=1,
+                        help="Frames between consecutive rollout steps; 2 matches the 4-5 fps "
+                             "the released predictor was trained at.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="cuda:3")
     parser.add_argument("--output", type=Path, default=None)
@@ -73,17 +76,20 @@ def main():
         actions = np.load(args.cache / "actions" / f"episode_{episode:06d}.npy")
         states = np.load(args.cache / "states" / f"episode_{episode:06d}.npy")
         length = len(actions)
-        if length < args.context + args.horizon + 1:
+        span = args.frame_stride * (args.context + args.horizon) + 1
+        if length < span:
             continue
-        starts = rng.integers(args.context - 1, length - args.horizon - 1, size=args.windows)
+        low = args.frame_stride * (args.context - 1)
+        starts = rng.integers(low, length - args.frame_stride * args.horizon - 1, size=args.windows)
         for start in starts:
             start = int(start)
-            context = np.asarray(tokens[start - args.context + 1:start + 1], dtype=np.float32)
-            action_window = np.stack([actions[i] for i in range(start - args.context + 1, start + 1)])
-            state_window = np.stack([states[i] for i in range(start - args.context + 1, start + 1)])
+            index = start - args.frame_stride * np.arange(args.context - 1, -1, -1)
+            context = np.asarray(tokens[index], dtype=np.float32)
+            action_window = np.asarray(actions[index], dtype=np.float32)
+            state_window = np.asarray(states[index], dtype=np.float32)
             true_action = actions[start]
             # Un-normalised target frame; score_actions applies the layer norm.
-            target = np.asarray(tokens[start + args.horizon], dtype=np.float32)
+            target = np.asarray(tokens[start + args.frame_stride * args.horizon], dtype=np.float32)
             options = action_candidates(true_action, pool, args.candidates, rng, scale)
             scores, ranks = model.score_actions(context, action_window, state_window, options,
                                                 target, steps=args.horizon)
@@ -97,6 +103,7 @@ def main():
         "predictor": str(args.predictor),
         "horizon": args.horizon,
         "candidates": args.candidates,
+        "frame_stride": args.frame_stride,
         "windows": count,
         "top1_rate": top1 / max(count, 1),
         "chance_top1": 1.0 / args.candidates,
