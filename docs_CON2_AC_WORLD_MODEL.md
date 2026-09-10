@@ -156,6 +156,29 @@ Three conclusions, all from the same held-out episodes:
    against +0.002 before the gripper fix. The gripper channel was the missing
    link that let the model relate the action to the future at all.
 
+Same recipe on the larger cache (400 training episodes, held-out episodes
+400-439, 2000-step schedule):
+
+| step | h=1 | h=2 | h=4 | action zeroed (h=1 / 2 / 4) |
+|---:|---:|---:|---:|---|
+| 499 | 0.877 | 0.854 | 0.862 | 0.897 / 0.880 / 0.886 |
+| 999 | 0.846 | 0.815 | 0.809 | 0.898 / 0.884 / 0.887 |
+| 1499 | 0.836 | 0.787 | 0.778 | 0.887 / 0.871 / 0.864 |
+| 1999 | **0.831** | **0.785** | **0.772** | 0.891 / 0.876 / 0.870 |
+
+More data needs more steps to pay off (at equal steps the 400-episode run trails
+the 100-episode one, on a harder held-out set), but it keeps improving through
+2000 steps and the action gap is stable at +0.05 to +0.10 NMSE.
+
+Headline numbers to quote (held-out episodes, copy-current = 1.0):
+
+| setting | h=1 (0.1 s) | h=2 (0.2 s) | h=4 (0.4 s) |
+|---|---:|---:|---:|
+| released AC weights, zero-shot | 1.067 | 1.097 | 1.233 |
+| fine-tuned, 100 episodes / 1000 steps | 0.809 | 0.764 | 0.760 |
+| fine-tuned, 400 episodes / 2000 steps | 0.831 | 0.785 | 0.772 |
+| from random init, same budget | 1.119 | 1.026 | 0.962 |
+
 ### 3.5 Action ranking (energy landscape): the test that does show it
 
 NMSE is blind to action conditioning, so the predictor is scored the way the
@@ -170,13 +193,14 @@ Fine-tuned predictor, 12 candidates, horizon 1:
 | model | windows | top-1 rate | chance | mean rank percentile |
 |---|---:|---:|---:|---:|
 | before the gripper fix | 400 | 0.1525 | 0.0833 | 0.253 |
-| `ft_fix2_pre` (step 999) | 200 | **0.3100** | 0.0833 | **0.161** |
+| `ft_fix2_pre` step 999, horizon 1 | 200 | **0.3100** | 0.0833 | 0.161 |
+| `ft_fix2_pre` step 999, horizon 4 | 100 | **0.3900** | 0.0833 | **0.115** |
 
 The executed action is the best-scoring candidate 3.7x more often than chance
-and sits, on average, in the top sixth of the ranking, i.e. the predicted future
-latent really is action-conditioned. This is the metric to quote for Con2:
-NMSE-vs-copy hides action conditioning almost completely, while the ranking test
-shows it directly.
+(4.7x at a 0.4 s horizon) and sits, on average, in the top sixth of the ranking,
+i.e. the predicted future latent really is action-conditioned. This is the
+metric to quote for Con2: NMSE-vs-copy hides action conditioning almost
+completely, while the ranking test shows it directly.
 
 ## 4. Reproduction
 
@@ -207,10 +231,14 @@ python scripts/probe_ac_action_ranking.py --predictor <run>/predictor.pt \
 
 ## 5. Open items
 
-1. Scale the fine-tune (440-episode cache, longer schedule) and add the matched
-   from-scratch control at the same budget.
-2. Longer horizons: the Con2 claim is about a ~1 s (10-step) horizon, so the
-   fine-tuned predictor needs h=10 numbers and the ranking test at h=4.
+1. Longer horizons: the Con2 claim is about a ~1 s horizon, i.e. h=10 at the
+   10 fps cache. The 10-step rollout exceeds the 8-frame context the released
+   model was trained with, so it needs its own memory budget and a dedicated
+   run (`--horizons 10`), not part of the routine eval.
+2. Action scale: LIBERO setpoints are ~0.012x the executed pose delta while the
+   released predictor expects `action == pose delta`. `--action-scale` now
+   exposes the calibration; the run above used the raw scale and let fine-tuning
+   absorb the mismatch. Measuring the calibrated variant is cheap.
 3. Encoder adaptation: only the predictor has been trained; the AC encoder is
    still a DROID model. Unfreezing its last blocks is the obvious next lever if
    token-level NMSE saturates.
