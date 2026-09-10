@@ -278,6 +278,34 @@ view), which discards exactly the spatial detail a future predictor could use.
 Token-level targets need a re-extract and roughly 890 GB for the full dataset,
 so only a subsampled re-extract is practical.
 
+### Action-conditioning ablation on the trained head (2026-09-10)
+
+`eval_con1_delta_nmse.py` on `con1_action_only_stage1_2k` checkpoint 1000,
+1024 held-out samples, no fitting anywhere in the path:
+
+| condition | held-out NMSE |
+|---|---:|
+| true action chunk | **0.47194** |
+| action chunk shuffled across samples | 0.48355 |
+| action chunk zeroed | 0.48423 |
+| old head with no action branch at all | 0.47393 |
+
+Read this carefully:
+
+* The action branch genuinely uses the action *content*: shuffling costs +0.0116
+  and zeroing costs +0.0123, so it is not just acting as a learned bias.
+* Against the previous no-action head the gain is only 0.47393 -> 0.47194, i.e.
+  **0.002 NMSE (0.4% relative)**. Real, but marginal.
+* Zeroing actions makes the new head *worse* than the old head (0.4842 vs
+  0.4739), because it was trained with actions and the zeroed input is out of
+  distribution. The conditioning must therefore stay enabled at inference.
+
+Combined with the convergence sweep, the Con2 conclusion for this formulation
+is: the head converges at a held-out NMSE of about 0.472-0.474, action
+conditioning buys ~0.002, and the residual ~0.47 is not reachable with these
+inputs. A materially better Con2 needs a different target (token-level rather
+than spatially mean-pooled) or additional information, not more training.
+
 Measured first with the kernel-ridge probe `scripts/probe_con1_action_conditioning.py`
 (1024 samples, 60/20/20 split, matched pipeline):
 
