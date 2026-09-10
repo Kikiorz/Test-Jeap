@@ -723,6 +723,41 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        name="pi05_libero_con1_reciprocal_40k",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            use_vjepa_aux=True,
+            vjepa_target_grid_size=8,
+            use_con1=True,
+            con1_train_action_layers_from=14,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
+            ),
+            extra_delta_transform=True,
+            con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/params",
+            missing_regex=".*con1.*",
+        ),
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm.*_1.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+            )),
+        ),
+        num_train_steps=12_000,
+        batch_size=4,
+        ema_decay=None,
+    ),
+    TrainConfig(
         name="pi0_fast_libero",
         # Here is an example of loading a pi0-FAST model for full finetuning.
         # Modify action_dim and action_horizon to match your dataset (action horizon is equal to
