@@ -36,5 +36,5 @@ arithmetic.
    gradient mask remains zero; verify updates begin after the 2k boundary.
 5. Only then create a new Supervisor experiment directory and launch 12k.
 
-The old `con1_reciprocal_40k/full_reciprocal_12k` output is not a valid resume
+The old `pi05_libero_con1_reciprocal_40k/full_reciprocal_12k` output is not a valid resume
 point for this implementation review.
