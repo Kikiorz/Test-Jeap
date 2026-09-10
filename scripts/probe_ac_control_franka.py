@@ -20,9 +20,15 @@ import torch.nn.functional as F
 VJEPA_ROOT = Path("/workspace/vjepa2")
 sys.path.insert(0, str(VJEPA_ROOT))
 sys.path.insert(0, str(VJEPA_ROOT / "notebooks"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import src.hub.backbones as hub  # noqa: E402
-from app.vjepa_droid.transforms import make_transforms  # noqa: E402
+from openpi.con2.ac_world_model import (  # noqa: E402
+    TOKENS_PER_FRAME,
+    ACWorldModel,
+    build_models,
+    frame_transform,
+    normalize_reps,
+)
 from utils.mpc_utils import poses_to_diff  # noqa: E402
 
 
@@ -37,17 +43,9 @@ def main():
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    encoder, predictor = hub._make_vjepa2_ac_model(pretrained=False)
-    state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    encoder.load_state_dict(hub._clean_backbone_key(dict(state["encoder"])), strict=True)
-    predictor.load_state_dict(hub._clean_backbone_key(dict(state["predictor"])), strict=True)
-    del state
-    encoder = encoder.to(device).eval()
-    predictor = predictor.to(device).eval()
-
-    transform = make_transforms(random_horizontal_flip=False, random_resize_aspect_ratio=(1.0, 1.0),
-                                random_resize_scale=(1.0, 1.0), reprob=0.0, auto_augment=False,
-                                motion_shift=False, crop_size=256)
+    encoder, predictor = build_models(args.checkpoint, root=VJEPA_ROOT, device=device)
+    model = ACWorldModel(predictor=predictor, encoder=encoder,
+                         transform=frame_transform(VJEPA_ROOT), device=device)
 
     trajectory = np.load(args.trajectory)
     clips = trajectory["observations"]
@@ -61,32 +59,16 @@ def main():
     actions = torch.stack([poses_to_diff(pose[i], pose[i + 1]) for i in range(len(index) - 1)]).float()
     frames = np.stack([np.asarray(clips[0][i], dtype=np.uint8) for i in index])
 
-    tokens = []
-    for start in range(0, len(frames), 8):
-        batch = transform(np.ascontiguousarray(frames[start:start + 8])).unsqueeze(0)
-        b, c, t, h, w = batch.shape
-        batch = batch.permute(0, 2, 1, 3, 4).flatten(0, 1).unsqueeze(2).repeat(1, 1, 2, 1, 1)
-        with torch.no_grad():
-            out = encoder(batch.to(device))
-        tokens.append(out.reshape(t, -1, out.shape[-1]).float().cpu())
-    tokens = torch.cat(tokens)
-    tokens = F.layer_norm(tokens, (tokens.shape[-1],))
+    tokens = normalize_reps(model.encode(frames))
     n_tokens = tokens.shape[1]
 
     records = {}
     for step in range(1, args.rollout + 1):
         errors, copies = [], []
         for k in range(len(index) - step):
-            z = tokens[k:k + 1].reshape(1, n_tokens, -1).to(device)
-            a = actions[k:k + 1].unsqueeze(0).to(device)
-            s = pose[k:k + 1].unsqueeze(0).to(device)
-            for _ in range(step):
-                with torch.no_grad():
-                    prediction = predictor(z, a, s)[:, -n_tokens:]
-                    prediction = F.layer_norm(prediction, (prediction.shape[-1],))
-                z = torch.cat([z, prediction], dim=1)
-                a = torch.cat([a, a[:, -1:]], dim=1)
-                s = torch.cat([s, s[:, -1:]], dim=1)
+            # The released notebook rolls the context forward one frame at a time
+            # while repeating the action and the last pose; that is model.rollout.
+            prediction = model.rollout(tokens[k:k + 1], actions[k:k + 1], pose[k:k + 1], steps=step)
             target = tokens[k + step].to(device)[None]
             errors.append(float((prediction[0] - target[0]).pow(2).sum(-1).mean()))
             copies.append(float((tokens[k].to(device) - target[0]).pow(2).sum(-1).mean()))

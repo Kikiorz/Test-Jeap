@@ -30,8 +30,10 @@ import torch.nn.functional as F
 
 VJEPA_ROOT = Path("/workspace/vjepa2")
 sys.path.insert(0, str(VJEPA_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import src.hub.backbones as hub  # noqa: E402
+from openpi.con2.ac_world_model import load_predictor  # noqa: E402
 
 TOKENS_PER_FRAME = 256
 FEATURE_DIM = 1408
@@ -194,19 +196,13 @@ def main():
     device = torch.device(args.device)
     args.output.mkdir(parents=True, exist_ok=True)
 
-    _, predictor = hub._make_vjepa2_ac_model(pretrained=False)
     if args.init_from is not None:
-        state = torch.load(args.init_from, map_location="cpu", weights_only=False)
-        payload = state.get("predictor", state)
-        if any(k.startswith("module.") for k in payload):
-            payload = {k.replace("module.", ""): v for k, v in payload.items()}
-        predictor.load_state_dict(payload, strict=True)
-        del state
+        predictor = load_predictor(args.init_from, root=VJEPA_ROOT, device=device)
     elif args.init == "pretrained":
-        state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-        predictor.load_state_dict(hub._clean_backbone_key(dict(state["predictor"])), strict=True)
-        del state
-    predictor = predictor.to(device)
+        predictor = load_predictor(args.checkpoint, root=VJEPA_ROOT, device=device)
+    else:
+        _, predictor = hub._make_vjepa2_ac_model(pretrained=False)
+        predictor = predictor.to(device)
     if args.activation_checkpointing:
         predictor.use_activation_checkpointing = True
     predictor.train()

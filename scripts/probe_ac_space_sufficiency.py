@@ -25,19 +25,17 @@ import torch.nn.functional as F
 
 VJEPA_ROOT = Path("/workspace/vjepa2")
 sys.path.insert(0, str(VJEPA_ROOT))
-
-import src.hub.backbones as hub  # noqa: E402
-from app.vjepa_droid.transforms import make_transforms  # noqa: E402
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, "/workspace/ts_JEPA_con1_clean/scripts")
-from probe_vjepa_ac_libero import (  # noqa: E402
-    AC_STATE_DIM,
-    encode_frames,
-    load_episode,
-    map_action,
-    map_state,
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from openpi.con2.ac_world_model import (  # noqa: E402
+    ACWorldModel,
+    build_models,
+    frame_transform,
+    map_libero_action,
+    map_libero_state,
 )
+from probe_vjepa_ac_libero import load_episode  # noqa: E402
 
 
 def ridge_fit(x, y, ridge):
@@ -52,13 +50,13 @@ def ridge_predict(weight, x):
     return x @ weight
 
 
-def build_features(episodes, args, encoder, transform, device):
+def build_features(episodes, args, model):
     rows = {"train": [], "eval": []}
     for episode in episodes:
         frames, state, action = load_episode(args.dataset, episode, args.camera)
-        tokens = encode_frames(encoder, transform, frames[::args.stride], device, args.encode_chunk)
-        pose = map_state(state[::args.stride])
-        act = map_action(action[::args.stride], args.action_variant)
+        tokens = model.encode(frames[::args.stride], chunk=args.encode_chunk)
+        pose = map_libero_state(state[::args.stride])
+        act = map_libero_action(action[::args.stride], args.action_variant)
         pooled = F.layer_norm(tokens, (tokens.shape[-1],)).mean(1).numpy()  # [T, D]
         length = len(pooled)
         if length < args.horizon + 2:
@@ -96,17 +94,11 @@ def main():
     args.train_episodes = set(args.train_episodes)
 
     device = torch.device(args.device)
-    encoder, _ = hub._make_vjepa2_ac_model(pretrained=False)
-    state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    encoder.load_state_dict(hub._clean_backbone_key(dict(state[args.encoder_key])), strict=True)
-    del state
-    encoder = encoder.to(device).eval()
-    transform = make_transforms(random_horizontal_flip=False, random_resize_aspect_ratio=(1.0, 1.0),
-                                random_resize_scale=(1.0, 1.0), reprob=0.0, auto_augment=False,
-                                motion_shift=False, crop_size=256)
+    encoder, _ = build_models(args.checkpoint, encoder_key=args.encoder_key, root=VJEPA_ROOT, device=device)
+    model = ACWorldModel(predictor=None, encoder=encoder, transform=frame_transform(VJEPA_ROOT), device=device)
 
     episodes = sorted(args.train_episodes) + sorted(set(args.eval_episodes) - args.train_episodes)
-    features = build_features(episodes, args, encoder, transform, device)
+    features = build_features(episodes, args, model)
     x_train, y_train = features["train"]
     x_eval, y_eval = features["eval"]
 

@@ -34,15 +34,26 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from openpi.con2.ac_world_model import (  # noqa: E402
+    ACTION_DIM,
+    FEATURE_DIM,
+    LIBERO_STATE_DIM,
+    STATE_DIM,
+    TOKENS_PER_FRAME,
+    ACWorldModel,
+    build_models,
+    frame_transform,
+    map_libero_action,
+    map_libero_state,
+)
+
 VJEPA_ROOT = Path("/workspace/vjepa2")
 sys.path.insert(0, str(VJEPA_ROOT))
 
-import src.hub.backbones as hub  # noqa: E402
-from app.vjepa_droid.transforms import make_transforms  # noqa: E402
-
-LIBERO_STATE_DIM = 8
-AC_STATE_DIM = 7
-AC_ACTION_DIM = 7
+map_action = map_libero_action
+map_state = map_libero_state
 
 
 def decode_image(value, dataset_root: Path) -> Image.Image:
@@ -66,86 +77,20 @@ def load_episode(dataset_root: Path, episode: int, camera: str):
     frames = np.stack([np.asarray(decode_image(row[key], dataset_root), dtype=np.uint8) for row in rows])
     state = np.asarray([row["state"] for row in rows], dtype=np.float32)
     action = np.asarray([row["actions"] for row in rows], dtype=np.float32)
-    if state.shape[1] != LIBERO_STATE_DIM or action.shape[1] != AC_ACTION_DIM:
+    if state.shape[1] != LIBERO_STATE_DIM or action.shape[1] != ACTION_DIM:
         raise ValueError(f"Unexpected LIBERO shapes: state {state.shape}, action {action.shape}")
     return frames, state, action
 
 
-def map_state(state: np.ndarray) -> np.ndarray:
-    """LIBERO 8-d state -> the 7-d ``[pos, euler-xyz, gripper]`` pose the AC model expects.
-
-    The released checkpoint encodes state with ``Linear(7, D)`` and the notebook
-    feeds ``[xyz(3), euler_xyz(3), gripper(1)]``. LIBERO stores
-    ``[eef_pos(3), eef_axis_angle(3), gripper_qpos(2)]``; axis-angle is treated as
-    euler-xyz (identical for small rotations) and the two finger positions are
-    collapsed to a closedness in ``[0, 1]`` against the robosuite travel limit.
-
-    The two finger joints are mirrored (``qpos[1] ~ -qpos[0]``), so the opening
-    fraction is the mean of their absolute values. Averaging them with sign
-    cancels to ~0 and would pin the gripper channel at 1.0 for every frame.
-    """
-    pose = np.empty((len(state), AC_STATE_DIM), dtype=np.float32)
-    pose[:, :6] = state[:, :6]
-    opening = np.abs(state[:, 6:8]).mean(axis=1) / 0.04
-    pose[:, 6] = np.clip(1.0 - opening, 0.0, 1.0)
-    return pose
-
-
-def map_action(action: np.ndarray, variant: str) -> np.ndarray:
-    """LIBERO OSC_POSE action -> the metric deltas DROID was trained on.
-
-    robosuite's OSC_POSE controller scales its normalised input by
-    ``output_max`` before applying it, so ``raw`` and ``robosuite`` differ by
-    that constant. Both are reported because the gripper convention is the part
-    that cannot be read off from the checkpoint.
-    """
-    mapped = action.copy()
-    if variant == "robosuite":
-        mapped[:, :3] *= 0.05
-        mapped[:, 3:6] *= 0.5
-    return mapped
-
-
-def build_models(checkpoint: Path, device: torch.device, encoder_key: str):
-    encoder, predictor = hub._make_vjepa2_ac_model(pretrained=False)
-    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    # Training consumption used the EMA target encoder's features
-    # (``target_encoder`` in app/vjepa_droid/train.py) while the released
-    # notebook drives the predictor with the online ``encoder``; both are
-    # self-consistent, so the probe reports either.
-    encoder_state = hub._clean_backbone_key(dict(state[encoder_key]))
-    predictor_state = hub._clean_backbone_key(dict(state["predictor"]))
-    encoder_missing, encoder_unexpected = encoder.load_state_dict(encoder_state, strict=True)
-    predictor_missing, predictor_unexpected = predictor.load_state_dict(predictor_state, strict=True)
-    del state
-    encoder = encoder.to(device).eval()
-    predictor = predictor.to(device).eval()
+def build(device, encoder_key, checkpoint):
+    """Model pair plus the audit record the report carries."""
+    encoder, predictor = build_models(checkpoint, encoder_key=encoder_key, root=VJEPA_ROOT, device=device)
     audit = {
         "encoder_key": encoder_key,
         "encoder_parameters": sum(p.numel() for p in encoder.parameters()),
         "predictor_parameters": sum(p.numel() for p in predictor.parameters()),
-        "encoder_missing_keys": len(encoder_missing),
-        "encoder_unexpected_keys": len(encoder_unexpected),
-        "predictor_missing_keys": len(predictor_missing),
-        "predictor_unexpected_keys": len(predictor_unexpected),
     }
     return encoder, predictor, audit
-
-
-def encode_frames(encoder, transform, frames: np.ndarray, device, chunk: int = 8) -> torch.Tensor:
-    """Return ``[T, N, D]`` raw (not yet layer-normed) tokens for every frame."""
-    outputs = []
-    for start in range(0, len(frames), chunk):
-        clip = np.ascontiguousarray(frames[start:start + chunk])
-        batch = transform(clip).unsqueeze(0)  # [1, C, t, H, W]
-        b, c, t, h, w = batch.shape
-        batch = batch.permute(0, 2, 1, 3, 4).flatten(0, 1).unsqueeze(2).repeat(1, 1, 2, 1, 1)
-        with torch.no_grad():
-            tokens = encoder(batch.to(device))
-        if isinstance(tokens, list):
-            tokens = tokens[-1]
-        outputs.append(tokens.reshape(t, -1, tokens.shape[-1]).float().cpu())
-    return torch.cat(outputs)
 
 
 class Recorder:
@@ -187,11 +132,12 @@ class Recorder:
 def probe(args, encoder, predictor, transform, device):
     episodes = args.episodes.split(",") if isinstance(args.episodes, str) else args.episodes
     episodes = [int(e) for e in episodes]
+    model = ACWorldModel(predictor=predictor, encoder=encoder, transform=transform, device=device)
     records = {name: Recorder() for name in ("model", "shuffled_action", "zero_action")}
     windows = []
     for episode in episodes:
         frames, state, action = load_episode(args.dataset, episode, args.camera)
-        tokens = encode_frames(encoder, transform, frames[::args.stride], device, args.encode_chunk)
+        tokens = model.encode(frames[::args.stride], chunk=args.encode_chunk)
         pose = map_state(state[::args.stride])
         act = map_action(action[::args.stride], args.action_variant)
         n_tokens = tokens.shape[1]
@@ -200,19 +146,12 @@ def probe(args, encoder, predictor, transform, device):
             continue
         for k in range(args.context - 1, length - 1):
             lo = k - args.context + 1
-            context = tokens[lo:k + 1].reshape(1, args.context * n_tokens, -1).to(device)
-            state_window = torch.from_numpy(pose[lo:k + 1]).unsqueeze(0).to(device)
-            action_window = torch.from_numpy(act[lo:k + 1]).unsqueeze(0).to(device)
-            with torch.no_grad():
-                predicted = predictor(context, action_window, state_window)[:, -n_tokens:]
-                predicted = F.layer_norm(predicted, (predicted.shape[-1],))
-                # Shuffle the action chunk along time (dim 0 is the batch axis).
-                shuffled = action_window.flip(1)
-                predicted_shuffled = predictor(context, shuffled, state_window)[:, -n_tokens:]
-                predicted_shuffled = F.layer_norm(predicted_shuffled, (predicted_shuffled.shape[-1],))
-                zero_action = torch.zeros_like(action_window)
-                predicted_zero = predictor(context, zero_action, state_window)[:, -n_tokens:]
-                predicted_zero = F.layer_norm(predicted_zero, (predicted_zero.shape[-1],))
+            context = tokens[lo:k + 1]
+            state_window = pose[lo:k + 1]
+            action_window = act[lo:k + 1]
+            predicted = model.predict(context, action_window, state_window)
+            predicted_shuffled = model.predict(context, action_window[::-1], state_window)
+            predicted_zero = model.predict(context, np.zeros_like(action_window), state_window)
             current = F.layer_norm(tokens[k].to(device), (tokens.shape[-1],))[None]
             target = F.layer_norm(tokens[k + 1].to(device), (tokens.shape[-1],))[None]
             records["model"].add(predicted, current, target)
@@ -240,16 +179,8 @@ def main():
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    encoder, predictor, audit = build_models(args.checkpoint, device, args.encoder_key)
-    transform = make_transforms(
-        random_horizontal_flip=False,
-        random_resize_aspect_ratio=(1.0, 1.0),
-        random_resize_scale=(1.0, 1.0),
-        reprob=0.0,
-        auto_augment=False,
-        motion_shift=False,
-        crop_size=256,
-    )
+    encoder, predictor, audit = build(device, args.encoder_key, args.checkpoint)
+    transform = frame_transform(VJEPA_ROOT)
     result = probe(args, encoder, predictor, transform, device)
     report = {
         "checkpoint": str(args.checkpoint),

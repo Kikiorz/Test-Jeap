@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-sys.path.insert(0, "/workspace/ts_JEPA_con1_clean/scripts")
-from probe_vjepa_ac_libero import map_state  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from openpi.con2.ac_world_model import map_libero_state  # noqa: E402
 
 
 def main():
@@ -33,7 +33,7 @@ def main():
         source = args.dataset / "data" / f"chunk-{chunk:03d}" / f"episode_{episode:06d}.parquet"
         table = pq.read_table(source, columns=["state"])
         state = np.asarray(table["state"].to_pylist(), dtype=np.float32)
-        mapped = map_state(state).astype(np.float32)
+        mapped = map_libero_state(state).astype(np.float32)
         temp = path.with_suffix(".tmp.npy")
         np.save(temp, mapped)
         os.replace(temp, path)

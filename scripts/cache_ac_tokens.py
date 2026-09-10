@@ -26,11 +26,17 @@ import torch
 
 VJEPA_ROOT = Path("/workspace/vjepa2")
 sys.path.insert(0, str(VJEPA_ROOT))
-sys.path.insert(0, "/workspace/ts_JEPA_con1_clean/scripts")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import src.hub.backbones as hub  # noqa: E402
-from app.vjepa_droid.transforms import make_transforms  # noqa: E402
-from probe_vjepa_ac_libero import map_action, map_state  # noqa: E402
+from openpi.con2.ac_world_model import (  # noqa: E402
+    ACWorldModel,
+    build_models,
+    frame_transform,
+    map_libero_action,
+    map_libero_state,
+)
+from probe_vjepa_ac_libero import load_episode  # noqa: E402
 
 
 def atomic_npy(path: Path, value: np.ndarray):
@@ -53,22 +59,6 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def encode(encoder, transform, episode, dataset_root, args, device) -> np.ndarray:
-    from probe_vjepa_ac_libero import load_episode
-
-    frames, _, _ = load_episode(dataset_root, episode, args.camera)
-    chunks = []
-    for start in range(0, len(frames), args.encode_chunk):
-        clip = np.ascontiguousarray(frames[start:start + args.encode_chunk])
-        batch = transform(clip).unsqueeze(0)
-        b, c, t, h, w = batch.shape
-        batch = batch.permute(0, 2, 1, 3, 4).flatten(0, 1).unsqueeze(2).repeat(1, 1, 2, 1, 1)
-        with torch.no_grad():
-            tokens = encoder(batch.to(device))
-        chunks.append(tokens.reshape(t, -1, tokens.shape[-1]).half().cpu().numpy())
-    return np.concatenate(chunks)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("/workspace/artifacts/datasets/lerobot_libero"))
@@ -85,14 +75,8 @@ def main():
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    encoder, _ = hub._make_vjepa2_ac_model(pretrained=False)
-    state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    encoder.load_state_dict(hub._clean_backbone_key(dict(state[args.encoder_key])), strict=True)
-    del state
-    encoder = encoder.to(device).eval()
-    transform = make_transforms(random_horizontal_flip=False, random_resize_aspect_ratio=(1.0, 1.0),
-                                random_resize_scale=(1.0, 1.0), reprob=0.0, auto_augment=False,
-                                motion_shift=False, crop_size=256)
+    encoder, _ = build_models(args.checkpoint, encoder_key=args.encoder_key, root=VJEPA_ROOT, device=device)
+    model = ACWorldModel(predictor=None, encoder=encoder, transform=frame_transform(VJEPA_ROOT), device=device)
 
     shard_episodes = args.episodes[args.shard::args.shards]
     for name in ("tokens", "actions", "states"):
@@ -113,17 +97,15 @@ def main():
     status_path = args.output / f"status-shard{args.shard}.json"
     started = 0
     for index, episode in enumerate(shard_episodes):
-        from probe_vjepa_ac_libero import load_episode
-
         frames, state_array, action_array = load_episode(args.dataset, episode, args.camera)
         tokens_path = args.output / "tokens" / f"episode_{episode:06d}.npy"
         if not tokens_path.exists():
-            tokens = encode(encoder, transform, episode, args.dataset, args, device)
+            tokens = model.encode(frames, chunk=args.encode_chunk).half().numpy()
             atomic_npy(tokens_path, tokens)
             atomic_npy(args.output / "actions" / f"episode_{episode:06d}.npy",
-                       map_action(action_array, args.action_variant).astype(np.float32))
+                       map_libero_action(action_array, args.action_variant).astype(np.float32))
             atomic_npy(args.output / "states" / f"episode_{episode:06d}.npy",
-                       map_state(state_array).astype(np.float32))
+                       map_libero_state(state_array).astype(np.float32))
         started += 1
         atomic_json(status_path, {"state": "encoding", "shard": args.shard, "completed": started,
                                   "total": len(shard_episodes), "episode": episode,

@@ -23,9 +23,16 @@ import torch.nn.functional as F
 
 VJEPA_ROOT = Path("/workspace/vjepa2")
 sys.path.insert(0, str(VJEPA_ROOT))
-sys.path.insert(0, "/workspace/ts_JEPA_con1_clean/scripts")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import src.hub.backbones as hub  # noqa: E402
+from openpi.con2.ac_world_model import (  # noqa: E402
+    ACTION_DIM,
+    ACWorldModel,
+    action_candidates,
+    load_predictor,
+    mean_rank_percentile,
+    top1_rate,
+)
 
 TOKENS_PER_FRAME = 256
 FEATURE_DIM = 1408
@@ -33,29 +40,6 @@ FEATURE_DIM = 1408
 
 def normalize(x):
     return F.layer_norm(x, (x.shape[-1],))
-
-
-def load_predictor(source: Path, device):
-    _, predictor = hub._make_vjepa2_ac_model(pretrained=False)
-    state = torch.load(source, map_location="cpu", weights_only=False)
-    payload = state.get("predictor", state)
-    if any(k.startswith("module.") for k in payload):
-        payload = {k.replace("module.", ""): v for k, v in payload.items()}
-    predictor.load_state_dict(payload, strict=True)
-    del state
-    return predictor.to(device).eval()
-
-
-def candidates(true_action, pool, count, rng, scale):
-    options = [true_action]
-    options.append(np.zeros_like(true_action))
-    options.append(true_action[::-1].copy())
-    while len(options) < count:
-        if rng.random() < 0.5 and len(pool):
-            options.append(pool[rng.integers(len(pool))])
-        else:
-            options.append((true_action + rng.normal(0, scale, size=true_action.shape)).astype(np.float32))
-    return options[:count]
 
 
 def main():
@@ -73,7 +57,8 @@ def main():
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    predictor = load_predictor(args.predictor, device)
+    predictor = load_predictor(args.predictor, root=VJEPA_ROOT, device=device)
+    model = ACWorldModel(predictor=predictor, device=device)
     rng = np.random.default_rng(args.seed)
 
     action_pool = []
@@ -97,34 +82,15 @@ def main():
             action_window = np.stack([actions[i] for i in range(start - args.context + 1, start + 1)])
             state_window = np.stack([states[i] for i in range(start - args.context + 1, start + 1)])
             true_action = actions[start]
-            target = normalize(torch.from_numpy(np.asarray(tokens[start + args.horizon], dtype=np.float32)).to(device)).reshape(-1)
-            scores = []
-            for candidate in candidates(true_action, pool, args.candidates, rng, scale):
-                # The last context action is the candidate; earlier ones are the
-                # actions that were actually executed before it.
-                actions_used = action_window.copy()
-                actions_used[-1] = candidate
-                hidden = normalize(torch.from_numpy(context).to(device).reshape(
-                    1, args.context * TOKENS_PER_FRAME, FEATURE_DIM))
-                action = torch.from_numpy(actions_used).float().unsqueeze(0).to(device)
-                state = torch.from_numpy(state_window).float().unsqueeze(0).to(device)
-                candidate_tensor = torch.from_numpy(np.asarray(candidate, dtype=np.float32)).reshape(1, 1, -1).to(device)
-                prediction = None
-                for step in range(args.horizon):
-                    prediction = normalize(predictor(hidden, action, state)[:, -TOKENS_PER_FRAME:])
-                    if step == args.horizon - 1:
-                        break
-                    hidden = torch.cat([hidden.reshape(1, -1, TOKENS_PER_FRAME, FEATURE_DIM),
-                                        prediction.reshape(1, 1, TOKENS_PER_FRAME, FEATURE_DIM)], dim=1)
-                    hidden = hidden.reshape(1, hidden.shape[1] * TOKENS_PER_FRAME, FEATURE_DIM)
-                    action = torch.cat([action, candidate_tensor], dim=1)
-                    state = torch.cat([state, state[:, -1:]], dim=1)
-                scores.append(float((prediction.reshape(-1) - target).pow(2).sum()))
-            order = np.argsort(scores)
-            rank = int(np.where(order == 0)[0][0])
+            # Un-normalised target frame; score_actions applies the layer norm.
+            target = np.asarray(tokens[start + args.horizon], dtype=np.float32)
+            options = action_candidates(true_action, pool, args.candidates, rng, scale)
+            scores, ranks = model.score_actions(context, action_window, state_window, options,
+                                                target, steps=args.horizon)
+            rank = int(ranks[0])
             top1 += int(rank == 0)
             percentiles.append(rank / (len(scores) - 1))
-            gaps.append((scores[order[0]] - scores[0]) / max(abs(scores[0]), 1e-9))
+            gaps.append((min(scores) - scores[0]) / max(abs(scores[0]), 1e-9))
             count += 1
 
     report = {

@@ -203,9 +203,73 @@ i.e. the predicted future latent really is action-conditioned. This is the
 metric to quote for Con2: NMSE-vs-copy hides action conditioning almost
 completely, while the ranking test shows it directly.
 
+### 3.6 The 1 s horizon is not there yet
+
+The Con2 claim is about a ~1 s horizon, which is 10 autoregressive steps on this
+cache. The 400-episode model (`ft_440_pre`, step 1999), 40 held-out episodes,
+6 windows each:
+
+| horizon | seconds | NMSE vs copy-current |
+|---:|---:|---:|
+| 1 | 0.1 | 0.827 |
+| 2 | 0.2 | 0.793 |
+| 4 | 0.4 | 0.783 |
+| 10 | 1.0 | **0.961** |
+
+Short-horizon prediction is solid, but free-running rollout to 1 s decays to
+near the copy baseline by h=10. Two known causes, both addressable:
+
+1. The schedule above trained with `auto_steps = 2`, so the model was never
+   optimised for a 10-step rollout; `ft_440_ar4` re-fine-tunes it with
+   `auto_steps = 4` on the same cache.
+2. A 10-step rollout pushes the context to 18 frames, beyond the 8-frame window
+   the released model was trained with.
+
+### 3.7 Action scale
+
+LIBERO setpoints are ~0.012x the executed pose delta (section 2), so the same
+100-episode/1000-step schedule was repeated with `--action-scale 0.012`
+(`ft_cal_pre`):
+
+| variant | step | h=1 | h=2 | h=4 | action zeroed (h=1 / 2 / 4) |
+|---|---:|---:|---:|---:|---|
+| raw | 499 | 0.844 | 0.815 | 0.824 | 0.879 / 0.861 / 0.859 |
+| raw | 999 | **0.809** | **0.764** | **0.760** | 0.874 / 0.858 / 0.853 |
+| calibrated (0.012x) | 499 | 0.849 | 0.820 | 0.824 | 0.855 / 0.830 / 0.831 |
+| calibrated (0.012x) | 999 | 0.813 | 0.767 | 0.760 | 0.846 / 0.825 / 0.829 |
+
+Accuracy is the same at the end of the schedule, but the **action ablation gap is
+2-3x smaller** under the calibrated scale (+0.033 / +0.058 / +0.070 against
++0.065 / +0.094 / +0.093). Shrinking the action to the size of the pose delta
+makes it largely redundant with the state token, so the predictor leans on it
+less. The raw scale stays the default.
+
+## 3.8 Library surface
+
+Everything above is reproduced by the ``scripts/probe_ac_*`` entry points, and
+the reusable pieces now live in one place:
+``src/openpi/con2/ac_world_model.py`` provides
+
+* ``map_libero_state`` / ``map_libero_action`` (with the mirrored-finger and
+  action-scale traps documented and tested),
+* ``build_models`` / ``load_predictor`` / ``frame_transform``,
+* ``ACWorldModel`` with ``encode``, ``predict``, ``rollout`` and
+  ``score_actions`` (the energy/ranking objective TTT would optimise), and
+* ``action_candidates``, ``top1_rate``, ``mean_rank_percentile``.
+
+``src/openpi/con2/test_ac_world_model.py`` covers the mappings, the rollout
+plumbing, the ranking objective and the candidate set on CPU with a stub
+predictor (8 tests, no checkpoint and no GPU). The scripts were refactored onto
+this module and re-verified against the numbers above: the control probe returns
+0.64850 and the token pipeline returns bit-identical
+``mse_copy_current = 314.67804217097733`` before and after the refactor.
+
 ## 4. Reproduction
 
 ```bash
+# library surface + CPU tests (no checkpoint, no GPU)
+PYTHONPATH=src python -m pytest src/openpi/con2/test_ac_world_model.py
+
 # weight
 aria2c -x 16 -s 16 -c -o vjepa2-ac-vitg.pt \
   https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt
@@ -225,24 +289,31 @@ python scripts/finetune_ac_predictor.py --cache <cache> \
   --train-episodes $(seq 0 99) --eval-episodes $(seq 100 119) \
   --steps 500 --batch-size 8 --device cuda:1 --output <run>
 
+# continue from an adapted predictor and evaluate long horizons
+python scripts/finetune_ac_predictor.py --cache <cache> \
+  --train-episodes $(seq 0 399) --eval-episodes $(seq 400 439) \
+  --init-from <run>/predictor.pt --steps 1 --eval-every 1 \
+  --eval-windows 6 --horizons 1 2 4 10 --action-ablation --device cuda:1
+
 # action ranking / energy landscape
 python scripts/probe_ac_action_ranking.py --predictor <run>/predictor.pt \
   --horizon 1 --candidates 12 --windows 20
 ```
 
+The scripts expect the cloned V-JEPA 2 repo (``VJEPA2_ROOT``, default
+``/workspace/vjepa2``) and import ``openpi.con2.ac_world_model`` for everything
+in section 3.8.
+
 ## 5. Open items
 
-1. Longer horizons: the Con2 claim is about a ~1 s horizon, i.e. h=10 at the
-   10 fps cache. The 10-step rollout exceeds the 8-frame context the released
-   model was trained with, so it needs its own memory budget and a dedicated
-   run (`--horizons 10`), not part of the routine eval.
-2. Action scale: LIBERO setpoints are ~0.012x the executed pose delta while the
-   released predictor expects `action == pose delta`. `--action-scale` now
-   exposes the calibration; the run above used the raw scale and let fine-tuning
-   absorb the mismatch. Measuring the calibrated variant is cheap.
-3. Encoder adaptation: only the predictor has been trained; the AC encoder is
+1. **1 s rollout**: h=10 sits at 0.961, i.e. barely better than copying. The
+   current mitigation is `ft_440_ar4` (same cache, `auto_steps = 4`), because
+   the schedules so far only ever optimised 2-step rollouts. A second lever is
+   training with 16-frame contexts so an 18-frame rollout context is in
+   distribution.
+2. Encoder adaptation: only the predictor has been trained; the AC encoder is
    still a DROID model. Unfreezing its last blocks is the obvious next lever if
    token-level NMSE saturates.
-4. Wire the adapted predictor into Con2/TTT: the cached tokens already contain
-   everything needed, and the action ranking is the objective TTT should
-   improve.
+3. Wire the adapted predictor into Con2/TTT: `ACWorldModel.score_actions` is the
+   energy objective TTT would optimise, and the cached tokens already contain
+   everything needed. This is the remaining integration step.
