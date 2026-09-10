@@ -163,3 +163,28 @@ Conclusion: one order of magnitude on every group is too aggressive for the
 current residual parametrization. A smaller uniform multiplier (e.g. 3x, which
 keeps fusion at 9e-5 in stage 1) is the sensible next attempt. The 1k source
 checkpoint is untouched.
+
+## Current request: fresh 17k, uniform 2x LR, batch 64
+
+The user asked to ignore every earlier Con1 run, apply a uniform 2x learning
+rate, and train a fresh 17k experiment at global batch 64. This is a clean start
+from update 0 using the named config's own weight loader (official 40k JEPA-WAM
+params plus the 20k anchored delta head); no checkpoint is resumed and no prior
+directory is reused. The 3x cross-attention special case is dropped, so
+`con1_cross_attention_lr_multiplier` stays at its 1.0 default.
+
+Effective rates with `--con1-lr-multiplier=2` over the 1e-5 base schedule:
+
+| Group | 2x value |
+|---|---:|
+| delta head | 2e-5 |
+| cross-attention (stage 1 / 2-3) | 2e-5 / 1e-5 |
+| alpha-logit | 2e-6 |
+| action blocks 14-17 + output | 2e-6 |
+
+The high-then-decay flow weight is retained: 2.0 through update 2000, then a
+cosine decay to 1.0 at 17000. Stage boundaries are unchanged (2000 / 7000 / beta
+ramp to 0.5 at 12000). Batch 64 halves per-step cost, so wall-clock should be
+roughly half the batch-128 runs if the step is compute bound.
+
+Experiment: `con1_b64_lr2x_floww_17k`.
