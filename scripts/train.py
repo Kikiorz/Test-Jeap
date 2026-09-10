@@ -28,7 +28,7 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
-from openpi.con1.optimization import mask_action_updates, scale_group_updates, stage_values
+from openpi.con1.optimization import flow_weight, mask_action_updates, scale_group_updates, stage_values
 
 
 def init_logging():
@@ -161,7 +161,13 @@ def train_step(
                 state.step, warmup=config.model.con1_stage1_steps,
                 joint=config.model.con1_stage2_steps, sensitivity=config.model.con1_stage3_steps,
                 beta_max=config.model.con1_sgr_beta)
-            total, metrics = model.compute_con1_loss(rng, observation, actions, beta=beta)
+            flow_w = flow_weight(
+                state.step, initial=config.model.con1_flow_weight_initial,
+                final=config.model.con1_flow_weight_final,
+                warmup=config.model.con1_stage1_steps,
+                decay_steps=config.model.con1_flow_weight_decay_steps)
+            total, metrics = model.compute_con1_loss(
+                rng, observation, actions, beta=beta, flow_weight=flow_w)
             return total, dict(metrics, con1_stage=stage)
         flow_loss, vjepa_loss = model.compute_loss_components(rng, observation, actions, train=True)
         assert vjepa_loss is not None

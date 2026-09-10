@@ -335,7 +335,7 @@ class Pi0(_model.BaseModel):
             "con1_alpha": fused["alpha"],
         }
 
-    def compute_con1_loss(self, rng, observation, actions, *, beta=0.):
+    def compute_con1_loss(self, rng, observation, actions, *, beta=0., flow_weight=1.):
         # Offline z labels describe unaugmented observations. Do not silently
         # photometrically/geometrically augment only the policy side.
         observation = _model.preprocess_observation(None, observation, train=False)
@@ -366,8 +366,10 @@ class Pi0(_model.BaseModel):
             observation.con1_future_valid, aux["attention"], sensitivity, beta=beta,
             action_valid=action_valid)
         flow = jnp.square(error).sum() / action_count
-        total = flow + self.con1_delta_weight * delta_loss + self.con1_residual_weight * aux["con1_residual_energy"]
-        return total, dict(delta_metrics, flow_loss=flow, con1_delta_loss=delta_loss,
+        weighted_flow = flow_weight * flow
+        total = weighted_flow + self.con1_delta_weight * delta_loss + self.con1_residual_weight * aux["con1_residual_energy"]
+        return total, dict(delta_metrics, flow_loss=flow, weighted_flow_loss=weighted_flow,
+                          flow_weight=flow_weight, con1_delta_loss=delta_loss,
                           weighted_con1_delta_loss=self.con1_delta_weight * delta_loss,
                           con1_alpha=aux["con1_alpha"], con1_residual_energy=aux["con1_residual_energy"],
                           sgr_beta=jnp.asarray(beta))

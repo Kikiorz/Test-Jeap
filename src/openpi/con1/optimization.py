@@ -10,6 +10,14 @@ def stage_values(step, *, warmup=2000, joint=5000, sensitivity=5000, beta_max=.5
     return stage, beta_max * progress
 
 
+def flow_weight(step, *, initial=2.0, final=1.0, warmup=2000, decay_steps=15000):
+    """High early flow weight that cosinely decays to a still-positive floor."""
+    step = jnp.asarray(step)
+    progress = jnp.clip((step - warmup) / max(decay_steps - 1, 1), 0., 1.)
+    weight = final + 0.5 * (initial - final) * (1.0 + jnp.cos(jnp.pi * progress))
+    return jnp.where(step < warmup, initial, weight)
+
+
 def _names(path):
     return tuple(str(getattr(key, "key", getattr(key, "idx", key))) for key in path)
 

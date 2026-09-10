@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from openpi.con1.optimization import mask_action_updates, scale_group_updates, stage_values
+from openpi.con1.optimization import flow_weight, mask_action_updates, scale_group_updates, stage_values
 
 
 def test_stage_boundaries():
@@ -14,6 +14,15 @@ def test_stage_boundaries():
         stage, beta = fn(step)
         assert int(stage) == expected[0]
         np.testing.assert_allclose(beta, expected[1])
+
+
+def test_flow_weight_is_high_early_and_decays_to_floor():
+    fn = jax.jit(lambda step: flow_weight(step, initial=2., final=1., warmup=2000, decay_steps=15000))
+    np.testing.assert_allclose(fn(0), 2.)
+    np.testing.assert_allclose(fn(1999), 2.)
+    assert fn(9500) > 1.4
+    np.testing.assert_allclose(fn(17000), 1., rtol=1e-6)
+    assert fn(3000) < fn(1999)
 
 
 def test_fusion_lr_multiplier_does_not_change_other_groups():

@@ -54,6 +54,11 @@ class Pi0Config(_model.BaseModelConfig):
     con1_delta_weight: float = 0.2
     con1_sgr_beta: float = 0.5
     con1_residual_weight: float = 1e-3
+    # Flow loss starts boosted and cosinely decays toward `final`, keeping the
+    # action objective strong for most of training while easing coupling late.
+    con1_flow_weight_initial: float = 2.0
+    con1_flow_weight_final: float = 1.0
+    con1_flow_weight_decay_steps: int = 15_000
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
     # then 5k joint flow with the action-sensitivity weighting enabled.
@@ -100,6 +105,10 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("Con1 stage lengths must be positive")
             if self.con1_residual_weight < 0 or not 1 <= self.con1_action_dims <= self.action_dim:
                 raise ValueError("Invalid residual weight or physical action dimension")
+            if not self.con1_flow_weight_initial > 0 or not self.con1_flow_weight_final > 0:
+                raise ValueError("Con1 flow weights must be positive")
+            if self.con1_flow_weight_decay_steps < 1:
+                raise ValueError("Con1 flow weight decay steps must be positive")
 
     @property
     @override

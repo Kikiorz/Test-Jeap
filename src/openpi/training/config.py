@@ -746,6 +746,9 @@ _CONFIGS = [
             con1_sgr_beta=0.5,
             con1_delta_weight=0.2,
             con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0,
+            con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="/workspace/artifacts/datasets/lerobot_libero",
