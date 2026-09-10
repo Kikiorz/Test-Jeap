@@ -126,7 +126,8 @@ class Pi0(_model.BaseModel):
                                   latent_dim=config.con1_latent_dim,
                                   width=config.con1_width,
                                   action_dim=config.con1_action_dims,
-                                  use_action_conditioning=config.con1_action_conditioning)
+                                  use_action_conditioning=config.con1_action_conditioning,
+                                  use_direct_readout=config.con1_direct_readout)
             )
             self.con1_delta_head.lazy_init(
                 jnp.zeros((1, self.vjepa_num_queries, paligemma_config.width), dtype=jnp.float32),

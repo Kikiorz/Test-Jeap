@@ -62,6 +62,9 @@ class Pi0Config(_model.BaseModelConfig):
     # Feed the action chunk into the delta head so it predicts the consequence
     # of the planned actions instead of a marginal future.
     con1_action_conditioning: bool = False
+    # Add the direct pooled linear readout to the delta head. Off by default so
+    # checkpoints from the earlier head structure keep restoring.
+    con1_direct_readout: bool = False
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
     # then 5k joint flow with the action-sensitivity weighting enabled.

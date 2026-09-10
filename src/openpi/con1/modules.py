@@ -25,6 +25,7 @@ class AnchoredDeltaHead(nn.Module):
     width: int = 512
     action_dim: int = 0
     use_action_conditioning: bool = False
+    use_direct_readout: bool = False
 
     @nn.compact
     def __call__(self, r_tokens, current_latent, action_chunk=None):
@@ -61,18 +62,20 @@ class AnchoredDeltaHead(nn.Module):
         context = jnp.einsum("bhmn,bnhd->bmhd", attention, v).reshape(slots.shape)
         hidden = slots + context
 
-        # Direct per-horizon linear readout of the pooled features. The
+        # Optional direct per-horizon linear readout of the pooled features. The
         # attention path alone was measured to underfit badly (0.483 held-out
         # NMSE against a 0.414 linear floor), because every output had to be
-        # learnt through attention + FFN. This path can express that floor
-        # directly while the nonlinear branches add refinement on top.
-        pooled = nn.LayerNorm(name="pool_norm")(r).mean(1)
-        readout = jnp.concatenate([pooled, anchor], axis=-1)
-        direct = nn.Dense(
-            self.horizon * self.latent_dim, name="direct_readout",
-            kernel_init=nn.initializers.normal(1e-4),
-        )(readout)
-        direct = direct.reshape(anchor.shape[0], self.horizon, self.latent_dim)
+        # learnt through attention + FFN. Gated by a flag so checkpoints written
+        # with the older head structure still restore exactly.
+        direct = None
+        if self.use_direct_readout:
+            pooled = nn.LayerNorm(name="pool_norm")(r).mean(1)
+            readout = jnp.concatenate([pooled, anchor], axis=-1)
+            direct = nn.Dense(
+                self.horizon * self.latent_dim, name="direct_readout",
+                kernel_init=nn.initializers.normal(1e-4),
+            )(readout)
+            direct = direct.reshape(anchor.shape[0], self.horizon, self.latent_dim)
 
         if self.use_action_conditioning:
             # Actions enter as horizon-indexed tokens. A causal mask stops
@@ -99,7 +102,8 @@ class AnchoredDeltaHead(nn.Module):
             nn.gelu(nn.Dense(2 * self.width, name="ff_in")(nn.LayerNorm(name="ff_norm")(hidden))))
         delta = nn.Dense(self.latent_dim, name="delta_out",
                          kernel_init=nn.initializers.normal(1e-4))(hidden)
-        delta = delta + direct
+        if direct is not None:
+            delta = delta + direct
         return {"delta": delta, "future": anchor[:, None] + delta}
 
 

@@ -61,6 +61,22 @@ def test_action_conditioning_requires_action_chunk():
         raise AssertionError("missing action chunk must raise")
 
 
+def test_head_with_flags_off_keeps_the_legacy_parameter_tree():
+    import flax.traverse_util as traverse_util
+
+    head = AnchoredDeltaHead(horizon=3, latent_dim=6, width=8)
+    variables = head.init(jax.random.key(8), jnp.ones((2, 5, 7)), jnp.ones((2, 6)))
+    names = set(traverse_util.flatten_dict(variables, sep="/"))
+    assert not any("direct_readout" in k or "pool_norm" in k for k in names), names
+    enabled = AnchoredDeltaHead(horizon=3, latent_dim=6, width=8, action_dim=3,
+                                use_action_conditioning=True, use_direct_readout=True)
+    variables = enabled.init(jax.random.key(9), jnp.ones((2, 5, 7)), jnp.ones((2, 6)),
+                             jnp.ones((2, 3, 3)))
+    names = set(traverse_util.flatten_dict(variables, sep="/"))
+    assert any("direct_readout" in k for k in names)
+    assert any("action_in" in k for k in names)
+
+
 def test_two_terms_are_not_claimed_independent():
     z = jnp.zeros((1, 2)); target = jnp.ones((1, 1, 2)); d = jnp.zeros_like(target)
     valid = jnp.ones((1, 1), dtype=bool)
