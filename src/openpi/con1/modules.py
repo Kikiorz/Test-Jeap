@@ -69,7 +69,9 @@ class AnchoredDeltaHead(nn.Module):
         # with the older head structure still restore exactly.
         direct = None
         if self.use_direct_readout:
-            pooled = nn.LayerNorm(name="pool_norm")(r).mean(1)
+            # Raw token mean, so the exact input to this layer can be rebuilt
+            # outside the model for a closed-form warm start.
+            pooled = r_tokens.astype(jnp.float32).mean(1)
             readout = jnp.concatenate([pooled, anchor], axis=-1)
             direct = nn.Dense(
                 self.horizon * self.latent_dim, name="direct_readout",

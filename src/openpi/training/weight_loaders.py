@@ -86,6 +86,9 @@ class BaseAndCon1HeadWeightLoader(WeightLoader):
 
     base_params_path: str
     head_checkpoint_path: str
+    # Optional msgpack holding a closed-form warm start for the delta head's
+    # direct readout ({"params": {"direct_readout": {"kernel", "bias"}}}).
+    readout_init_path: str | None = None
 
     def load(self, params: at.Params) -> at.Params:
         merged = CheckpointWeightLoader(self.base_params_path, missing_regex=".*con1.*").load(params)
@@ -112,6 +115,18 @@ class BaseAndCon1HeadWeightLoader(WeightLoader):
         loaded.update(
             {key: np.asarray(value).astype(expected[key].dtype) for key, value in got.items()})
         merged["con1_delta_head"] = flax.traverse_util.unflatten_dict(loaded, sep="/")
+        if self.readout_init_path is not None:
+            if "direct_readout/kernel" not in loaded:
+                raise ValueError("readout_init_path set but the model has no direct_readout")
+            payload = serialization.msgpack_restore(open(self.readout_init_path, "rb").read())
+            weights = payload.get("params", payload)["direct_readout"]
+            for name in ("kernel", "bias"):
+                key = f"direct_readout/{name}"
+                value = np.asarray(weights[name], np.float32)
+                if expected[key].shape != value.shape:
+                    raise ValueError(f"Readout warm start shape mismatch at {name}")
+                loaded[key] = value
+            merged["con1_delta_head"] = flax.traverse_util.unflatten_dict(loaded, sep="/")
         return merged
 
 
