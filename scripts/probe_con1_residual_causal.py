@@ -6,7 +6,9 @@ residual output scale) changes. Nothing is trained and nothing is saved except
 the JSON report. A difference here is a causal property of the frozen
 parameters, not a training-curve artefact.
 
-Single GPU, forward only. Run with the repo venv and PYTHONPATH=src.
+Forward only, no training, no writes other than the JSON report. The preamble
+mirrors scripts/train.py exactly (same mesh, checkpoint manager, and restore
+call) so the restored parameters match what training actually uses.
 """
 
 import argparse
@@ -32,15 +34,12 @@ def _logit(alpha: float) -> float:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", required=True, help="experiment checkpoint directory")
-    parser.add_argument("--checkpoint-step", type=int, required=True)
+    parser.add_argument("--exp-name", required=True, help="existing experiment under checkpoint_base_dir")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=20260910)
     args = parser.parse_args()
 
-    if jax.device_count() != 1:
-        raise RuntimeError(f"This audit expects exactly one visible device, got {jax.device_count()}")
     jax.config.update("jax_compilation_cache_dir", "/workspace/.cache/con1_jax")
 
     config = dataclasses.replace(
@@ -48,25 +47,27 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=0,
         wandb_enabled=False,
+        exp_name=args.exp_name,
+        checkpoint_base_dir="/workspace/artifacts/checkpoints",
+        resume=True,
     )
+    if config.batch_size % jax.device_count() != 0:
+        raise ValueError(f"batch {config.batch_size} not divisible by {jax.device_count()} devices")
     mesh = sharding.make_mesh(config.fsdp_devices)
     data_shard = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
-    loader = data_loader.create_data_loader(config, sharding=data_shard, shuffle=True, num_batches=1)
-    batch = next(iter(loader))
-    # Build a concrete template by running the real init (loads the named config's
-    # base weights), so restored leaves carry explicit shardings. The checkpoint
-    # immediately overwrites it; nothing is trained or saved.
-    state, _ = train.init_train_state(config, jax.random.key(config.seed), mesh, resume=False)
-    jax.block_until_ready(state)
-    source, resuming = checkpoints.initialize_checkpoint_dir(
-        args.source, keep_period=1, overwrite=False, resume=True
+    checkpoint_manager, resuming = checkpoints.initialize_checkpoint_dir(
+        config.checkpoint_dir, keep_period=config.keep_period, overwrite=False, resume=config.resume
     )
     if not resuming:
-        raise ValueError(f"No checkpoint found under {args.source}")
-    state = checkpoints.restore_state(source, state, loader, step=args.checkpoint_step)
-    source.close()
+        raise ValueError(f"No checkpoint found under {config.checkpoint_dir}")
+    loader = data_loader.create_data_loader(config, sharding=data_shard, shuffle=True, num_batches=1)
+    batch = next(iter(loader))
+    _, init_rng = jax.random.split(jax.random.key(config.seed))
+    state, _ = train.init_train_state(config, init_rng, mesh, resume=resuming)
+    jax.block_until_ready(state)
+    state = checkpoints.restore_state(checkpoint_manager, state, loader)
     model_def = state.model_def
     pure = state.params.to_pure_dict()
 
@@ -122,8 +123,8 @@ def main() -> None:
     ]
 
     report = {
-        "source": args.source,
-        "checkpoint_step": args.checkpoint_step,
+        "exp_name": args.exp_name,
+        "checkpoint_dir": str(config.checkpoint_dir),
         "restored_step": int(state.step),
         "batch_size": int(actions.shape[0]),
         "seed": args.seed,
