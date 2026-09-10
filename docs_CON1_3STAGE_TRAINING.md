@@ -61,3 +61,7 @@ new checkpoints despite its non-multiple-of-1000 directory name.
 The optimizer resumes exactly; the current data loader does not checkpoint its
 iterator position and restarts its deterministic shuffled order. Training-loss
 decline alone does not establish held-out improvement or lack of convergence.
+
+The later batch-4 continuation is retained only as an aborted diagnostic. The
+replacement experiment is `con1_three_stage_b128_17k`, initialized fresh from
+the official 40k checkpoint plus the 20k head, with global batch 128.
