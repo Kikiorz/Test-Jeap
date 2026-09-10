@@ -72,12 +72,13 @@ class AnchoredDeltaHead(nn.Module):
         hidden = slots + context
 
         if self.use_vlm_context:
-            # The *input* projection is zero-initialised (not the output), so the
-            # branch starts as an exact no-op while still receiving a non-zero
-            # gradient on step one.
-            merged = nn.Dense(self.width, name="vlm_context_in",
-                              kernel_init=nn.initializers.zeros_init())(vlm_context)
-            merged = nn.Dense(self.width, name="vlm_context_out")(nn.gelu(merged))
+            # Zero-initialise the *output* projection, not the input: zeroing the
+            # input makes the output projection's gradient identically zero, so
+            # it would freeze at a random draw. This keeps the branch an exact
+            # no-op at step zero while letting both projections train.
+            merged = nn.Dense(self.width, name="vlm_context_in")(vlm_context)
+            merged = nn.Dense(self.width, name="vlm_context_out",
+                              kernel_init=nn.initializers.zeros_init())(nn.gelu(merged))
             hidden = hidden + merged[:, None, :]
 
         # Optional direct per-horizon linear readout of the pooled features. The
@@ -162,12 +163,12 @@ class ActionDeltaCrossAttention(nn.Module):
         correction = jax.nn.sigmoid(logit) * residual
         if self.use_action_adapter:
             normed = nn.LayerNorm(name="adapter_norm")(action_hidden.astype(jnp.float32))
-            # Input projection zero-initialised so the branch is an exact no-op
-            # at step zero while still receiving gradient on the first update.
-            hidden = nn.Dense(self.width, name="adapter_in",
-                              kernel_init=nn.initializers.zeros_init())(normed)
+            # See the vlm_context note: the output projection carries the zero
+            # initialisation so both projections remain trainable.
+            hidden = nn.Dense(self.width, name="adapter_in")(normed)
             hidden = nn.gelu(hidden)
-            adapter = nn.Dense(self.action_width, name="adapter_out")(hidden)
+            adapter = nn.Dense(self.action_width, name="adapter_out",
+                               kernel_init=nn.initializers.zeros_init())(hidden)
             correction = correction + self.adapter_scale * adapter
         return {"hidden": action_hidden.astype(jnp.float32) + correction,
                 "correction": correction, "attention": attention,
