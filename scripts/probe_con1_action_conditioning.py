@@ -178,7 +178,10 @@ def main() -> None:
         "z+r_mean+act_all",
         "z+r_mean+act_causal",
     ]
-    nonlinear = ["z+r_mean+act_causal", "z+r_mean+act_all"]
+    # `z+r_mean` is the essential control: it shares the projection/RFF
+    # pipeline with the action variants, so any difference is attributable to
+    # the action conditioning rather than to the dimensionality reduction.
+    nonlinear = ["z+r_mean", "z+r_mean+act_causal", "z+r_mean+act_all"]
     lambdas = [1e-2, 0.1, 1.0, 10.0, 100.0, 1000.0]
     report = {
         "exp_name": args.exp_name,
