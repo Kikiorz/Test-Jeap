@@ -86,6 +86,8 @@ class LiberoInputs(transforms.DataTransformFn):
             inputs["con1_current_latent"] = data["con1_current_latent"]
         if "con1_future_latents" in data:
             inputs["con1_future_latents"] = data["con1_future_latents"]
+        if "con1_future_valid" in data:
+            inputs["con1_future_valid"] = data["con1_future_valid"]
 
         return inputs
 

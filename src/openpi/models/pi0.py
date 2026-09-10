@@ -12,7 +12,7 @@ from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
-from openpi.con1.modules import AnchoredDeltaHead, ActionDeltaCrossAttention
+from openpi.con1.modules import AnchoredDeltaHead, ActionDeltaCrossAttention, control_weighted_delta_loss
 
 logger = logging.getLogger("openpi")
 
@@ -77,8 +77,13 @@ class Pi0(_model.BaseModel):
         self.vjepa_action_attends_queries = config.vjepa_action_attends_queries
         self.vjepa_disable_geometric_augmentation = config.vjepa_disable_geometric_augmentation
         self.use_con1 = config.use_con1
+        self.con1_delta_weight = config.con1_delta_weight
+        self.con1_sgr_beta = config.con1_sgr_beta
+        self.con1_train_action_layers_from = config.con1_train_action_layers_from
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
+        self.action_depth = action_expert_config.depth
+        self.con1_insert_from = max(0, self.action_depth - 4)
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm = nnx_bridge.ToNNX(
             _gemma.Module(
@@ -123,16 +128,16 @@ class Pi0(_model.BaseModel):
                 jnp.zeros((1, config.con1_latent_dim), dtype=jnp.float32),
                 rngs=rngs,
             )
-            self.con1_cross_attention = nnx_bridge.ToNNX(
-                ActionDeltaCrossAttention(action_expert_config.width,
-                                          width=config.con1_width,
-                                          alpha_initial=config.con1_alpha_initial)
-            )
-            self.con1_cross_attention.lazy_init(
-                jnp.zeros((1, config.action_horizon, action_expert_config.width), dtype=jnp.float32),
-                jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32),
-                rngs=rngs,
-            )
+            self.con1_cross_attention = nnx.Dict()
+            for layer in range(self.con1_insert_from, self.action_depth):
+                adapter = nnx_bridge.ToNNX(ActionDeltaCrossAttention(
+                    action_expert_config.width, width=config.con1_width,
+                    alpha_initial=config.con1_alpha_initial))
+                adapter.lazy_init(
+                    jnp.zeros((1, config.action_horizon, action_expert_config.width), dtype=jnp.float32),
+                    jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32),
+                    rngs=rngs)
+                self.con1_cross_attention[str(layer)] = adapter
 
         if self.use_vjepa_aux:
             query_init = jax.random.normal(
@@ -241,6 +246,9 @@ class Pi0(_model.BaseModel):
     def compute_loss_components(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> tuple[at.Float[at.Array, "*b ah"], at.Float[at.Array, "*b"] | None]:
+        if self.use_con1:
+            _, info = self.compute_con1_loss(rng, observation, actions, beta=self.con1_sgr_beta)
+            return info["flow_loss"], info["con1_delta_loss"]
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(
             preprocess_rng,
@@ -272,28 +280,9 @@ class Pi0(_model.BaseModel):
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
         action_hidden = suffix_out[:, -self.action_horizon :]
-        con1_metrics = None
-        if self.use_con1:
-            if observation.con1_current_latent is None:
-                raise ValueError("Con1 requires observation.con1_current_latent")
-            r_tokens = prefix_out[:, -self.vjepa_num_queries :]
-            delta_out = self.con1_delta_head(r_tokens, observation.con1_current_latent)
-            fused = self.con1_cross_attention(action_hidden, delta_out["delta"])
-            action_hidden = fused["hidden"].astype(suffix_out.dtype)
-            if observation.con1_future_latents is not None:
-                target = jax.lax.stop_gradient(observation.con1_future_latents.astype(jnp.float32))
-                valid = jnp.ones(target.shape[:-1], dtype=jnp.bool_)
-                con1_metrics = jnp.mean(
-                    jnp.square(delta_out["delta"] - (target - observation.con1_current_latent[:, None])),
-                    axis=(-1, -2),
-                )
         v_t = self.action_out_proj(action_hidden)
 
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
-        if self.use_con1 and observation.vjepa_target is None:
-            if train and con1_metrics is None:
-                raise ValueError("Con1 training requires future latent labels")
-            return flow_loss, con1_metrics
         if not self.use_vjepa_aux or observation.vjepa_target is None:
             return flow_loss, None
 
@@ -307,6 +296,83 @@ class Pi0(_model.BaseModel):
         target /= jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
         aux_loss = jnp.mean(1.0 - jnp.sum(predicted_target * target, axis=-1), axis=-1)
         return flow_loss, aux_loss
+
+    def _con1_context(self, observation):
+        if observation.con1_current_latent is None:
+            raise ValueError("Con1 requires a CURRENT-only teacher latent at both training and inference")
+        tokens, mask, ar_mask = self.embed_prefix(observation)
+        (prefix, _), cache = self.PaliGemma.llm(
+            [tokens, None], mask=make_attn_mask(mask, ar_mask),
+            positions=jnp.cumsum(mask, axis=1) - 1)
+        prefix = jax.lax.stop_gradient(prefix)
+        cache = jax.tree.map(jax.lax.stop_gradient, cache)
+        delta = self.con1_delta_head(prefix[:, -self.vjepa_num_queries:],
+                                     observation.con1_current_latent)["delta"]
+        return (mask, cache), delta
+
+    def _con1_velocity(self, observation, x_t, time, context, delta):
+        """Shared training/sampling path: blocks 14,15,16,17 each get an adapter."""
+        prefix_mask, cache = context
+        hidden, mask, ar_mask, cond = self.embed_suffix(observation, x_t, time)
+        prefix_attention = einops.repeat(prefix_mask, "b p -> b s p", s=hidden.shape[1])
+        if not self.vjepa_action_attends_queries:
+            prefix_attention = prefix_attention.at[:, :, -self.vjepa_num_queries:].set(False)
+        full_mask = jnp.concatenate([prefix_attention, make_attn_mask(mask, ar_mask)], axis=-1)
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(mask, axis=-1) - 1
+        if not self.vjepa_action_attends_queries:
+            positions -= self.vjepa_num_queries
+        # Run the frozen lower stack once. No extra denoising loop for training.
+        if self.con1_insert_from:
+            hidden = self.PaliGemma.llm(
+                hidden, positions, full_mask, cond, cache, start=0, stop=self.con1_insert_from,
+                frozen=True, method="suffix_segment")
+        correction_energy = []
+        alphas = []
+        for layer in range(self.con1_insert_from, self.action_depth):
+            hidden = self.PaliGemma.llm(
+                hidden, positions, full_mask, cond, cache, start=layer, stop=layer + 1,
+                frozen=False, method="suffix_segment")
+            fused = self.con1_cross_attention[str(layer)](hidden, delta)
+            hidden = fused["hidden"].astype(hidden.dtype)
+            correction_energy.append(jnp.mean(jnp.square(fused["correction"])))
+            alphas.append(fused["alpha"])
+        hidden = self.PaliGemma.llm(hidden, cond, method="normalize_suffix")
+        return self.action_out_proj(hidden[:, -self.action_horizon:]), {
+            "attention": fused["attention"],  # last retrieval A, not a new rollout
+            "con1_residual_rms": jnp.sqrt(jnp.mean(jnp.stack(correction_energy))),
+            "con1_alpha": jnp.mean(jnp.stack(alphas)),
+        }
+
+    def compute_con1_loss(self, rng, observation, actions, *, beta=0.):
+        # Offline z labels describe unaugmented observations. Do not silently
+        # photometrically/geometrically augment only the policy side.
+        observation = _model.preprocess_observation(None, observation, train=False)
+        noise_rng, time_rng = jax.random.split(rng)
+        noise = jax.random.normal(noise_rng, actions.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, actions.shape[:-2]) * .999 + .001
+        x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
+        u_t = noise - actions
+        context, delta = self._con1_context(observation)
+        # One main forward. Its VJP supplies action sensitivity; stop_gradient
+        # on q avoids second-order optimization of importance weights.
+        v_t, pullback, aux = jax.vjp(
+            lambda d: self._con1_velocity(observation, x_t, time, context, d), delta, has_aux=True)
+        error = v_t.astype(jnp.float32) - u_t.astype(jnp.float32)
+        sensitivity = jax.lax.cond(
+            jnp.asarray(beta) > 0,
+            lambda _: jax.lax.stop_gradient(pullback(2 * error / error.size)[0]),
+            lambda _: jnp.zeros_like(delta), operand=None)
+        if observation.con1_future_latents is None or observation.con1_future_valid is None:
+            raise ValueError("Con1 training requires future labels AND episode-local validity mask")
+        delta_loss, delta_metrics = control_weighted_delta_loss(
+            delta, observation.con1_current_latent, observation.con1_future_latents,
+            observation.con1_future_valid, aux["attention"], sensitivity, beta=beta)
+        flow = jnp.mean(jnp.square(error))
+        total = flow + self.con1_delta_weight * delta_loss
+        return total, dict(delta_metrics, flow_loss=flow, con1_delta_loss=delta_loss,
+                          weighted_con1_delta_loss=self.con1_delta_weight * delta_loss,
+                          con1_alpha=aux["con1_alpha"], con1_residual_rms=aux["con1_residual_rms"],
+                          sgr_beta=jnp.asarray(beta))
 
     def extract_predictive_tokens(self, observation: _model.Observation):
         """Frozen current-only R, exactly the prefix used by action sampling.
@@ -341,12 +407,12 @@ class Pi0(_model.BaseModel):
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
+        if self.use_con1:
+            loss, _ = self.compute_con1_loss(rng, observation, actions, beta=self.con1_sgr_beta)
+            return jnp.broadcast_to(loss, actions.shape[:-1])
         flow_loss, aux_loss = self.compute_loss_components(rng, observation, actions, train=train)
         if aux_loss is None:
             return flow_loss
-
-        if self.use_con1:
-            return flow_loss + 0.2 * aux_loss[..., None]
 
         return flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
 
@@ -366,6 +432,18 @@ class Pi0(_model.BaseModel):
         batch_size = observation.state.shape[0]
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        if self.use_con1:
+            context, delta = self._con1_context(observation)
+
+            def con1_step(carry):
+                x_t, time = carry
+                velocity, _ = self._con1_velocity(
+                    observation, x_t, jnp.broadcast_to(time, (batch_size,)), context, delta)
+                return x_t + dt * velocity, time + dt
+
+            return jax.lax.while_loop(lambda carry: carry[1] >= -dt / 2,
+                                      con1_step, (noise, 1.0))[0]
 
         # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)

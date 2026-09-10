@@ -115,6 +115,7 @@ class Observation(Generic[ArrayT]):
     con1_current_latent: at.Float[ArrayT, "*b cd"] | None = None
     # Optional future latent sequence for the reciprocal Con1 transition loss.
     con1_future_latents: at.Float[ArrayT, "*b ch cd"] | None = None
+    con1_future_valid: at.Bool[ArrayT, "*b ch"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -139,6 +140,7 @@ class Observation(Generic[ArrayT]):
             vjepa_target=data.get("vjepa_target"),
             con1_current_latent=data.get("con1_current_latent"),
             con1_future_latents=data.get("con1_future_latents"),
+            con1_future_valid=data.get("con1_future_valid"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -222,6 +224,7 @@ def preprocess_observation(
         vjepa_target=observation.vjepa_target,
         con1_current_latent=observation.con1_current_latent,
         con1_future_latents=observation.con1_future_latents,
+        con1_future_valid=observation.con1_future_valid,
     )
 
 

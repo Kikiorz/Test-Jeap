@@ -148,3 +148,33 @@ def reciprocal_con1_loss(predicted_delta, target_delta, flow_prediction, flow_ta
     total = latent + flow_weight * flow + residual_weight * residual
     metrics = dict(lm, flow_loss=flow, residual_loss=residual, loss=total)
     return total, metrics
+
+
+def control_weighted_delta_loss(delta, anchor, future_target, valid, attention, sensitivity, *, beta):
+    """Last-layer usage x action sensitivity with a uniform supervision floor.
+
+    q is detached: the model cannot lower loss by moving its own weights toward
+    easy horizons. Invalid episode-tail labels get neither loss nor gradient.
+    Zero sensitivity (including zero-initialized adapters) falls back to uniform.
+    """
+    if delta.shape != future_target.shape or valid.shape != delta.shape[:-1]:
+        raise ValueError("Con1 label/mask shapes disagree")
+    mask = valid.astype(bool)
+    count = mask.sum(-1, keepdims=True)
+    uniform = mask.astype(jnp.float32) / jnp.maximum(count, 1)
+    target = jax.lax.stop_gradient(future_target.astype(jnp.float32) - anchor[:, None].astype(jnp.float32))
+    target = jnp.where(mask[..., None], target, 0.)
+    pred = jnp.where(mask[..., None], delta.astype(jnp.float32), 0.)
+    mse = jnp.square(pred - target).mean(-1)
+    usage = jnp.mean(attention.astype(jnp.float32), axis=1)
+    strength = jnp.linalg.norm(jax.lax.stop_gradient(sensitivity.astype(jnp.float32)), axis=-1)
+    relevance = jnp.where(mask, usage * strength, 0.)
+    normalizer = relevance.sum(-1, keepdims=True)
+    control = jnp.where(normalizer > 1e-12, relevance / jnp.maximum(normalizer, 1e-12), uniform)
+    q = jax.lax.stop_gradient((1 - beta) * uniform + beta * control)
+    # Weight examples by valid horizon count; beta=0 is the global masked MSE.
+    denom = jnp.maximum(count.sum(), 1)
+    loss = jnp.sum(jnp.sum(q * mse, axis=-1) * count[:, 0]) / denom
+    plain_mse = jnp.sum(mse) / denom
+    zero_mse = jnp.sum(jnp.square(target).mean(-1)) / denom
+    return loss, {"con1_delta_nmse": plain_mse / jnp.maximum(zero_mse, 1e-12)}

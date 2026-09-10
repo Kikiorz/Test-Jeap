@@ -51,6 +51,9 @@ class Pi0Config(_model.BaseModelConfig):
     con1_width: int = 512
     con1_alpha_initial: float = 0.05
     con1_train_action_layers_from: int = 14
+    con1_delta_weight: float = 0.2
+    con1_sgr_beta: float = 0.5
+    con1_sgr_warmup_steps: int = 1000
 
     pytorch_compile_mode: str | None = "max-autotune"
 
@@ -76,8 +79,8 @@ class Pi0Config(_model.BaseModelConfig):
             if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
                 raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
         if self.use_con1:
-            if not self.pi05:
-                raise ValueError("Con1 currently requires Pi0.5")
+            if not self.pi05 or not self.use_vjepa_aux:
+                raise ValueError("Con1 requires Pi0.5 with predictive R tokens")
             if self.con1_latent_dim < 1 or self.con1_width < 8:
                 raise ValueError("Con1 dimensions must be positive")
             if not 0 < self.con1_alpha_initial < 1:
@@ -85,6 +88,8 @@ class Pi0Config(_model.BaseModelConfig):
             depth = _gemma.get_config(self.action_expert_variant).depth
             if not 0 <= self.con1_train_action_layers_from < depth:
                 raise ValueError("Con1 action-layer split is outside expert depth")
+            if not 0 <= self.con1_sgr_beta < 1 or self.con1_delta_weight < 0:
+                raise ValueError("Invalid Con1 loss weights")
 
     @property
     @override
@@ -132,6 +137,10 @@ class Pi0Config(_model.BaseModelConfig):
                 ),
                 con1_future_latents=(
                     jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.con1_latent_dim], jnp.float32)
+                    if self.use_con1 else None
+                ),
+                con1_future_valid=(
+                    jax.ShapeDtypeStruct([batch_size, self.action_horizon], jnp.bool_)
                     if self.use_con1 else None
                 ),
             )

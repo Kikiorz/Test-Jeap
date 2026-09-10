@@ -420,6 +420,35 @@ class Module(nn.Module):
             adarms_cond=[jnp.zeros((1, c.width)) if u else None for u, c in zip(use_adarms, self.configs, strict=True)],
         )
 
+    def suffix_segment(self, hidden, positions, mask, adarms_cond, kv_cache,
+                       *, start: int, stop: int, frozen: bool = False):
+        """Run a slice of the ORIGINAL scanned weights against frozen prefix KV.
+
+        No copied expert or second parameter namespace is introduced. Segmenting
+        exposes the last four block boundaries to Con1 while preserving official
+        checkpoint names. Prefix layers can be excluded from autodiff entirely.
+        """
+        if not 0 <= start < stop <= self.configs[1].depth:
+            raise ValueError("Invalid action-expert segment")
+        params = jax.tree.map(lambda p: p[start:stop], self.variables["params"]["layers"])
+        cache = jax.tree.map(lambda p: jax.lax.stop_gradient(p[start:stop]), kv_cache)
+        if frozen:
+            params = jax.tree.map(jax.lax.stop_gradient, params)
+            hidden = jax.lax.stop_gradient(hidden)
+        block = Block(configs=tuple(self.configs))
+
+        def step(x, values):
+            p, kv = values
+            xs, _ = block.apply({"params": p}, [None, x], kv, positions,
+                                mask[:, None], [None, adarms_cond], True)
+            return xs[1], None
+
+        hidden, _ = jax.lax.scan(jax.checkpoint(step), hidden.astype(self.embed_dtype), (params, cache))
+        return jax.lax.stop_gradient(hidden) if frozen else hidden
+
+    def normalize_suffix(self, hidden, adarms_cond):
+        return self.final_norms[1](hidden, adarms_cond)[0]
+
 
 def _apply_rope(x, *, positions, max_wavelength=10_000):
     """Applies RoPE positions [B, L] to x [B, L, H, D]."""

@@ -5,6 +5,7 @@ from typing import Protocol, runtime_checkable
 
 import flax.traverse_util
 import numpy as np
+from flax import serialization
 
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
@@ -72,6 +73,35 @@ class PaliGemmaWeightLoader(WeightLoader):
         loaded_params = {"PaliGemma": flax.traverse_util.unflatten_dict(flat_params, sep="/")["params"]}
         # Add all missing weights.
         return _merge_params(loaded_params, params, missing_regex=".*")
+
+
+@dataclasses.dataclass(frozen=True)
+class BaseAndCon1HeadWeightLoader(WeightLoader):
+    """Load the official base and an independently validated Con1 head.
+
+    The head checkpoint is a msgpack state produced by ``train_head``. Only
+    ``con1_delta_head`` is imported; cross-attention remains freshly initialized
+    with its zero output projection, preserving the base action function.
+    """
+
+    base_params_path: str
+    head_checkpoint_path: str
+
+    def load(self, params: at.Params) -> at.Params:
+        merged = CheckpointWeightLoader(self.base_params_path, missing_regex=".*con1.*").load(params)
+        payload = serialization.msgpack_restore(open(self.head_checkpoint_path, "rb").read())
+        head = payload.get("params", payload)
+        if "con1_delta_head" not in merged or "con1_delta_head" not in head:
+            raise ValueError("Con1 delta-head namespace missing from model or head checkpoint")
+        expected = flax.traverse_util.flatten_dict(merged["con1_delta_head"], sep="/")
+        got = flax.traverse_util.flatten_dict(head["con1_delta_head"], sep="/")
+        if set(expected) != set(got):
+            raise ValueError("Con1 head checkpoint namespace does not match current model")
+        for key, value in got.items():
+            if expected[key].shape != value.shape:
+                raise ValueError(f"Con1 head shape mismatch at {key}: {value.shape} != {expected[key].shape}")
+        merged["con1_delta_head"] = head["con1_delta_head"]
+        return merged
 
 
 def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex: str) -> at.Params:

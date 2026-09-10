@@ -205,6 +205,7 @@ class Con1LatentDataset(Dataset):
             future[:count] = np.asarray(z[frame + 1:frame + 1 + count], dtype=np.float32)
         sample["con1_current_latent"] = np.asarray(z[frame], dtype=np.float32)
         sample["con1_future_latents"] = future
+        sample["con1_future_valid"] = np.arange(self._horizon) < count
         return sample
 
     def __getstate__(self):

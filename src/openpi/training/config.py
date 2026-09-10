@@ -334,6 +334,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         if self.con1_latent_root is not None:
             repack_mapping["con1_current_latent"] = "con1_current_latent"
             repack_mapping["con1_future_latents"] = "con1_future_latents"
+            repack_mapping["con1_future_valid"] = "con1_future_valid"
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
 
         # The data transforms are applied to the data coming from the dataset *and* during inference.
@@ -751,10 +752,10 @@ _CONFIGS = [
             extra_delta_transform=False,
             con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader(
+        weight_loader=weight_loaders.BaseAndCon1HeadWeightLoader(
             "/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
             "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/params",
-            missing_regex=".*con1.*",
+            "/workspace/artifacts/checkpoints/con1_anchored_head_40k_20k_batch256_lr1e5/checkpoint_020000.msgpack",
         ),
         freeze_filter=nnx.All(
             nnx.Param,
