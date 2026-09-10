@@ -183,6 +183,29 @@ Three things this establishes:
    exactly as designed. The bound, not the gate, is what keeps the perturbation
    in a useful range.
 
+### Held-out verification of the adapter gain (2026-09-10)
+
+The same paired scan on the **validation episode split** (episodes the adapter
+never trained on), 24 batches x 16 samples:
+
+| variant | correction RMS | mean delta-flow | stderr |
+|---|---:|---:|---:|
+| alpha_0 (exact base) | 0.00145 | 0 | - |
+| **alpha learned (adapter on)** | 0.346 | **-3.07e-4** | 7.0e-5 |
+| adapter off (latent residual only) | 0.00161 | +1.8e-6 | 2.3e-6 |
+| alpha=0.25 / 0.5 / 1.0 | 0.347 | -3.11e-4 / -3.13e-4 / -3.22e-4 | ~7.0e-5 |
+| learned alpha, residual x10 | 0.347 | -3.16e-4 | 7.0e-5 |
+
+The training-split figure was -3.47e-4 (2.0% relative); on held-out episodes it
+is -3.07e-4, i.e. **1.95% relative at 4.4 standard errors**. The gain therefore
+generalises rather than being fitted to the sampled batches, and the latent
+residual is again indistinguishable from zero (+1.8e-6 +- 2.3e-6).
+
+Summary of the Con1 mechanism result: a zero-initialised action-side adapter,
+capped at 5% of the action-hidden RMS, reduces held-out flow loss by about 2%
+while alpha=0 remains exactly the official policy. This is a flow-loss result,
+not yet a closed-loop success-rate result.
+
 Important caveat: this is a paired measurement on training-distribution batches,
 not closed-loop LIBERO-Plus rollouts, and the adapter was trained on that
 distribution. It establishes a real mechanism-level improvement; a claim about
