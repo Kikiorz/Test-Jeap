@@ -127,13 +127,17 @@ class Pi0(_model.BaseModel):
                                   width=config.con1_width,
                                   action_dim=config.con1_action_dims,
                                   use_action_conditioning=config.con1_action_conditioning,
-                                  use_direct_readout=config.con1_direct_readout)
+                                  use_direct_readout=config.con1_direct_readout,
+                                  vlm_context_dim=paligemma_config.width,
+                                  use_vlm_context=config.con1_vlm_context)
             )
             self.con1_delta_head.lazy_init(
                 jnp.zeros((1, self.vjepa_num_queries, paligemma_config.width), dtype=jnp.float32),
                 jnp.zeros((1, config.con1_latent_dim), dtype=jnp.float32),
                 (jnp.zeros((1, config.action_horizon, config.con1_action_dims), dtype=jnp.float32)
                  if config.con1_action_conditioning else None),
+                (jnp.zeros((1, paligemma_config.width), dtype=jnp.float32)
+                 if config.con1_vlm_context else None),
                 rngs=rngs,
             )
             self.con1_cross_attention = nnx_bridge.ToNNX(ActionDeltaCrossAttention(
@@ -312,14 +316,22 @@ class Pi0(_model.BaseModel):
             positions=jnp.cumsum(mask, axis=1) - 1)
         prefix = jax.lax.stop_gradient(prefix)
         cache = jax.tree.map(jax.lax.stop_gradient, cache)
-        return (mask, cache), jax.lax.stop_gradient(prefix[:, -self.vjepa_num_queries:])
+        queries = jax.lax.stop_gradient(prefix[:, -self.vjepa_num_queries:])
+        # Mask-weighted mean of every non-query prefix token (image patches,
+        # language, state). This is the full VLM output the Con2 head may use
+        # alongside the predictive queries.
+        context_tokens = prefix[:, : -self.vjepa_num_queries]
+        context_mask = mask[:, : -self.vjepa_num_queries].astype(jnp.float32)
+        pooled = (context_tokens * context_mask[..., None]).sum(1)
+        pooled = pooled / jnp.maximum(context_mask.sum(1, keepdims=True), 1.0)
+        return (mask, cache), queries, jax.lax.stop_gradient(pooled)
 
-    def _con1_delta(self, r_tokens, current_latent, action_chunk=None):
-        return self.con1_delta_head(r_tokens, current_latent, action_chunk)["delta"]
+    def _con1_delta(self, r_tokens, current_latent, action_chunk=None, vlm_context=None):
+        return self.con1_delta_head(r_tokens, current_latent, action_chunk, vlm_context)["delta"]
 
     def _con1_context(self, observation, action_chunk=None):
-        context, r_tokens = self._con1_prefix(observation)
-        delta = self._con1_delta(r_tokens, observation.con1_current_latent, action_chunk)
+        context, r_tokens, vlm_context = self._con1_prefix(observation)
+        delta = self._con1_delta(r_tokens, observation.con1_current_latent, action_chunk, vlm_context)
         return context, delta
 
     def _con1_velocity(self, observation, x_t, time, context, delta):
@@ -454,7 +466,7 @@ class Pi0(_model.BaseModel):
             # The prefix does not depend on the action chunk, so run it once.
             # With action conditioning the delta must be re-derived each step from
             # the current clean-action estimate a_hat = x_t - time * velocity.
-            context, r_tokens = self._con1_prefix(observation)
+            context, r_tokens, vlm_context = self._con1_prefix(observation)
             current_latent = observation.con1_current_latent
             initial_estimate = jnp.zeros(
                 (batch_size, self.action_horizon, self.con1_action_dims), dtype=noise.dtype
@@ -463,7 +475,7 @@ class Pi0(_model.BaseModel):
             def con1_step(carry):
                 x_t, time, action_estimate = carry
                 condition = action_estimate if self.con1_action_conditioning else None
-                delta = self._con1_delta(r_tokens, current_latent, condition)
+                delta = self._con1_delta(r_tokens, current_latent, condition, vlm_context)
                 velocity, _ = self._con1_velocity(
                     observation, x_t, jnp.broadcast_to(time, (batch_size,)), context, delta)
                 next_estimate = (x_t - time * velocity)[..., : self.con1_action_dims]

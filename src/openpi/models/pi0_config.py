@@ -65,6 +65,9 @@ class Pi0Config(_model.BaseModelConfig):
     # Add the direct pooled linear readout to the delta head. Off by default so
     # checkpoints from the earlier head structure keep restoring.
     con1_direct_readout: bool = False
+    # Feed the pooled full VLM prefix (image patches, language, state) into the
+    # delta head alongside the predictive queries.
+    con1_vlm_context: bool = False
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
     # then 5k joint flow with the action-sensitivity weighting enabled.

@@ -122,6 +122,29 @@ def test_action_gradient_reaches_the_conditioning_parameters():
     assert float(jnp.abs(value_grad).max()) > 0.0
 
 
+def test_vlm_context_is_a_no_op_at_initialisation_but_still_gets_gradient():
+    horizon, latent_dim, width, ctx_dim = 3, 6, 8, 11
+    plain = AnchoredDeltaHead(horizon=horizon, latent_dim=latent_dim, width=width)
+    ctx_head = AnchoredDeltaHead(horizon=horizon, latent_dim=latent_dim, width=width,
+                                 vlm_context_dim=ctx_dim, use_vlm_context=True)
+    r = jax.random.normal(jax.random.key(31), (2, 5, 7))
+    z = jax.random.normal(jax.random.key(32), (2, latent_dim))
+    ctx = jax.random.normal(jax.random.key(33), (2, ctx_dim))
+    plain_vars = plain.init(jax.random.key(34), r, z)
+    ctx_vars = ctx_head.init(jax.random.key(34), r, z, None, ctx)
+    reference = plain.apply(plain_vars, r, z)["delta"]
+    forward = ctx_head.apply(ctx_vars, r, z, None, ctx)["delta"]
+    np.testing.assert_allclose(np.asarray(forward), np.asarray(reference), rtol=0, atol=1e-6)
+
+    def loss(vars):
+        return jnp.mean(jnp.square(ctx_head.apply(vars, r, z, None, ctx)["delta"]))
+
+    grads = jax.grad(loss)(ctx_vars)
+    import flax.traverse_util as traverse_util
+    flat = traverse_util.flatten_dict(grads, sep="/")
+    assert float(jnp.abs(flat["params/vlm_context_in/kernel"]).max()) > 0.0
+
+
 def test_two_terms_are_not_claimed_independent():
     z = jnp.zeros((1, 2)); target = jnp.ones((1, 1, 2)); d = jnp.zeros_like(target)
     valid = jnp.ones((1, 1), dtype=bool)

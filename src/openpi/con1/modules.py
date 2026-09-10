@@ -26,9 +26,11 @@ class AnchoredDeltaHead(nn.Module):
     action_dim: int = 0
     use_action_conditioning: bool = False
     use_direct_readout: bool = False
+    vlm_context_dim: int = 0
+    use_vlm_context: bool = False
 
     @nn.compact
-    def __call__(self, r_tokens, current_latent, action_chunk=None):
+    def __call__(self, r_tokens, current_latent, action_chunk=None, vlm_context=None):
         if r_tokens.ndim != 3 or current_latent.ndim != 2:
             raise ValueError("Expected R[B,N,E] and current latent[B,D]")
         if r_tokens.shape[0] != current_latent.shape[0] or current_latent.shape[-1] != self.latent_dim:
@@ -41,6 +43,13 @@ class AnchoredDeltaHead(nn.Module):
             if action_chunk.shape[-1] != self.action_dim:
                 raise ValueError(f"Action chunk width {action_chunk.shape[-1]} != {self.action_dim}")
             action_chunk = jax.lax.stop_gradient(action_chunk.astype(jnp.float32))
+        if self.use_vlm_context:
+            if vlm_context is None:
+                raise ValueError("VLM context conditioning enabled but no context was supplied")
+            if vlm_context.shape[-1] != self.vlm_context_dim:
+                raise ValueError(
+                    f"VLM context width {vlm_context.shape[-1]} != {self.vlm_context_dim}")
+            vlm_context = jax.lax.stop_gradient(vlm_context.astype(jnp.float32))
         r = jax.lax.stop_gradient(r_tokens.astype(jnp.float32))
         anchor = jax.lax.stop_gradient(current_latent.astype(jnp.float32))
         r = nn.LayerNorm(name="r_norm")(r)
@@ -61,6 +70,15 @@ class AnchoredDeltaHead(nn.Module):
         attention = jax.nn.softmax(jnp.einsum("bmhd,bnhd->bhmn", q, k) / math.sqrt(self.width // 4), -1)
         context = jnp.einsum("bhmn,bnhd->bmhd", attention, v).reshape(slots.shape)
         hidden = slots + context
+
+        if self.use_vlm_context:
+            # The *input* projection is zero-initialised (not the output), so the
+            # branch starts as an exact no-op while still receiving a non-zero
+            # gradient on step one.
+            merged = nn.Dense(self.width, name="vlm_context_in",
+                              kernel_init=nn.initializers.zeros_init())(vlm_context)
+            merged = nn.Dense(self.width, name="vlm_context_out")(nn.gelu(merged))
+            hidden = hidden + merged[:, None, :]
 
         # Optional direct per-horizon linear readout of the pooled features. The
         # attention path alone was measured to underfit badly (0.483 held-out
