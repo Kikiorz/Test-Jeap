@@ -204,6 +204,33 @@ they are the numbers to quote: with 12 candidates the executed action is
 ranked best **49% of the time at 0.2 s and 67% at 0.4 s** (chance 8.3%), and it
 sits in the top 5-9% of the ranking on average.
 
+### 3.5b The same test on the original Con2 head
+
+`scripts/eval_con1_head_ranking.py` runs the identical protocol on the
+in-policy delta head that Con2 used before this change
+(`pi05_libero_con1_action_only_40k / con1_action_only_stage1_2k`, the
+action-conditioned head), 384 held-out windows, 8 candidates (chance 12.5%):
+
+| model | horizon | top-1 | mean rank percentile | NMSE vs copy |
+|---|---:|---:|---:|---:|
+| old in-policy delta head | 1 (0.1 s) | **3.4%** | 0.433 | 0.866 |
+| old in-policy delta head | 5 (0.5 s) | **8.3%** | 0.410 | 0.551 |
+| old in-policy delta head | 10 (1.0 s) | **12.5%** | 0.388 | 0.375 |
+| V-JEPA 2-AC world model | 1 (0.2 s) | 49.0% | 0.090 | - |
+| V-JEPA 2-AC world model | 2 (0.4 s) | 67.0% | 0.054 | - |
+
+The old head is at or **below chance**: at its shortest horizon the executed
+action is the worst-scoring of eight candidates 3.4% of the time, i.e. the head
+has learned uses of the action chunk that have nothing to do with which action
+was executed - which is exactly why its NMSE gain over an unconditioned head was
+only 0.002. Even at h=10, where the copy baseline is weakest and the head's NMSE
+is its best (0.375), the ranking is exactly chance.
+
+Caveat: the two candidate sets differ in size (8 vs 12) and perturbation scale,
+and the old head was only trained to stage 1 (2k steps). Top-1 rate against
+chance is the comparable part, and on that axis the gap is 3.4%/12.5% = 0.27
+versus 49%/8.3% = 5.9.
+
 The executed action is the best-scoring candidate 3.7x more often than chance
 (4.7x at a 0.4 s horizon) and sits, on average, in the top sixth of the ranking,
 i.e. the predicted future latent really is action-conditioned. This is the
