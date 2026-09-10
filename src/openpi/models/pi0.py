@@ -363,7 +363,8 @@ class Pi0(_model.BaseModel):
             lambda _: jnp.zeros_like(delta), operand=None)
         delta_loss, delta_metrics = control_weighted_delta_loss(
             delta, observation.con1_current_latent, observation.con1_future_latents,
-            observation.con1_future_valid, aux["attention"], sensitivity, beta=beta)
+            observation.con1_future_valid, aux["attention"], sensitivity, beta=beta,
+            action_valid=action_valid)
         flow = jnp.square(error).sum() / action_count
         total = flow + self.con1_delta_weight * delta_loss + self.con1_residual_weight * aux["con1_residual_energy"]
         return total, dict(delta_metrics, flow_loss=flow, con1_delta_loss=delta_loss,

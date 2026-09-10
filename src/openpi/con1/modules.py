@@ -123,34 +123,8 @@ def anchored_loss(delta, anchor, future_target, valid, *, delta_weight=1., featu
     return metrics["loss"], metrics
 
 
-def reciprocal_con1_loss(predicted_delta, target_delta, flow_prediction, flow_target,
-                         anchor, future_target, valid, *, delta_weight=.2,
-                         flow_weight=1.0, residual_weight=1e-3):
-    """Joint Con1 objective with an action-to-latent reverse constraint.
-
-    ``flow_prediction`` is produced after injecting the delta through the
-    action cross-attention.  Consequently its error differentiates through
-    the cross-attention and the delta head; this is the reverse (action-side)
-    constraint, rather than a detached diagnostic.  The residual penalty is
-    deliberately small and uses the frozen anchor as the reference.
-    """
-    if predicted_delta.shape != target_delta.shape:
-        raise ValueError("Delta prediction/target shapes disagree")
-    if flow_prediction.shape != flow_target.shape:
-        raise ValueError("Flow prediction/target shapes disagree")
-    latent, lm = anchored_loss(predicted_delta, anchor, future_target, valid,
-                               delta_weight=delta_weight)
-    flow = jnp.mean(jnp.square(flow_prediction.astype(jnp.float32) -
-                               jax.lax.stop_gradient(flow_target.astype(jnp.float32))))
-    # Keep the injected correction close to zero initially; this is a soft
-    # trust-region term, not a binary fallback gate.
-    residual = jnp.mean(jnp.square(predicted_delta.astype(jnp.float32)))
-    total = latent + flow_weight * flow + residual_weight * residual
-    metrics = dict(lm, flow_loss=flow, residual_loss=residual, loss=total)
-    return total, metrics
-
-
-def control_weighted_delta_loss(delta, anchor, future_target, valid, attention, sensitivity, *, beta):
+def control_weighted_delta_loss(delta, anchor, future_target, valid, attention, sensitivity,
+                                *, beta, action_valid=None, temperature=.1):
     """Last-layer usage x action sensitivity with a uniform supervision floor.
 
     q is detached: the model cannot lower loss by moving its own weights toward
@@ -162,15 +136,22 @@ def control_weighted_delta_loss(delta, anchor, future_target, valid, attention, 
     mask = valid.astype(bool)
     count = mask.sum(-1, keepdims=True)
     uniform = mask.astype(jnp.float32) / jnp.maximum(count, 1)
-    target = jax.lax.stop_gradient(future_target.astype(jnp.float32) - anchor[:, None].astype(jnp.float32))
-    target = jnp.where(mask[..., None], target, 0.)
+    safe_future = jnp.where(mask[..., None], future_target.astype(jnp.float32), anchor[:, None])
+    target = jax.lax.stop_gradient(safe_future - anchor[:, None].astype(jnp.float32))
     pred = jnp.where(mask[..., None], delta.astype(jnp.float32), 0.)
     mse = jnp.square(pred - target).mean(-1)
-    usage = jnp.mean(attention.astype(jnp.float32), axis=1)
-    strength = jnp.linalg.norm(jax.lax.stop_gradient(sensitivity.astype(jnp.float32)), axis=-1)
-    relevance = jnp.where(mask, usage * strength, 0.)
+    if action_valid is None:
+        action_valid = jnp.ones(attention.shape[:2], dtype=bool)
+    usage = (attention.astype(jnp.float32) * action_valid[..., None]).sum(1)
+    usage /= jnp.maximum(action_valid.sum(1, keepdims=True), 1)
+    # First-order gradient x input; a saliency heuristic, not causal importance.
+    strength = jnp.abs(jnp.sum(jax.lax.stop_gradient(sensitivity.astype(jnp.float32)) * pred, axis=-1))
+    strength = jax.lax.stop_gradient(jnp.where(mask, strength, 0.))
+    scores = jax.nn.softmax(jnp.where(mask, strength / temperature, -1e9), axis=-1)
+    relevance = jnp.where(mask, usage * scores, 0.)
     normalizer = relevance.sum(-1, keepdims=True)
-    control = jnp.where(normalizer > 1e-12, relevance / jnp.maximum(normalizer, 1e-12), uniform)
+    use_control = (normalizer > 1e-12) & (strength.sum(-1, keepdims=True) > 1e-12)
+    control = jnp.where(use_control, relevance / jnp.maximum(normalizer, 1e-12), uniform)
     q = jax.lax.stop_gradient((1 - beta) * uniform + beta * control)
     # Weight examples by valid horizon count; beta=0 is the global masked MSE.
     denom = jnp.maximum(count.sum(), 1)

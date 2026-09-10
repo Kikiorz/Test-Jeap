@@ -106,6 +106,7 @@ class DataConfig:
     # Optional cached current/future latent sequence for reciprocal Con1.
     con1_latent_root: str | None = None
     con1_latent_mmap_cache_size: int = 16
+    con1_split: Literal["train", "validation"] = "train"
 
 
 class GroupFactory(Protocol):
@@ -728,7 +729,7 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
-        name="pi05_libero_con1_reciprocal_40k",
+        name="pi05_libero_con1_three_stage_40k",
         model=pi0_config.Pi0Config(
             pi05=True,
             discrete_state_input=False,
@@ -741,7 +742,6 @@ _CONFIGS = [
             con1_stage2_steps=5000,
             con1_stage3_steps=5000,
             con1_sgr_beta=0.5,
-            con1_sgr_warmup_steps=0,
             con1_delta_weight=0.2,
             con1_residual_weight=1e-3,
         ),
@@ -767,11 +767,17 @@ _CONFIGS = [
         freeze_filter=nnx.All(
             nnx.Param,
             nnx.Not(nnx.Any(
-                nnx_utils.PathRegex(".*PaliGemma/llm.*_1.*"),
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
                 nnx_utils.PathRegex(".*con1.*"),
             )),
         ),
         num_train_steps=12_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=12_000, decay_lr=1e-5),
+        save_interval=1000,
+        keep_period=1000,
+        log_interval=10,
         batch_size=4,
         ema_decay=None,
     ),

@@ -435,7 +435,8 @@ class Module(nn.Module):
         if frozen:
             params = jax.tree.map(jax.lax.stop_gradient, params)
             hidden = jax.lax.stop_gradient(hidden)
-        block = Block(configs=tuple(self.configs))
+        # Functional application of existing weights: no new Linen child scope.
+        block = Block(configs=tuple(self.configs), parent=None)
 
         def step(x, values):
             p, kv = values

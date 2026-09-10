@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from openpi.con1.modules import ActionDeltaCrossAttention, AnchoredDeltaHead, anchored_loss
+from openpi.con1.modules import control_weighted_delta_loss
 
 
 def test_no_q0_and_zero_residual():
@@ -32,3 +33,47 @@ def test_two_terms_are_not_claimed_independent():
     one, _ = anchored_loss(d, z, target, valid, delta_weight=0.)
     two, _ = anchored_loss(d, z, target, valid, delta_weight=1.)
     np.testing.assert_allclose(two, 2 * one)
+
+
+def test_reverse_flow_gradient_reaches_head_after_zero_init_warmup():
+    head = AnchoredDeltaHead(horizon=3, latent_dim=6, width=8)
+    cross = ActionDeltaCrossAttention(action_width=12, width=8)
+    r = jax.random.normal(jax.random.key(10), (2, 5, 7))
+    z = jax.random.normal(jax.random.key(11), (2, 6))
+    h = jax.random.normal(jax.random.key(12), (2, 3, 12))
+    hp = head.init(jax.random.key(13), r, z)["params"]
+    delta = head.apply({"params": hp}, r, z)["delta"]
+    cp = cross.init(jax.random.key(14), h, delta)["params"]
+
+    def flow(hp, cp):
+        d = head.apply({"params": hp}, r, z)["delta"]
+        hidden = cross.apply({"params": cp}, h, d)["hidden"]
+        return jnp.square(hidden[..., :7] - .3).mean()
+
+    # Exact zero initialization initially blocks flow->head, as documented.
+    first = jax.grad(flow, argnums=0)(hp, cp)
+    assert all(np.all(np.asarray(x) == 0) for x in jax.tree.leaves(first))
+    # A first output-projection update unblocks the path; no latent loss used.
+    gradient = jax.grad(flow, argnums=1)(hp, cp)
+    cp = jax.tree.map(lambda p, g: p - .1 * g, cp, gradient)
+    second = jax.grad(flow, argnums=0)(hp, cp)
+    assert any(np.any(np.asarray(x) != 0) for x in jax.tree.leaves(second))
+    assert all(np.isfinite(x).all() for x in jax.tree.leaves(second))
+
+
+def test_sgr_mask_detach_and_zero_sensitivity_fallback():
+    delta = jnp.ones((1, 3, 2))
+    z = jnp.zeros((1, 2))
+    target = jnp.array([[[2., 2.], [4., 4.], [jnp.nan, jnp.nan]]])
+    mask = jnp.array([[True, True, False]])
+    attention = jnp.array([[[.9, .09, .01], [.3, .3, .4]]])
+    zeros = jnp.zeros_like(delta)
+    fn = lambda d, a, s, b: control_weighted_delta_loss(d, z, target, mask, a, s, beta=b)[0]
+    uniform = fn(delta, attention, zeros, 0.)
+    np.testing.assert_allclose(uniform, 5.)
+    np.testing.assert_allclose(fn(delta, attention, zeros, .5), uniform)
+    grad = jax.grad(fn)(delta, attention, zeros, .5)
+    np.testing.assert_array_equal(grad[:, 2], 0.)
+    assert np.isfinite(grad).all()
+    np.testing.assert_array_equal(jax.grad(fn, 1)(delta, attention, jnp.ones_like(delta), .5), 0.)
+    np.testing.assert_array_equal(jax.grad(fn, 2)(delta, attention, jnp.ones_like(delta), .5), 0.)

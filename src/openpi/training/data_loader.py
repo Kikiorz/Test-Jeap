@@ -290,8 +290,16 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    episodes = None
+    if data_config.con1_latent_root is not None:
+        from openpi.con1.data import FeatureDataset
+        split = FeatureDataset(data_config.con1_latent_root, horizon=action_horizon,
+                               split=data_config.con1_split, seed=42)
+        episodes = [int(e["id"]) for e in split.episodes]
+        logging.info("Con1 %s split: %d episodes; split seed=42", data_config.con1_split, len(episodes))
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        episodes=episodes,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },

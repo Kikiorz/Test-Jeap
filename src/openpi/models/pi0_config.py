@@ -53,7 +53,6 @@ class Pi0Config(_model.BaseModelConfig):
     con1_train_action_layers_from: int = 14
     con1_delta_weight: float = 0.2
     con1_sgr_beta: float = 0.5
-    con1_sgr_warmup_steps: int = 1000
     con1_residual_weight: float = 1e-3
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
@@ -99,6 +98,8 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("Invalid Con1 loss weights")
             if min(self.con1_stage1_steps, self.con1_stage2_steps, self.con1_stage3_steps) < 1:
                 raise ValueError("Con1 stage lengths must be positive")
+            if self.con1_residual_weight < 0 or not 1 <= self.con1_action_dims <= self.action_dim:
+                raise ValueError("Invalid residual weight or physical action dimension")
 
     @property
     @override
