@@ -214,15 +214,17 @@ def train_step(
         loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
         loss_info = {}
 
+    params = state.params.filter(config.trainable_filter)
+    updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
     if getattr(config.model, "use_con1", False):
-        grads = _mask_con1_frozen_action_layers(
-            grads,
+        # Mask optimizer updates rather than the NNX gradient State.  The
+        # latter contains intentional None placeholders for filtered leaves,
+        # which Optax does not accept after a reconstructed State.
+        updates = _mask_con1_frozen_action_layers(
+            updates,
             freeze_before=config.model.con1_train_action_layers_from,
             depth=18,
         )
-
-    params = state.params.filter(config.trainable_filter)
-    updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
     new_params = optax.apply_updates(params, updates)
 
     # Update the model in place and return the new full state.
