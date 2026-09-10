@@ -114,7 +114,7 @@ class Observation(Generic[ArrayT]):
     # ``vjepa_target`` so the auxiliary objective cannot accidentally leak it.
     con1_current_latent: at.Float[ArrayT, "*b cd"] | None = None
     # Optional future latent sequence for the reciprocal Con1 transition loss.
-    con1_future_latents: at.Float[ArrayT, "*b h cd"] | None = None
+    con1_future_latents: at.Float[ArrayT, "*b ch cd"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
