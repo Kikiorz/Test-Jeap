@@ -523,6 +523,8 @@ class TrainConfig:
     con1_cross_attention_lr_multiplier: float = 1.0
     # Uniform multiplier over the whole LR schedule (every trainable group).
     con1_lr_multiplier: float = 1.0
+    # Relative LR for the unfrozen action blocks 14-17 and action_out_proj.
+    con1_action_lr_multiplier: float = 0.1
     ema_decay: float | None = 0.99
 
     # Specifies which weights should be frozen.
