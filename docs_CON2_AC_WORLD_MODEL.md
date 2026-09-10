@@ -274,7 +274,11 @@ with `--frame-stride 2` (5 fps, so h=5 is one second) fixes this, on the same
 | stride 1 (10 fps), auto_steps=4 | h=10 | - | - | 0.9384 | - |
 | stride 2 (5 fps), auto_steps=2, step 999 | h=1/2/5 | 0.725 | 0.682 | **0.752** | 0.849 |
 | stride 2 (5 fps), auto_steps=4, step 999 | h=1/2/5 | **0.710** | **0.656** | **0.731** | 0.829 |
+| stride 2 (5 fps), auto_steps=4, 400 episodes | h=1/2/5 | 0.783 | 0.736 | **0.783** | 0.838 |
 | stride 2 + executed actions/states | h=1/2/5 | 0.725 | 0.680 | **0.722** | 0.779 |
+
+(The 400-episode row uses held-out episodes 400-439 and is therefore not
+comparable row-for-row with the 100-episode rows; the rows above it are.)
 
 Two things improve at once: the 1 s NMSE drops from ~0.97 to 0.74-0.79, and the
 action ablation gap grows from +0.03 to +0.09-0.16. Feeding the model the rates
