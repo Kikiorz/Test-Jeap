@@ -739,6 +739,11 @@ _CONFIGS = [
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="/workspace/artifacts/datasets/lerobot_libero",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+                           "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/assets",
+                asset_id="physical-intelligence/libero",
+            ),
             base_config=DataConfig(
                 prompt_from_task=True,
                 con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
