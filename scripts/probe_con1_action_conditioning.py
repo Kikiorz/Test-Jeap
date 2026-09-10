@@ -133,11 +133,14 @@ def main() -> None:
     cols = np.tile(np.arange(horizon), n)
     keep = valid.reshape(-1)
     rows, cols = rows[keep], cols[keep]
-    order = rng.permutation(len(rows))
-    rows, cols = rows[order], cols[order]
     n_rows = len(rows)
-    n_train, n_val = int(0.6 * n_rows), int(0.2 * n_rows)
-    tr, va, ev = slice(0, n_train), slice(n_train, n_train + n_val), slice(n_train + n_val, n_rows)
+    # Split by SAMPLE, never by (sample, horizon) pair. Splitting pairs leaks the
+    # same sample across splits and a fitted estimator can then interpolate
+    # between horizons, which previously produced a spuriously low NMSE.
+    n_train_s, n_val_s = int(0.6 * n), int(0.2 * n)
+    tr = rows < n_train_s
+    va = (rows >= n_train_s) & (rows < n_train_s + n_val_s)
+    ev = rows >= n_train_s + n_val_s
 
     # Every feature set is built per (sample, horizon) pair so slices line up.
     step_idx = np.arange(horizon)[None, :]
