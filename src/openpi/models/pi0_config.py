@@ -54,6 +54,13 @@ class Pi0Config(_model.BaseModelConfig):
     con1_delta_weight: float = 0.2
     con1_sgr_beta: float = 0.5
     con1_sgr_warmup_steps: int = 1000
+    con1_residual_weight: float = 1e-3
+    con1_action_dims: int = 7
+    # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
+    # then 5k joint flow with the action-sensitivity weighting enabled.
+    con1_stage1_steps: int = 2000
+    con1_stage2_steps: int = 5000
+    con1_stage3_steps: int = 5000
 
     pytorch_compile_mode: str | None = "max-autotune"
 
@@ -90,6 +97,8 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("Con1 action-layer split is outside expert depth")
             if not 0 <= self.con1_sgr_beta < 1 or self.con1_delta_weight < 0:
                 raise ValueError("Invalid Con1 loss weights")
+            if min(self.con1_stage1_steps, self.con1_stage2_steps, self.con1_stage3_steps) < 1:
+                raise ValueError("Con1 stage lengths must be positive")
 
     @property
     @override

@@ -91,16 +91,20 @@ class BaseAndCon1HeadWeightLoader(WeightLoader):
         merged = CheckpointWeightLoader(self.base_params_path, missing_regex=".*con1.*").load(params)
         payload = serialization.msgpack_restore(open(self.head_checkpoint_path, "rb").read())
         head = payload.get("params", payload)
-        if "con1_delta_head" not in merged or "con1_delta_head" not in head:
-            raise ValueError("Con1 delta-head namespace missing from model or head checkpoint")
+        if "con1_delta_head" not in merged:
+            raise ValueError("Con1 delta-head namespace missing from model")
+        # train_head serializes the Linen params directly, without the NNX
+        # model's con1_delta_head namespace. Also accept explicitly wrapped heads.
+        head = head.get("con1_delta_head", head)
         expected = flax.traverse_util.flatten_dict(merged["con1_delta_head"], sep="/")
-        got = flax.traverse_util.flatten_dict(head["con1_delta_head"], sep="/")
+        got = flax.traverse_util.flatten_dict(head, sep="/")
         if set(expected) != set(got):
             raise ValueError("Con1 head checkpoint namespace does not match current model")
         for key, value in got.items():
             if expected[key].shape != value.shape:
                 raise ValueError(f"Con1 head shape mismatch at {key}: {value.shape} != {expected[key].shape}")
-        merged["con1_delta_head"] = head["con1_delta_head"]
+        merged["con1_delta_head"] = flax.traverse_util.unflatten_dict(
+            {key: np.asarray(value).astype(expected[key].dtype) for key, value in got.items()}, sep="/")
         return merged
 
 

@@ -28,7 +28,7 @@ import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
 
 
-def _mask_con1_frozen_action_layers(grads, *, freeze_before=14, depth=18):
+def _mask_con1_frozen_action_layers(grads, *, freeze_before=14, depth=18, freeze_all_action=False):
     """Mask the scanned action-expert prefix before the optimizer update."""
     if not 0 <= freeze_before <= depth:
         raise ValueError("Invalid Con1 action-layer split")
@@ -39,7 +39,11 @@ def _mask_con1_frozen_action_layers(grads, *, freeze_before=14, depth=18):
         if ("PaliGemma" in names and "llm" in names and "layers" in names
                 and any(name.endswith("_1") for name in names)
                 and hasattr(value, "shape") and value.ndim >= 1 and value.shape[0] == depth):
-            value = value.at[:freeze_before].set(0)
+            value = jnp.where(freeze_all_action, jnp.zeros_like(value), value.at[:freeze_before].set(0))
+        if any(name in names for name in
+               ("action_in_proj", "time_mlp_in", "time_mlp_out", "action_out_proj",
+                "state_proj", "action_time_mlp_in", "action_time_mlp_out")):
+            value = jnp.where(freeze_all_action, jnp.zeros_like(value), value)
         masked.append(value)
     return jax.tree_util.tree_unflatten(treedef, masked)
 
@@ -170,8 +174,13 @@ def train_step(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
         if getattr(config.model, "use_con1", False):
-            beta = config.model.con1_sgr_beta * jnp.minimum(
-                state.step.astype(jnp.float32) / max(config.model.con1_sgr_warmup_steps, 1), 1.0)
+            stage1 = config.model.con1_stage1_steps
+            stage2 = config.model.con1_stage2_steps
+            stage3 = config.model.con1_stage3_steps
+            step_f = state.step.astype(jnp.float32)
+            # SGR is explicitly off in stage 1/2 and ramps only during stage 3.
+            beta = config.model.con1_sgr_beta * jnp.clip(
+                (step_f - stage1 - stage2) / max(stage3, 1), 0.0, 1.0)
             total, metrics = model.compute_con1_loss(rng, observation, actions, beta=beta)
             return total, metrics
         flow_loss, vjepa_loss = model.compute_loss_components(rng, observation, actions, train=True)
@@ -219,6 +228,7 @@ def train_step(
             updates,
             freeze_before=config.model.con1_train_action_layers_from,
             depth=18,
+            freeze_all_action=(state.step < config.model.con1_stage1_steps),
         )
     new_params = optax.apply_updates(params, updates)
 
