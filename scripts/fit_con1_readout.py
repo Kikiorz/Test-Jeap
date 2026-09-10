@@ -98,7 +98,7 @@ def main() -> None:
     err = 0.0
     base = 0.0
     best_lambda = None
-    for lam in (1e-2, 1e-1, 1.0, 10.0, 100.0):
+    for lam in (1.0, 1e2, 1e3, 1e4, 1e5, 1e6):
         pred = np.zeros_like(target[ev], dtype=np.float64)
         for h in range(horizon):
             mask = valid[tr][:, h]
