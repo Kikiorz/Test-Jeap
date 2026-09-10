@@ -38,3 +38,8 @@ arithmetic.
 
 The old `pi05_libero_con1_reciprocal_40k/full_reciprocal_12k` output is not a valid resume
 point for this implementation review.
+
+The first attempted launch was discarded: passing a non-contiguous episode list
+directly to LeRobot renumbered its action index table. The current loader reads
+the complete table and applies an original-index `Subset`, preserving episode
+boundaries and the cache's episode IDs.

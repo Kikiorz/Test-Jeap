@@ -290,16 +290,15 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    episodes = None
+    selected_episode_ids = None
     if data_config.con1_latent_root is not None:
         from openpi.con1.data import FeatureDataset
         split = FeatureDataset(data_config.con1_latent_root, horizon=action_horizon,
                                split=data_config.con1_split, seed=42)
-        episodes = [int(e["id"]) for e in split.episodes]
-        logging.info("Con1 %s split: %d episodes; split seed=42", data_config.con1_split, len(episodes))
+        selected_episode_ids = [int(e["id"]) for e in split.episodes]
+        logging.info("Con1 %s split: %d episodes; split seed=42", data_config.con1_split, len(selected_episode_ids))
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
-        episodes=episodes,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
@@ -332,6 +331,18 @@ def create_torch_dataset(
             latent_dim=model_config.con1_latent_dim,
             mmap_cache_size=data_config.con1_latent_mmap_cache_size,
         )
+        # LeRobot's `episodes=` constructor renumbers episode indices, while
+        # the stored frame table and the Con1 cache retain original IDs. Build
+        # a Subset over the full dataset so action chunks use the original
+        # episode_data_index and can never cross a split boundary.
+        if selected_episode_ids is not None:
+            frame_ranges = dataset.dataset.episode_data_index
+            indices = []
+            for episode_id in selected_episode_ids:
+                start = int(frame_ranges["from"][episode_id])
+                end = int(frame_ranges["to"][episode_id])
+                indices.extend(range(start, max(start, end - 1)))
+            dataset = torch.utils.data.Subset(dataset, indices)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
