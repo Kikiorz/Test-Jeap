@@ -251,6 +251,33 @@ Note lambda sits at the top of the grid for these probes, so the fitted numbers
 are conservative; this does not change the ordering or the fact that the head
 remains far better than any probe.
 
+### The delta head is converged at ~0.474 (2026-09-10)
+
+`eval_con1_delta_nmse.py` on the same 1024 held-out samples, old head structure
+(`con1_b64_lr2x_floww_17k`):
+
+| checkpoint | held-out NMSE |
+|---|---:|
+| step 1000 | 0.47393 |
+| step 2000 | 0.47654 |
+| step 3000 | 0.47363 |
+
+Flat across 3000 updates on top of the head's 20k pre-training steps. Later
+variants confirm the same plateau: the action-conditioned head sits at 0.473
+from step 1 (correct zero-init start) and is still 0.480 at step 561.
+
+So the head is **not** undertrained, and no training-recipe change (steps,
+learning rate, capacity) will move it. The converged Con2 number for this
+formulation is a held-out NMSE of about 0.474, i.e. the head explains roughly
+53% of the variance of the pooled latent delta with `[R_t, z_t]` as input.
+
+Anything further has to change the problem, not the optimiser. The most
+promising structural change is the target: the current label is a *spatial mean
+pool* of the V-JEPA tokens (`mean_spatial(VJEPA([o,o]))`, 576x1408 -> 1408 per
+view), which discards exactly the spatial detail a future predictor could use.
+Token-level targets need a re-extract and roughly 890 GB for the full dataset,
+so only a subsampled re-extract is practical.
+
 Measured first with the kernel-ridge probe `scripts/probe_con1_action_conditioning.py`
 (1024 samples, 60/20/20 split, matched pipeline):
 
