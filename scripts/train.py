@@ -88,7 +88,12 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
 def init_train_state(
     config: _config.TrainConfig, init_rng: at.KeyArrayLike, mesh: jax.sharding.Mesh, *, resume: bool
 ) -> tuple[training_utils.TrainState, Any]:
-    tx = _optimizer.create_optimizer(config.optimizer, config.lr_schedule, weight_decay_mask=None)
+    lr_schedule = config.lr_schedule
+    if config.con1_lr_multiplier != 1.0:
+        if config.con1_lr_multiplier <= 0:
+            raise ValueError("Con1 LR multiplier must be positive")
+        lr_schedule = _optimizer.ScaledSchedule(lr_schedule, config.con1_lr_multiplier)
+    tx = _optimizer.create_optimizer(config.optimizer, lr_schedule, weight_decay_mask=None)
 
     def init(rng: at.KeyArrayLike, partial_params: at.Params | None = None) -> training_utils.TrainState:
         rng, model_rng = jax.random.split(rng)

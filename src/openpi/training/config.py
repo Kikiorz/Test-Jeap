@@ -521,6 +521,8 @@ class TrainConfig:
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     # Scale only Con1 fusion projections, not alpha or the pretrained head.
     con1_cross_attention_lr_multiplier: float = 1.0
+    # Uniform multiplier over the whole LR schedule (every trainable group).
+    con1_lr_multiplier: float = 1.0
     ema_decay: float | None = 0.99
 
     # Specifies which weights should be frozen.

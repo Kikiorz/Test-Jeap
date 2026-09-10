@@ -5,6 +5,15 @@ import numpy as np
 import optax
 
 from openpi.con1.optimization import flow_weight, mask_action_updates, scale_group_updates, stage_values
+from openpi.training import optimizer as _optimizer
+
+
+def test_scaled_schedule_multiplies_every_step():
+    base = _optimizer.CosineDecaySchedule(warmup_steps=100, peak_lr=1e-5, decay_steps=12_000, decay_lr=1e-5)
+    scaled = _optimizer.ScaledSchedule(base, 10.).create()
+    plain = base.create()
+    for step in (0, 50, 1000, 12000):
+        np.testing.assert_allclose(scaled(step), 10 * plain(step), rtol=1e-6)
 
 
 def test_stage_boundaries():

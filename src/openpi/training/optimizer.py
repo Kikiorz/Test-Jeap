@@ -53,6 +53,18 @@ class RsqrtDecaySchedule(LRScheduleConfig):
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class ScaledSchedule(LRScheduleConfig):
+    """Uniformly rescale a schedule; used to raise all Con1 group LRs together."""
+
+    base: LRScheduleConfig
+    multiplier: float = 1.0
+
+    def create(self) -> optax.Schedule:
+        inner = self.base.create()
+        return lambda step: self.multiplier * inner(step)
+
+
 @runtime_checkable
 class OptimizerConfig(Protocol):
     def create(
