@@ -132,6 +132,63 @@ def test_ranking_metrics_match_their_definitions():
     assert wm.mean_rank_percentile([0, 0, 0], candidates=3) == 0.0
 
 
+class TinyActionPredictor:
+    """Minimal learnable predictor: next frame = current frame + w * last action."""
+
+    def __init__(self, dim=wm.FEATURE_DIM):
+        import torch
+
+        self.weight = torch.nn.Parameter(torch.zeros(dim))
+
+    def parameters(self):
+        return [self.weight]
+
+    def __call__(self, context, actions, states):
+        frames = context.shape[1] // wm.TOKENS_PER_FRAME
+        blocks = context.reshape(context.shape[0], frames, wm.TOKENS_PER_FRAME, -1)
+        # Block k predicts frame k+1 and must read action k, as in the released
+        # frame-causal predictor.
+        offset = self.weight.reshape(1, 1, 1, -1) * actions[:, :, None, :1]
+        return (blocks + offset).reshape(context.shape[0], frames * wm.TOKENS_PER_FRAME, -1)
+
+
+def test_adapt_reduces_the_loss_on_observed_windows():
+    """Test-time training must actually fit the stream it is given."""
+    import torch
+
+    torch.manual_seed(0)
+    predictor = TinyActionPredictor()
+    model = wm.ACWorldModel(predictor=predictor, device="cpu", normalize_reps=False)
+    # The loss averages over batch*frames*tokens*features, so the per-weight
+    # gradient is small; Adam (as in the real fine-tune) is the right control.
+    optimizer = torch.optim.Adam(predictor.parameters(), lr=0.02)
+    generator = torch.Generator().manual_seed(1)
+    frames = 3
+    actions = torch.randn(4, frames, wm.ACTION_DIM, generator=generator)
+    states = torch.zeros(4, frames, wm.STATE_DIM)
+    true_weight = torch.randn(wm.FEATURE_DIM, generator=generator) * 0.1
+    # Deterministic stream the stub can represent exactly: frame k+1 is frame k
+    # plus a fixed multiple of action k.
+    tokens = torch.zeros(4, frames, wm.TOKENS_PER_FRAME, wm.FEATURE_DIM)
+    tokens[:, 0] = torch.randn(4, wm.TOKENS_PER_FRAME, wm.FEATURE_DIM, generator=generator)
+    for k in range(frames - 1):
+        offset = (true_weight.reshape(1, -1) * actions[:, k, :1]).unsqueeze(1)  # [B, 1, D]
+        tokens[:, k + 1] = tokens[:, k] + offset
+
+    before = float(wm.teacher_forced_loss(model, tokens, actions, states, auto_steps=1).detach())
+    losses = wm.adapt(model, optimizer, tokens, actions, states, steps=50, auto_steps=1)
+    after = float(wm.teacher_forced_loss(model, tokens, actions, states, auto_steps=1).detach())
+    assert after < before * 0.1, f"TTT did not fit the stream: {before} -> {after}"
+    assert losses[-1] < losses[0]
+
+
+def test_adapt_rejects_a_predictor_without_parameters():
+    import pytest as _pytest
+
+    with _pytest.raises(TypeError):
+        wm.adapt(wm.ACWorldModel(predictor=StubPredictor(), device="cpu"), None, None, None, None)
+
+
 def test_action_candidates_keeps_the_executed_action_and_count():
     rng = np.random.default_rng(0)
     pool = np.tile(np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32), (5, 1))

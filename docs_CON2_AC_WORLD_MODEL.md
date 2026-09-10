@@ -206,18 +206,16 @@ completely, while the ranking test shows it directly.
 ### 3.6 The 1 s horizon is not there yet
 
 The Con2 claim is about a ~1 s horizon, which is 10 autoregressive steps on this
-cache. The 400-episode model (`ft_440_pre`, step 1999), 40 held-out episodes,
-6 windows each:
+cache. 40 held-out episodes, 4 windows each, identical windows for both rows:
 
-| horizon | seconds | NMSE vs copy-current |
-|---:|---:|---:|
-| 1 | 0.1 | 0.827 |
-| 2 | 0.2 | 0.793 |
-| 4 | 0.4 | 0.783 |
-| 10 | 1.0 | **0.961** |
+| model | h=1 (0.1 s) | h=4 (0.4 s) | h=10 (1.0 s) |
+|---|---:|---:|---:|
+| `ft_440_pre` (auto_steps=2) | 0.8355 | 0.7861 | 0.9705 |
+| `ft_440_ar4` (+1000 steps, auto_steps=4) | **0.8270** | **0.7597** | **0.9384** |
 
 Short-horizon prediction is solid, but free-running rollout to 1 s decays to
-near the copy baseline by h=10. Two known causes, both addressable:
+near the copy baseline by h=10, and re-training the schedule for longer rollouts
+only recovers ~3%. Two known causes, both addressable:
 
 1. The schedule above trained with `auto_steps = 2`, so the model was never
    optimised for a 10-step rollout; `ft_440_ar4` re-fine-tunes it with
@@ -244,7 +242,25 @@ Accuracy is the same at the end of the schedule, but the **action ablation gap i
 makes it largely redundant with the state token, so the predictor leans on it
 less. The raw scale stays the default.
 
-## 3.8 Library surface
+### 3.8 Test-time training
+
+`scripts/con2_ttt_adapt.py` adapts the predictor online on a stream of new
+episodes through ``ACWorldModel.adapt`` (same cooldown objective, observed
+transitions only). Protocol with no leakage: score the model on the **second
+half** of each episode, adapt on the **first half only**, then score the same
+untouched second half again.
+
+| adaptation | episodes | NMSE before | NMSE after | improved |
+|---|---:|---:|---:|---:|
+| 4 steps, lr 1e-5 | 5 | 0.8494 | 0.8511 | 3/5 |
+| 30 steps, lr 1e-4 | 8 | 0.9645 | **0.9465** | 5/8 |
+
+At a trivial budget the effect is noise and one episode regresses; with 30 steps
+the held-out error drops ~2%, so the TTT path works but needs a real schedule
+(more steps, replay across episodes, early stopping on the observed transition
+loss) before it is a paper number.
+
+## 3.9 Library surface
 
 Everything above is reproduced by the ``scripts/probe_ac_*`` entry points, and
 the reusable pieces now live in one place:

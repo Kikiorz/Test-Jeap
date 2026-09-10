@@ -333,6 +333,76 @@ def action_candidates(true_action: np.ndarray, pool: np.ndarray, count: int, rng
     return options[:count]
 
 
+def teacher_forced_loss(model: "ACWorldModel", tokens, actions, states, auto_steps: int = 2,
+                        loss_exp: float = 1.0) -> "object":
+    """The released cooldown objective on a batch of windows (training path).
+
+    ``tokens`` is ``[B, K+1, tokens_per_frame, D]``; block ``k`` of the window
+    predicts frame ``k+1``. The loss is the window-wide L1/L^``loss_exp`` error on
+    layer-normed representations plus the autoregressive refinements, exactly as
+    in ``app/vjepa_droid/train.py``.
+
+    Unlike :meth:`ACWorldModel.predict` this keeps the graph and supports a batch
+    dimension, so it is what both fine-tuning and test-time adaptation minimise.
+    """
+    import torch  # noqa: PLC0415
+    import torch.nn.functional as F  # noqa: PLC0415
+
+    if tokens.ndim != 4:
+        raise ValueError(f"Expected tokens[B, K+1, N, D], got {tuple(tokens.shape)}")
+    batch, frames, n_tokens, dim = tokens.shape
+    context_frames = frames - 1
+    if context_frames < 1:
+        raise ValueError("A window needs at least two frames")
+    hidden = model._normalize(tokens[:, :context_frames].reshape(batch, context_frames * n_tokens, dim))
+    teacher = model._normalize(model.predictor(hidden, actions[:, :context_frames],
+                                              states[:, :context_frames]).reshape(
+        batch, context_frames, n_tokens, dim))
+    target = model._normalize(tokens[:, 1:].reshape(batch, context_frames * n_tokens, dim)).reshape(
+        batch, context_frames, n_tokens, dim)
+    loss = (teacher - target).abs().pow(loss_exp).mean() / loss_exp
+
+    rollout_losses = []
+    if auto_steps > 1:
+        current = torch.cat([model._normalize(tokens[:, :1]).reshape(batch, 1, n_tokens, dim),
+                             teacher[:, :1]], dim=1)
+        for step in range(1, min(auto_steps, context_frames)):
+            flat = current.reshape(batch, current.shape[1] * n_tokens, dim)
+            next_hidden = model._normalize(model.predictor(
+                flat, actions[:, :step + 1], states[:, :step + 1]).reshape(
+                    batch, step + 1, n_tokens, dim))[:, -1:]
+            current = torch.cat([current, next_hidden], dim=1)
+            rollout_losses.append((current[:, -1] - target[:, step]).abs().pow(loss_exp).mean() / loss_exp)
+    if rollout_losses:
+        loss = loss + torch.stack(rollout_losses).mean()
+    return loss
+
+
+def adapt(model: "ACWorldModel", optimizer, tokens, actions, states, *, steps: int = 1,
+          auto_steps: int = 2, clip: float = 1.0) -> list:
+    """Test-time training: gradient steps on the cooldown objective.
+
+    ``tokens/actions/states`` is a batch of *already observed* windows; nothing
+    here is supervised by labels the policy cannot see at test time. Returns the
+    per-step losses so a caller can log or early-stop.
+    """
+    import torch  # noqa: PLC0415
+
+    model_name = type(model.predictor).__name__
+    if not hasattr(model.predictor, "parameters"):
+        raise TypeError(f"{model_name} has no parameters to adapt")
+    losses = []
+    for _ in range(steps):
+        optimizer.zero_grad(set_to_none=True)
+        loss = teacher_forced_loss(model, tokens, actions, states, auto_steps=auto_steps)
+        loss.backward()
+        if clip:
+            torch.nn.utils.clip_grad_norm_(model.predictor.parameters(), clip)
+        optimizer.step()
+        losses.append(float(loss.detach()))
+    return losses
+
+
 def mean_rank_percentile(ranks: Iterable[int], candidates: int) -> float:
     """0 = always best, 0.5 = chance."""
     ranks = np.asarray(list(ranks), dtype=float)

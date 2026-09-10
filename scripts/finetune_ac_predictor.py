@@ -33,7 +33,7 @@ sys.path.insert(0, str(VJEPA_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import src.hub.backbones as hub  # noqa: E402
-from openpi.con2.ac_world_model import load_predictor  # noqa: E402
+from openpi.con2.ac_world_model import ACWorldModel, load_predictor, teacher_forced_loss  # noqa: E402
 
 TOKENS_PER_FRAME = 256
 FEATURE_DIM = 1408
@@ -80,34 +80,6 @@ def sample_batch(store, batch_size, context, generator):
 
 def normalize(x):
     return F.layer_norm(x, (x.shape[-1],))
-
-
-def predictor_loss(predictor, tokens, actions, states, auto_steps):
-    """tokens: [B, K+1, 256, D] teacher-forced window; block k predicts frame k+1."""
-    batch, frames, n_tokens, dim = tokens.shape
-    context_frames = frames - 1
-    hidden = normalize(tokens[:, :context_frames].reshape(batch, context_frames * n_tokens, dim))
-    context_actions = actions[:, :context_frames]
-    context_states = states[:, :context_frames]
-    teacher = normalize(predictor(hidden, context_actions, context_states).reshape(
-        batch, context_frames, n_tokens, dim))
-    target = normalize(tokens[:, 1:].reshape(batch, context_frames * n_tokens, dim)).reshape(
-        batch, context_frames, n_tokens, dim)
-    loss = (teacher - target).abs().mean()
-
-    rollout_losses = []
-    if auto_steps > 1:
-        current = torch.cat([normalize(tokens[:, :1]).reshape(batch, 1, n_tokens, dim),
-                             teacher[:, :1].reshape(batch, 1, n_tokens, dim)], dim=1)
-        for step in range(1, min(auto_steps, context_frames)):
-            flat = current.reshape(batch, current.shape[1] * n_tokens, dim)
-            next_hidden = predictor(flat, actions[:, :step + 1], states[:, :step + 1])
-            next_hidden = normalize(next_hidden.reshape(batch, step + 1, n_tokens, dim))[:, -1:]
-            current = torch.cat([current, next_hidden], dim=1)
-            rollout_losses.append((current[:, -1] - target[:, step]).abs().mean())
-    if rollout_losses:
-        loss = loss + torch.stack(rollout_losses).mean()
-    return loss, {"teacher": float((teacher - target).abs().mean())}
 
 
 @torch.no_grad()
@@ -206,6 +178,7 @@ def main():
     if args.activation_checkpointing:
         predictor.use_activation_checkpointing = True
     predictor.train()
+    world_model = ACWorldModel(predictor=predictor, device=str(device), normalize_reps=True)
     parameters = sum(p.numel() for p in predictor.parameters())
 
     train_store = EpisodeStore(args.cache, args.train_episodes, action_scale=args.action_scale)
@@ -226,7 +199,7 @@ def main():
         tokens, actions, states = tokens.to(device), actions.to(device), states.to(device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss, metrics = predictor_loss(predictor, tokens, actions, states, args.auto_steps)
+            loss = teacher_forced_loss(world_model, tokens, actions, states, args.auto_steps)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
         optimizer.step()
