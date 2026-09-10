@@ -49,16 +49,19 @@ def _fit_ridge(train_x, train_y, val_x, val_y, eval_x, eval_y, lambdas, proj_dim
             0.0, 1.0 / np.sqrt(proj_dim), size=(tx.shape[1], proj_dim)
         ).astype(np.float32)
         tx, vx, ex = tx @ proj, vx @ proj, ex @ proj
-    gram = tx @ tx.T
-    rhs = train_y.astype(np.float32)
+    # Primal form: the projected width is far below the row count, so this is
+    # dramatically cheaper than the dual Gram matrix.
+    normal = (tx.T @ tx).astype(np.float64)
+    rhs = (tx.T @ train_y.astype(np.float32)).astype(np.float64)
+    eye = np.eye(normal.shape[0])
     best = None
     for lam in lambdas:
-        alpha = np.linalg.solve(gram.astype(np.float64) + lam * np.eye(gram.shape[0]), rhs.astype(np.float64))
-        score = _nmse(vx @ (tx.T @ alpha), val_y)
+        weight = np.linalg.solve(normal + lam * eye, rhs)
+        score = _nmse(vx @ weight, val_y)
         if best is None or score < best[0]:
-            best = (score, lam, alpha)
-    _, lam, alpha = best
-    return _nmse(ex @ (tx.T @ alpha), eval_y), float(lam)
+            best = (score, lam, weight)
+    _, lam, weight = best
+    return _nmse(ex @ weight, eval_y), float(lam)
 
 
 def main() -> None:
