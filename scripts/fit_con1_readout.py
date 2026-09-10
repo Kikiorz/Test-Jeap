@@ -36,6 +36,8 @@ def main() -> None:
     parser.add_argument("--out", required=True, help="msgpack path for the readout weights")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--batches", type=int, default=24)
+    parser.add_argument("--horizon-agnostic", action="store_true",
+                        help="fit one shared feature->delta map instead of one per horizon")
     parser.add_argument("--seed", type=int, default=20260910)
     args = parser.parse_args()
 
@@ -92,6 +94,47 @@ def main() -> None:
     mean = x[tr].mean(0, keepdims=True)
     std = x[tr].std(0, keepdims=True) + 1e-6
     xt = ((x - mean) / std).astype(np.float64)
+    if args.horizon_agnostic:
+        # One weight matrix serves every horizon, which is the estimator that
+        # the earlier probe actually measured. Pool all (sample, horizon) pairs.
+        rows = np.repeat(np.arange(n), horizon)
+        cols = np.tile(np.arange(horizon), n)
+        keep = valid.reshape(-1)
+        rows, cols = rows[keep], cols[keep]
+        train_rows = rows < n_train
+        eval_rows = ~train_rows
+        flat_x = xt[rows]
+        flat_y = target[rows, cols].astype(np.float64)
+        kernel = np.zeros((x.shape[1] + 1, latent_dim), np.float32)
+        report = {"config": args.config, "samples": int(n), "mode": "horizon_agnostic",
+                  "pairs": int(len(rows)), "nmse": {}, "lambda": None, "total_nmse": None}
+        best = None
+        for lam in (1e-1, 1.0, 10.0, 100.0, 1000.0):
+            a = np.concatenate([flat_x[train_rows], np.ones((int(train_rows.sum()), 1))], axis=1)
+            normal = a.T @ a + lam * np.eye(a.shape[1])
+            weight = np.linalg.solve(normal, a.T @ flat_y[train_rows])
+            b = np.concatenate([flat_x[eval_rows], np.ones((int(eval_rows.sum()), 1))], axis=1)
+            score = _nmse(b @ weight, flat_y[eval_rows])
+            report["nmse"][str(lam)] = score
+            print(json.dumps({"lambda": lam, "heldout_nmse": score}), flush=True)
+            if best is None or score < best[0]:
+                best = (score, lam, weight)
+        _, lam, weight = best
+        w = weight[:-1] / std.T
+        bias = weight[-1] - (mean / std) @ weight[:-1]
+        kernel[: x.shape[1], :] = w.astype(np.float32)
+        kernel[-1, :] = np.asarray(bias, np.float32).reshape(-1)
+        report["lambda"] = lam
+        report["total_nmse"] = report["nmse"][str(lam)]
+        report["warmstart_nmse"] = report["total_nmse"]
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"params": {"shared_readout": {"kernel": kernel[:-1], "bias": kernel[-1]}}}
+        out.write_bytes(serialization.msgpack_serialize(payload))
+        out.with_suffix(".json").write_text(json.dumps(report, indent=2))
+        print("RESULT", json.dumps(report), flush=True)
+        print("WROTE", out, flush=True)
+        return
     kernel = np.zeros((x.shape[1] + 1, horizon * latent_dim), np.float32)
     kernel[-1, :] = 1.0  # bias row fed by a constant-1 feature
     report = {"config": args.config, "samples": int(n), "lambda": {}, "nmse": {}, "total_nmse": None}
