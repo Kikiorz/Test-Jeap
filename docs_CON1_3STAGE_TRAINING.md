@@ -125,3 +125,25 @@ replacement experiment is `con1_b128_fusion3e5_floww_17k_from1k`, restored from
 the same pristine `1000` checkpoint with the 3x fusion LR and the new flow
 weighting active from update 1000 onward. The old runs are preserved, not
 deleted.
+
+## Active request: 10x learning rates
+
+The user judged the updates too small and asked for every learning rate to be
+raised by one order of magnitude. `TrainConfig.con1_lr_multiplier` now wraps the
+base schedule in `_optimizer.ScaledSchedule`, so the multiplier scales every
+trainable group at once. With `--con1-lr-multiplier=10` and the retained
+`--con1-cross-attention-lr-multiplier=3`, the effective rates become:
+
+| Group | Before | 10x |
+|---|---:|---:|
+| delta head | 1e-5 | 1e-4 |
+| cross-attention (stage 1 / 2-3) | 3e-5 / 1.5e-5 | 3e-4 / 1.5e-4 |
+| alpha-logit | 1e-6 | 1e-5 |
+| action blocks 14-17 + output | 1e-6 | 1e-5 |
+
+Experiment `con1_b128_lr10x_floww_17k_from1k` restores the same pristine `1000`
+checkpoint with the 3x fusion multiplier, the high-then-decay flow weight, and
+the 10x uniform LR. This is an aggressive step: restored Adam moments were
+trained at 1e-5, so the first updates are roughly 10x larger. The trainer aborts
+on nonfinite metrics and the supervisor does not auto-restart, so a blow-up stops
+the run instead of corrupting it. The prior `floww` run is stopped and kept.
