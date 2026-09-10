@@ -89,7 +89,7 @@ def main() -> None:
     pcontext = jax.jit(context_fn, out_shardings=replicated)
     pvelocity = jax.jit(velocity_fn, out_shardings=replicated)
 
-    def variant(alpha, residual_scale=1.0):
+    def variant(alpha, residual_scale=1.0, disable_adapter=False):
         p = dict(pure)
         cross = dict(p["con1_cross_attention"])
         cross["alpha_logit"] = jnp.asarray(_logit(alpha), jnp.float32)
@@ -97,20 +97,27 @@ def main() -> None:
             out = dict(cross["out"])
             out["kernel"] = out["kernel"] * residual_scale
             cross["out"] = out
+        if disable_adapter and "adapter_out" in cross:
+            adapter = dict(cross["adapter_out"])
+            adapter["kernel"] = jnp.zeros_like(adapter["kernel"])
+            cross["adapter_out"] = adapter
         p["con1_cross_attention"] = cross
         return p
 
     learned_alpha = float(jax.nn.sigmoid(jnp.asarray(pure["con1_cross_attention"]["alpha_logit"])))
+    # `alpha_0` disables the action adapter too, so it is the exact frozen base
+    # and serves as the common reference for every other variant.
     variants = [
-        ("alpha_0", 0.0, 1.0),
-        ("alpha_learned", learned_alpha, 1.0),
-        ("alpha_0.25", 0.25, 1.0),
-        ("alpha_0.5", 0.5, 1.0),
-        ("alpha_1.0", 1.0, 1.0),
-        ("alpha_learned_residual_x10", learned_alpha, 10.0),
+        ("alpha_0", 0.0, 1.0, True),
+        ("alpha_learned", learned_alpha, 1.0, False),
+        ("adapter_off", learned_alpha, 1.0, True),
+        ("alpha_0.25", 0.25, 1.0, False),
+        ("alpha_0.5", 0.5, 1.0, False),
+        ("alpha_1.0", 1.0, 1.0, False),
+        ("alpha_learned_residual_x10", learned_alpha, 10.0, False),
     ]
 
-    names = [name for name, _, _ in variants]
+    names = [name for name, _, _, _ in variants]
     per_batch = {name: [] for name in names}
     iterator = iter(loader)
     for index in range(args.batches):
@@ -131,9 +138,10 @@ def main() -> None:
             jax.block_until_ready(delta)
         reference_velocity = None
         reference_flow = None
-        for name, alpha, scale in variants:
+        for name, alpha, scale, disable_adapter in variants:
             with sharding.set_mesh(mesh):
-                velocity, aux = pvelocity(variant(alpha, scale), observation, x_t, time, context, delta)
+                velocity, aux = pvelocity(
+                    variant(alpha, scale, disable_adapter), observation, x_t, time, context, delta)
             error = jnp.where(action_mask, velocity.astype(jnp.float32) - u_t.astype(jnp.float32), 0.0)
             flow = float(jax.device_get(jnp.square(error).sum() / action_count))
             if reference_velocity is None:
@@ -163,9 +171,10 @@ def main() -> None:
         "action_dims": int(config.model.con1_action_dims),
         "variants": {},
     }
-    for name, alpha, scale in variants:
+    for name, alpha, scale, disable_adapter in variants:
         rows = per_batch[name]
-        entry = {"alpha": alpha, "residual_scale": scale, "n": len(rows)}
+        entry = {"alpha": alpha, "residual_scale": scale,
+                 "adapter_disabled": bool(disable_adapter), "n": len(rows)}
         for key in ("delta_flow", "flow", "action_l2", "correction_rms"):
             values = np.asarray([row[key] for row in rows], np.float64)
             entry[key] = float(values.mean())
