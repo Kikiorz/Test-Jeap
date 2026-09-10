@@ -28,6 +28,24 @@ import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
 
 
+def _mask_con1_frozen_action_layers(grads, *, freeze_before=14, depth=18):
+    """Mask the scanned action-expert prefix before the optimizer update."""
+    if not 0 <= freeze_before <= depth:
+        raise ValueError("Invalid Con1 action-layer split")
+    pure = grads.to_pure_dict()
+
+    def walk(value, path):
+        if isinstance(value, dict):
+            return {k: walk(v, path + (str(k),)) for k, v in value.items()}
+        if ("PaliGemma" in path and "llm" in path and "layers" in path
+                and any(str(k).endswith("_1") for k in path)
+                and hasattr(value, "shape") and value.ndim >= 1 and value.shape[0] == depth):
+            return value.at[:freeze_before].set(0)
+        return value
+
+    return grads.replace_by_pure_dict(walk(pure, ()))
+
+
 def init_logging():
     """Custom logging format for better readability."""
     level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
@@ -187,6 +205,13 @@ def train_step(
     else:
         loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
         loss_info = {}
+
+    if getattr(config.model, "use_con1", False):
+        grads = _mask_con1_frozen_action_layers(
+            grads,
+            freeze_before=config.model.con1_train_action_layers_from,
+            depth=18,
+        )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
