@@ -12,6 +12,7 @@ from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
+from openpi.con1.modules import AnchoredDeltaHead, ActionDeltaCrossAttention
 
 logger = logging.getLogger("openpi")
 
@@ -75,6 +76,7 @@ class Pi0(_model.BaseModel):
         self.vjepa_aux_weight = config.vjepa_aux_weight
         self.vjepa_action_attends_queries = config.vjepa_action_attends_queries
         self.vjepa_disable_geometric_augmentation = config.vjepa_disable_geometric_augmentation
+        self.use_con1 = config.use_con1
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -106,6 +108,31 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+
+        if config.use_con1:
+            # Linen modules are bridged into NNX so their parameters are part of
+            # the normal checkpoint/optimizer tree.  The zero-initialized output
+            # projection preserves the pretrained action function at step zero.
+            self.con1_delta_head = nnx_bridge.ToNNX(
+                AnchoredDeltaHead(horizon=config.action_horizon,
+                                  latent_dim=config.con1_latent_dim,
+                                  width=config.con1_width)
+            )
+            self.con1_delta_head.lazy_init(
+                jnp.zeros((1, self.vjepa_num_queries, paligemma_config.width), dtype=jnp.float32),
+                jnp.zeros((1, config.con1_latent_dim), dtype=jnp.float32),
+                rngs=rngs,
+            )
+            self.con1_cross_attention = nnx_bridge.ToNNX(
+                ActionDeltaCrossAttention(action_expert_config.width,
+                                          width=config.con1_width,
+                                          alpha_initial=config.con1_alpha_initial)
+            )
+            self.con1_cross_attention.lazy_init(
+                jnp.zeros((1, config.action_horizon, action_expert_config.width), dtype=jnp.float32),
+                jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32),
+                rngs=rngs,
+            )
 
         if self.use_vjepa_aux:
             query_init = jax.random.normal(
@@ -244,7 +271,20 @@ class Pi0(_model.BaseModel):
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        action_hidden = suffix_out[:, -self.action_horizon :]
+        con1_metrics = None
+        if self.use_con1:
+            if observation.con1_current_latent is None:
+                raise ValueError("Con1 requires observation.con1_current_latent")
+            r_tokens = prefix_out[:, -self.vjepa_num_queries :]
+            delta_out = self.con1_delta_head(r_tokens, observation.con1_current_latent)
+            fused = self.con1_cross_attention(action_hidden, delta_out["delta"])
+            action_hidden = fused["hidden"].astype(suffix_out.dtype)
+            if observation.con1_future_latents is not None:
+                target = jax.lax.stop_gradient(observation.con1_future_latents.astype(jnp.float32))
+                valid = jnp.ones(target.shape[:-1], dtype=jnp.bool_)
+                con1_metrics = jnp.mean(jnp.square(delta_out["delta"] - (target - observation.con1_current_latent[:, None])))
+        v_t = self.action_out_proj(action_hidden)
 
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
         if not self.use_vjepa_aux:

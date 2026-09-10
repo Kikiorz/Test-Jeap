@@ -113,6 +113,8 @@ class Observation(Generic[ArrayT]):
     # It is an input-side feature (never a future label) and is kept separate from
     # ``vjepa_target`` so the auxiliary objective cannot accidentally leak it.
     con1_current_latent: at.Float[ArrayT, "*b d"] | None = None
+    # Optional future latent sequence for the reciprocal Con1 transition loss.
+    con1_future_latents: at.Float[ArrayT, "*b h d"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -136,6 +138,7 @@ class Observation(Generic[ArrayT]):
             token_loss_mask=data.get("token_loss_mask"),
             vjepa_target=data.get("vjepa_target"),
             con1_current_latent=data.get("con1_current_latent"),
+            con1_future_latents=data.get("con1_future_latents"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -218,6 +221,7 @@ def preprocess_observation(
         token_loss_mask=observation.token_loss_mask,
         vjepa_target=observation.vjepa_target,
         con1_current_latent=observation.con1_current_latent,
+        con1_future_latents=observation.con1_future_latents,
     )
 
 

@@ -130,6 +130,10 @@ class Pi0Config(_model.BaseModelConfig):
                     jax.ShapeDtypeStruct([batch_size, self.con1_latent_dim], jnp.float32)
                     if self.use_con1 else None
                 ),
+                con1_future_latents=(
+                    jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.con1_latent_dim], jnp.float32)
+                    if self.use_con1 else None
+                ),
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
