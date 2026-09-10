@@ -55,7 +55,11 @@ def main() -> None:
 
     loader = data_loader.create_data_loader(config, sharding=data_shard, shuffle=True, num_batches=1)
     batch = next(iter(loader))
-    state, _ = train.init_train_state(config, jax.random.key(config.seed), mesh, resume=True)
+    # Build a concrete template by running the real init (loads the named config's
+    # base weights), so restored leaves carry explicit shardings. The checkpoint
+    # immediately overwrites it; nothing is trained or saved.
+    state, _ = train.init_train_state(config, jax.random.key(config.seed), mesh, resume=False)
+    jax.block_until_ready(state)
     source, resuming = checkpoints.initialize_checkpoint_dir(
         args.source, keep_period=1, overwrite=False, resume=True
     )
