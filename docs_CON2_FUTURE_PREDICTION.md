@@ -34,6 +34,8 @@ the zero predictor.
 | trained head, action-conditioned, true actions | **0.4719** |
 | same head, action chunk shuffled | 0.4836 |
 | same head, action chunk zeroed | 0.4842 |
+| trained head, action + pooled VLM context, true actions | 0.4721 |
+| same, action shuffled / zeroed | 0.4843 / 0.4848 |
 
 Convergence check on the no-conditioning head (same held-out set):
 
@@ -59,8 +61,18 @@ Convergence check on the no-conditioning head (same held-out set):
    without actions) land at 0.88-0.99. The head at 0.47 is not an underfit
    artefact - earlier "a linear probe reaches 0.41" numbers came from a
    train/eval leak across horizons of the same sample and have been withdrawn.
-5. Extra VLM context (`c_t`) is implemented behind `con1_vlm_context`; its run is
-   in progress and lands on the same ~0.473 plateau so far.
+5. Extra VLM context (`c_t`, pooled image patches + language + state, implemented
+   behind `con1_vlm_context`) changes nothing: 0.4721 with it against 0.4719
+   without. Adding the whole VLM output does not move the plateau.
+
+Final three-way comparison on identical held-out samples and an identical
+evaluation path:
+
+| head | held-out NMSE |
+|---|---:|
+| no conditioning | 0.4739 |
+| + action chunk | 0.4719 |
+| + action chunk + pooled VLM context | 0.4721 |
 
 ## Interpretation and limitations
 
@@ -77,3 +89,9 @@ is practical).
 Reportable claim as it stands: the policy's internal representation predicts the
 true future latent with a held-out NMSE of about 0.472, converging within the
 first 1k updates, and action conditioning adds a small but genuine improvement.
+
+The plateau is robust to every input we added: `R_t`, `z_t`, the demonstrated
+action chunk, and the whole pooled VLM prefix all land within 0.002 NMSE. That
+is the strongest available evidence that the remaining error is a property of
+the target (spatially mean-pooled latent) rather than of the conditioning or the
+optimiser.
