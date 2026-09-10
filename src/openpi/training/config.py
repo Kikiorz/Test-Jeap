@@ -991,6 +991,7 @@ _CONFIGS = [
             vjepa_target_grid_size=8,
             use_con1=True,
             con1_action_adapter=True,
+            con1_residual_budget=0.05,
             con1_action_dims=7,
             con1_train_action_layers_from=14,
             con1_stage1_steps=2000,
