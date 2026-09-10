@@ -68,6 +68,10 @@ the official 40k checkpoint plus the 20k head, with global batch 128.
 
 ## Bounded fusion learning-rate probe (2026-09-10)
 
+**Superseded before launch:** the user subsequently requested direct training
+with increased fusion LR instead of this 300-update probe. The probe is an
+unused diagnostic utility, not a completed experiment or validation result.
+
 The batch-128 run is paused at the user's request. Its checkpoint `1000`
 contains 1001 completed updates and remains untouched. Do not restart its
 Supervisor command with `--overwrite` to resume: that would erase the run.
@@ -85,3 +89,21 @@ examples and fixed flow noise/times. Validation uses the existing episode split
 flow/delta diagnostics, not rollout success rates. The data iterator restarts
 on restore, as it does in the existing trainer. A before/after improvement
 alone does not isolate learning-rate causality without a matched 1e-5 control.
+
+## Active request: direct higher-LR continuation to 17k
+
+Experiment: `con1_b128_fusion3e5_17k_from1k`. Copy the complete original
+checkpoint `1000` into this new directory, then use `--resume` (never
+`--overwrite`). Restore model, Adam moments, and update counter (1001);
+continue to 17000 total updates, not 17000 additional updates. Unsaved updates
+after the 1k checkpoint are not recovered. The original experiment is stopped
+and preserved. Global batch remains 128 across four GPUs.
+
+Set `con1_cross_attention_lr_multiplier=3`: fusion projections use 3e-5 in
+stage 1 and 1.5e-5 in stages 2/3. Head remains 1e-5; alpha-logit remains 1e-6;
+action blocks 14--17 and output remain frozen until update 2000, then use
+1e-6. Stage 2 starts at 2000 and stage 3 at 7000; beta reaches 0.5 at 12000
+and remains there through 17000. No additional warmup or batch change.
+Tests for stage masks, unchanged non-fusion update scaling, and model gradient
+integration passed (11 tests) before launch. This run has training metrics;
+the canceled probe's fixed validation is not automatically run by train.py.
