@@ -260,6 +260,34 @@ the held-out error drops ~2%, so the TTT path works but needs a real schedule
 (more steps, replay across episodes, early stopping on the observed transition
 loss) before it is a paper number.
 
+### 3.8b Timebase: match the model, not the dataset
+
+The released predictor was trained on DROID at **4 fps**, while the cache is
+the 10 fps LeRobot conversion, so a "1 s" horizon meant a 10-step rollout of
+0.1 s steps - far outside the rate the model learned. Re-running the same recipe
+with `--frame-stride 2` (5 fps, so h=5 is one second) fixes this, on the same
+100 training episodes and the same held-out episodes:
+
+| schedule | horizon | 0.2 s | 0.4 s | 1.0 s | action zeroed at 1.0 s |
+|---|---|---:|---:|---:|---:|
+| stride 1 (10 fps), auto_steps=2 | h=10 | - | - | 0.9705 | - |
+| stride 1 (10 fps), auto_steps=4 | h=10 | - | - | 0.9384 | - |
+| stride 2 (5 fps), auto_steps=2, step 999 | h=1/2/5 | 0.725 | 0.682 | **0.752** | 0.849 |
+| stride 2 (5 fps), auto_steps=4, step 999 | h=1/2/5 | **0.710** | **0.656** | **0.731** | 0.829 |
+| stride 2 + executed actions/states | h=1/2/5 | 0.725 | 0.680 | **0.722** | 0.779 |
+
+Two things improve at once: the 1 s NMSE drops from ~0.97 to 0.74-0.79, and the
+action ablation gap grows from +0.03 to +0.09-0.16. Feeding the model the rates
+it was trained at is worth far more than any schedule tweak tried above, which
+is the strongest argument for keeping the world model's timebase explicit in
+the Con2 design.
+
+The last row is the operational setting rather than a free-running rollout: the
+policy always has proprioception and its own planned actions at test time, so
+conditioning on them removes state-propagation error (0.752 -> 0.722 at 1 s).
+The gap is small, so latent-dynamics error - not state drift - is what limits
+the 1 s horizon.
+
 ## 3.9 Library surface
 
 Everything above is reproduced by the ``scripts/probe_ac_*`` entry points, and
@@ -322,11 +350,10 @@ in section 3.8.
 
 ## 5. Open items
 
-1. **1 s rollout**: h=10 sits at 0.961, i.e. barely better than copying. The
-   current mitigation is `ft_440_ar4` (same cache, `auto_steps = 4`), because
-   the schedules so far only ever optimised 2-step rollouts. A second lever is
-   training with 16-frame contexts so an 18-frame rollout context is in
-   distribution.
+1. **1 s rollout**: addressed by the timebase change (section 3.8b) - 0.97 ->
+   0.73 on the 100-episode eval set, with `ft_440_stride2_ar4` running on the
+   400-episode cache for the headline number. Still open: whether a 16-frame
+   context or encoder adaptation pushes it below 0.7.
 2. Encoder adaptation: only the predictor has been trained; the AC encoder is
    still a DROID model. Unfreezing its last blocks is the obvious next lever if
    token-level NMSE saturates.

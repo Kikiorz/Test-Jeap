@@ -64,16 +64,18 @@ class EpisodeStore:
         return value
 
 
-def sample_batch(store, batch_size, context, generator):
+def sample_batch(store, batch_size, context, generator, stride=1):
     episodes = [store.episodes[generator.integers(len(store.episodes))] for _ in range(batch_size)]
     tokens, actions, states = [], [], []
     for episode in episodes:
         frames, chunk_actions, chunk_states = store.get(episode)
         length = store.lengths[episode]
-        start = int(generator.integers(0, length - context - 1))
-        tokens.append(np.asarray(frames[start:start + context + 1], dtype=np.float32))
-        actions.append(chunk_actions[start:start + context])
-        states.append(chunk_states[start:start + context])
+        span = (context + 1) * stride
+        start = int(generator.integers(0, max(1, length - span)))
+        index = start + stride * np.arange(context + 1)
+        tokens.append(np.asarray(frames[index], dtype=np.float32))
+        actions.append(chunk_actions[index[:-1]])
+        states.append(chunk_states[index[:-1]])
     return (torch.from_numpy(np.stack(tokens)), torch.from_numpy(np.stack(actions)),
             torch.from_numpy(np.stack(states)))
 
@@ -83,13 +85,23 @@ def normalize(x):
 
 
 @torch.no_grad()
-def evaluate(predictor, store, context, horizons, windows_per_episode, device, action_mode="true"):
+def evaluate(predictor, store, context, horizons, windows_per_episode, device, action_mode="true",
+             stride=1, input_mode="free"):
     """Roll out from a real context and score against the true future frames.
 
-    The context is frames ``start .. start+context-1``; the prediction after
-    ``h`` autoregressive steps is compared with frame ``start+context-1+h`` and
-    the copy baseline is frame ``start+context-1`` against the same target, so
-    "1.0" means no better than repeating the current latent.
+    The context is ``context`` frames spaced ``stride`` apart (``stride=1`` is
+    10 fps, ``stride=2`` is the 5 fps the released model was trained at); the
+    prediction after ``h`` autoregressive steps is compared with the frame
+    ``stride*h`` beyond the context and the copy baseline is the last context
+    frame against the same target, so "1.0" means no better than repeating the
+    current latent.
+
+    ``input_mode`` selects what the rollout is conditioned on beyond the context:
+    ``free`` repeats the last action and state (a genuine open-loop rollout),
+    ``true`` feeds the actions and proprioceptive states that were actually
+    executed, which is the setting a policy is in at test time (it always has
+    proprioception and its own planned actions) and isolates latent-dynamics
+    error from state-propagation error.
     """
     predictor.eval()
     generator = np.random.default_rng(1234)
@@ -99,17 +111,19 @@ def evaluate(predictor, store, context, horizons, windows_per_episode, device, a
     for episode in store.episodes:
         frames, actions, states = store.get(episode)
         length = store.lengths[episode]
-        if length < context + maximum + 1:
+        span = (context + maximum) * stride + 1
+        if length < span:
             continue
-        starts = generator.integers(0, length - context - maximum - 1, size=windows_per_episode)
+        starts = generator.integers(0, length - span, size=windows_per_episode)
         for start in starts:
             start = int(start)
-            base = start + context - 1
-            window = np.asarray(frames[start:start + context], dtype=np.float32)
+            context_index = start + stride * np.arange(context)
+            base = int(context_index[-1])
+            window = np.asarray(frames[context_index], dtype=np.float32)
             hidden = normalize(torch.from_numpy(window).to(device).reshape(
                 1, context * TOKENS_PER_FRAME, FEATURE_DIM))
-            action = torch.from_numpy(actions[start:start + context]).unsqueeze(0).to(device)
-            state = torch.from_numpy(states[start:start + context]).unsqueeze(0).to(device)
+            action = torch.from_numpy(actions[context_index]).unsqueeze(0).to(device)
+            state = torch.from_numpy(states[context_index]).unsqueeze(0).to(device)
             if action_mode == "shuffled":
                 action = action.flip(1)
             elif action_mode == "zero":
@@ -120,10 +134,18 @@ def evaluate(predictor, store, context, horizons, windows_per_episode, device, a
                 single = prediction.reshape(1, 1, TOKENS_PER_FRAME, FEATURE_DIM)
                 hidden = torch.cat([hidden.reshape(1, -1, TOKENS_PER_FRAME, FEATURE_DIM), single], dim=1)
                 hidden = hidden.reshape(1, hidden.shape[1] * TOKENS_PER_FRAME, FEATURE_DIM)
-                action = torch.cat([action, action[:, -1:]], dim=1)
-                state = torch.cat([state, state[:, -1:]], dim=1)
+                next_index = min(base + stride * step, length - 1)
+                if input_mode == "true":
+                    action = torch.cat([action, torch.from_numpy(
+                        np.asarray(actions[next_index], dtype=np.float32)).reshape(1, 1, -1).to(device)], dim=1)
+                    state = torch.cat([state, torch.from_numpy(
+                        np.asarray(states[next_index], dtype=np.float32)).reshape(1, 1, -1).to(device)], dim=1)
+                else:
+                    action = torch.cat([action, action[:, -1:]], dim=1)
+                    state = torch.cat([state, state[:, -1:]], dim=1)
                 if step in horizons:
-                    goal = normalize(torch.from_numpy(np.asarray(frames[base + step], dtype=np.float32)).to(device)).reshape(-1)
+                    goal_index = min(base + stride * step, length - 1)
+                    goal = normalize(torch.from_numpy(np.asarray(frames[goal_index], dtype=np.float32)).to(device)).reshape(-1)
                     record = results[f"horizon_{step}"]
                     record["windows"] += 1
                     record["error_model"] += float((prediction.reshape(-1) - goal).pow(2).sum())
@@ -143,6 +165,12 @@ def main():
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context", type=int, default=8)
+    parser.add_argument("--frame-stride", type=int, default=1,
+                        help="Frames between consecutive window steps; 2 is 5 fps, matching the "
+                             "4 fps the released predictor was trained at.")
+    parser.add_argument("--eval-input-mode", choices=["free", "true"], default="free",
+                        help="Rollout conditioning: 'free' repeats the last action/state, "
+                             "'true' feeds the executed actions and proprioceptive states.")
     parser.add_argument("--auto-steps", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.04)
@@ -195,7 +223,8 @@ def main():
     log_path = args.output / "log.jsonl"
     started = time.time()
     for step in range(args.steps):
-        tokens, actions, states = sample_batch(train_store, args.batch_size, args.context, generator)
+        tokens, actions, states = sample_batch(train_store, args.batch_size, args.context, generator,
+                                              args.frame_stride)
         tokens, actions, states = tokens.to(device), actions.to(device), states.to(device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -212,10 +241,12 @@ def main():
                 handle.write(json.dumps(record) + "\n")
         if (step + 1) % args.eval_every == 0 or step == args.steps - 1:
             results = {"true": evaluate(predictor, eval_store, args.context, args.horizons,
-                                        args.eval_windows, device)}
+                                        args.eval_windows, device, stride=args.frame_stride,
+                                        input_mode=args.eval_input_mode)}
             for mode in args.action_ablation:
                 results[mode] = evaluate(predictor, eval_store, args.context, args.horizons,
-                                         args.eval_windows, device, action_mode=mode)
+                                         args.eval_windows, device, action_mode=mode,
+                                         stride=args.frame_stride, input_mode=args.eval_input_mode)
             record = {"step": step, "eval": results, "seconds": time.time() - started,
                       "parameters": parameters, "init": args.init}
             print(json.dumps(record), flush=True)
@@ -223,10 +254,12 @@ def main():
                 handle.write(json.dumps(record) + "\n")
             torch.save({"predictor": predictor.state_dict(), "step": step, "args": vars(args)},
                        args.output / "predictor.pt")
-    final = {"true": evaluate(predictor, eval_store, args.context, args.horizons, args.eval_windows, device)}
+    final = {"true": evaluate(predictor, eval_store, args.context, args.horizons, args.eval_windows,
+                              device, stride=args.frame_stride, input_mode=args.eval_input_mode)}
     for mode in args.action_ablation:
         final[mode] = evaluate(predictor, eval_store, args.context, args.horizons,
-                               args.eval_windows, device, action_mode=mode)
+                               args.eval_windows, device, action_mode=mode, stride=args.frame_stride,
+                               input_mode=args.eval_input_mode)
     (args.output / "final.json").write_text(json.dumps(
         {"eval": final, "args": {k: str(v) for k, v in vars(args).items()}}, indent=2, sort_keys=True) + "\n")
     torch.save({"predictor": predictor.state_dict(), "step": args.steps, "args": vars(args)},
