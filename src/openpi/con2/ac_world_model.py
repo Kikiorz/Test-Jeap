@@ -381,33 +381,54 @@ def teacher_forced_loss(model: "ACWorldModel", tokens, actions, states, auto_ste
     representation adaptation from collapsing (the same reason the released
     recipe predicts the EMA target encoder rather than itself).
     """
-    import torch  # noqa: PLC0415
-    import torch.nn.functional as F  # noqa: PLC0415
-
     if tokens.ndim != 4:
         raise ValueError(f"Expected tokens[B, K+1, N, D], got {tuple(tokens.shape)}")
-    batch, frames, n_tokens, dim = tokens.shape
-    context_frames = frames - 1
-    if context_frames < 1:
+    if tokens.shape[1] < 2:
         raise ValueError("A window needs at least two frames")
-    context_tokens = tokens[:, :context_frames].reshape(batch, context_frames * n_tokens, dim)
+
+    frames = tokens.shape[1]
+    return teacher_forced_loss_split(model, tokens[:, :frames - 1].contiguous(), tokens[:, 1:].contiguous(),
+                                     actions[:, :frames - 1], states[:, :frames - 1], auto_steps=auto_steps,
+                                     loss_exp=loss_exp, context_transform=context_transform)
+
+
+def teacher_forced_loss_split(model: "ACWorldModel", context_tokens, target_tokens, actions, states,
+                              auto_steps: int = 2, loss_exp: float = 1.0,
+                              context_transform=None) -> "object":
+    """The cooldown objective with context and target from *different* encoders.
+
+    Both inputs are ``[B, K, tokens_per_frame, D]``: context block ``k`` predicts
+    target block ``k``. This is the form the encoder-adaptation path needs - the
+    context comes from the trainable encoder and the target from the frozen one -
+    and :func:`teacher_forced_loss` is the single-encoder special case of it.
+    """
+    import torch  # noqa: PLC0415
+
+    if context_tokens.ndim != 4 or target_tokens.ndim != 4:
+        raise ValueError("Expected context/target [B, K, N, D]")
+    batch, context_frames, n_tokens, dim = context_tokens.shape
+    if context_frames < 1:
+        raise ValueError("A window needs at least one predicted frame")
+    if target_tokens.shape != context_tokens.shape:
+        raise ValueError(f"Context/target shapes disagree: {tuple(context_tokens.shape)} "
+                         f"vs {tuple(target_tokens.shape)}")
+    context_flat = context_tokens.reshape(batch, context_frames * n_tokens, dim)
     if context_transform is not None:
-        context_tokens = context_transform(context_tokens)
-    hidden = model._normalize(context_tokens)
+        context_flat = context_transform(context_flat)
+    hidden = model._normalize(context_flat)
     teacher = model._normalize(model.predictor(hidden, actions[:, :context_frames],
                                               states[:, :context_frames]).reshape(
         batch, context_frames, n_tokens, dim))
-    target = model._normalize(tokens[:, 1:].reshape(batch, context_frames * n_tokens, dim)).reshape(
+    target = model._normalize(target_tokens.reshape(batch, context_frames * n_tokens, dim)).reshape(
         batch, context_frames, n_tokens, dim)
     loss = (teacher - target).abs().pow(loss_exp).mean() / loss_exp
 
     rollout_losses = []
     if auto_steps > 1:
-        first = tokens[:, :1].reshape(batch, 1, n_tokens, dim)
+        first = context_tokens[:, :1]
         if context_transform is not None:
             first = context_transform(first.reshape(batch, n_tokens, dim)).reshape(batch, 1, n_tokens, dim)
-        current = torch.cat([model._normalize(first),
-                             teacher[:, :1]], dim=1)
+        current = torch.cat([model._normalize(first), teacher[:, :1]], dim=1)
         for step in range(1, min(auto_steps, context_frames)):
             flat = current.reshape(batch, current.shape[1] * n_tokens, dim)
             raw = model.predictor(flat, actions[:, :step + 1], states[:, :step + 1]).reshape(

@@ -343,6 +343,30 @@ now applies ``context_transform`` to fed-back predictions as well, and the
 experiment above is the corrected one. Anything that transforms tokens must
 transform them on both the teacher-forced *and* the fed-back path.
 
+### 3.8d Unfreezing encoder blocks (also negative)
+
+The real version of encoder adaptation: keep the cached frozen-encoder features
+as the stop-gradient target (the released EMA argument) and train the last
+``--unfreeze-blocks`` transformer blocks plus the final norm from the raw
+frames, jointly with the predictor. The frozen prefix runs under ``no_grad``
+and is captured with a forward pre-hook
+(``scripts/finetune_ac_joint.py``). Starting from the same adapted predictor as
+the baseline above, 300 steps, 100 episodes, encoder lr 1e-5:
+
+| model | h=1 (0.2 s) | h=2 (0.4 s) | h=5 (1.0 s) |
+|---|---:|---:|---:|
+| frozen encoder (paired baseline) | **0.7250** | **0.6705** | **0.7398** |
+| + last 4 blocks trainable, step 149 | 0.7625 | 0.7393 | 0.7975 |
+| + last 4 blocks trainable, step 299 | 0.7393 | 0.6983 | 0.7487 |
+
+Still worse than freezing, at every horizon and both checkpoints, even though
+the training loss does go down (0.47 -> 0.39). Two independent representation
+adaptations (3.8c and 3.8d) therefore both fail, which is a useful negative
+result: at this data scale the frozen DROID features are **not** what limits the
+world model. The remaining error is in the rollout itself, so the levers left
+are scale (more episodes/steps), a longer autoregressive curriculum, or a
+different objective - not representation surgery.
+
 The last row is the operational setting rather than a free-running rollout: the
 policy always has proprioception and its own planned actions at test time, so
 conditioning on them removes state-propagation error (0.752 -> 0.722 at 1 s).
@@ -415,11 +439,12 @@ in section 3.8.
    0.73 on the 100-episode eval set, with `ft_440_stride2_ar4` running on the
    400-episode cache for the headline number. Still open: whether a 16-frame
    context or encoder adaptation pushes it below 0.7.
-2. Encoder adaptation: a trainable token adapter on the frozen encoder was
-   tried and does not help (section 3.8c), so the next version of this lever is
-   a real unfreeze - last encoder blocks trained against the frozen EMA
-   ``target_encoder`` (the released recipe) to avoid collapse. That needs the
-   two-encoder setup and a re-extract, so it is a separate work item.
+2. Representation adaptation is closed: both the token adapter (3.8c) and a real
+   last-4-block unfreeze against the frozen cached target (3.8d) are worse than
+   freezing. Any further accuracy work has to be scale (more episodes/steps), a
+   longer autoregressive curriculum, or a different objective.
 3. Wire the adapted predictor into Con2/TTT: `ACWorldModel.score_actions` is the
    energy objective TTT would optimise, and the cached tokens already contain
-   everything needed. This is the remaining integration step.
+   everything needed. This is the remaining integration step, and it needs a
+   decision between test-time action selection (environment-side) and distilling
+   a JAX critic for Con1's loss (policy-side).
