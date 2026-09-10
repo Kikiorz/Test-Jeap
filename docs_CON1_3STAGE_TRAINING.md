@@ -147,3 +147,19 @@ the 10x uniform LR. This is an aggressive step: restored Adam moments were
 trained at 1e-5, so the first updates are roughly 10x larger. The trainer aborts
 on nonfinite metrics and the supervisor does not auto-restart, so a blow-up stops
 the run instead of corrupting it. The prior `floww` run is stopped and kept.
+
+### Outcome of the 10x attempt (stopped)
+
+`con1_b128_lr10x_floww_17k_from1k` was stopped after 91 updates (last logged
+step 1091) because the residual branch grew without bound instead of settling:
+`con1_residual_energy` rose 1041 -> 1091 as 5.7e-5, 1.6e-4, 4.9e-4, 1.3e-3,
+2.3e-3, 4.9e-3 (roughly doubling every 10 updates) while `con1_delta_loss`
+drifted up from 0.0184 to 0.0189. All values stayed finite, so the trainer's
+nonfinite guard never fired; the decision to stop was manual. With
+`con1_residual_weight=1e-3` the residual penalty at 5e-3 contributes only ~5e-6,
+so nothing bounded the correction once the fusion LR reached 3e-4.
+
+Conclusion: one order of magnitude on every group is too aggressive for the
+current residual parametrization. A smaller uniform multiplier (e.g. 3x, which
+keeps fusion at 9e-5 in stage 1) is the sensible next attempt. The 1k source
+checkpoint is untouched.
