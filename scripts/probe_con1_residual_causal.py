@@ -39,6 +39,8 @@ def _logit(alpha: float) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", required=True, help="existing experiment under checkpoint_base_dir")
+    parser.add_argument("--config", default="pi05_libero_con1_three_stage_40k",
+                        help="named TrainConfig matching the experiment")
     parser.add_argument("--out", required=True)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--batches", type=int, default=8)
@@ -49,7 +51,7 @@ def main() -> None:
     jax.config.update("jax_compilation_cache_dir", "/workspace/.cache/con1_jax")
 
     config = dataclasses.replace(
-        configs.get_config("pi05_libero_con1_three_stage_40k"),
+        configs.get_config(args.config),
         batch_size=args.batch_size,
         num_workers=0,
         wandb_enabled=False,
