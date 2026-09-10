@@ -11,7 +11,9 @@ from openpi.models import gemma, pi0_config
 def test_suffix_segments_match_original_scan():
     cfg = gemma.Config(width=16, depth=4, mlp_dim=32, num_heads=2, num_kv_heads=1, head_dim=8)
     module = gemma.Module(configs=[cfg, cfg], embed_dtype="float32", adarms=True)
-    weights = module.init(jax.random.key(0), use_adarms=[False, True], method=module.init)
+    weights = module.init(
+        jax.random.key(0), [jnp.zeros((1, 3, 16)), None], jnp.arange(3)[None],
+        jnp.ones((1, 3, 3), bool), adarms_cond=[None, jnp.zeros((1, 16))])
     x = jax.random.normal(jax.random.key(1), (1, 3, 16))
     p = jnp.arange(3)[None]
     (_, _), cache = module.apply(weights, [x, None], positions=p, mask=jnp.ones((1, 3, 3), bool))
