@@ -204,7 +204,10 @@ def train_step(
                                     freeze_all=state.step < config.model.con1_stage1_steps)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
     if getattr(config.model, "use_con1", False):
-        updates = scale_group_updates(updates, state.step, warmup=config.model.con1_stage1_steps)
+        updates = scale_group_updates(
+            updates, state.step, warmup=config.model.con1_stage1_steps,
+            fusion_multiplier=config.con1_cross_attention_lr_multiplier,
+        )
         updates = mask_action_updates(
             updates,
             freeze_before=config.model.con1_train_action_layers_from,

@@ -16,6 +16,23 @@ def test_stage_boundaries():
         np.testing.assert_allclose(beta, expected[1])
 
 
+def test_fusion_lr_multiplier_does_not_change_other_groups():
+    updates = {
+        "con1_cross_attention": {"out": jnp.ones(2), "alpha_logit": jnp.array(1.)},
+        "con1_delta_head": {"kernel": jnp.ones(2)},
+        "action_out_proj": {"kernel": jnp.ones(2)},
+    }
+    for step in (1000, 2500):
+        normal = scale_group_updates(updates, step)
+        raised = jax.jit(lambda u: scale_group_updates(u, step, fusion_multiplier=3.))(updates)
+        np.testing.assert_allclose(raised["con1_cross_attention"]["out"],
+                                   3 * normal["con1_cross_attention"]["out"])
+        np.testing.assert_array_equal(raised["con1_cross_attention"]["alpha_logit"],
+                                      normal["con1_cross_attention"]["alpha_logit"])
+        for name in ("con1_delta_head", "action_out_proj"):
+            np.testing.assert_array_equal(raised[name]["kernel"], normal[name]["kernel"])
+
+
 def test_adam_state_and_freeze_are_exact_under_jit():
     model = nnx.Dict(
         PaliGemma=nnx.Dict(llm=nnx.Dict(layers=nnx.Dict(mlp_1=nnx.Dict(w=nnx.Param(jnp.ones((18, 2))))))),

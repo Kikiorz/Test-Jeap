@@ -34,7 +34,7 @@ def mask_action_updates(tree, *, freeze_before=14, depth=18, freeze_all=False):
     return jax.tree_util.tree_map_with_path(mask, tree)
 
 
-def scale_group_updates(tree, step, *, warmup=2000):
+def scale_group_updates(tree, step, *, warmup=2000, fusion_multiplier=1.):
     """Relative to Adam's 1e-5 LR: head 1e-5, fusion 1e-5/5e-6,
     alpha 1e-6, upper action blocks and output 1e-6.
     """
@@ -43,7 +43,7 @@ def scale_group_updates(tree, step, *, warmup=2000):
         if "con1_delta_head" in names:
             factor = 1.
         elif "con1_cross_attention" in names:
-            factor = .1 if "alpha_logit" in names else jnp.where(step < warmup, 1., .5)
+            factor = .1 if "alpha_logit" in names else fusion_multiplier * jnp.where(step < warmup, 1., .5)
         elif "action_out_proj" in names or ("PaliGemma" in names and "llm" in names):
             factor = .1
         else:

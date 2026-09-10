@@ -65,3 +65,23 @@ decline alone does not establish held-out improvement or lack of convergence.
 The later batch-4 continuation is retained only as an aborted diagnostic. The
 replacement experiment is `con1_three_stage_b128_17k`, initialized fresh from
 the official 40k checkpoint plus the 20k head, with global batch 128.
+
+## Bounded fusion learning-rate probe (2026-09-10)
+
+The batch-128 run is paused at the user's request. Its checkpoint `1000`
+contains 1001 completed updates and remains untouched. Do not restart its
+Supervisor command with `--overwrite` to resume: that would erase the run.
+
+`scripts/probe_con1_fusion_lr.py` restores this checkpoint including Adam state
+into a separate experiment `con1_b128_fusion3e5_probe300_from1k`. Only fusion
+projection updates are multiplied by 3 (LR 3e-5); head stays 1e-5, alpha-logit
+stays 1e-6, and the action expert stays frozen. Global batch is still 128.
+The 300 additional updates stay within stage 1; the probe saves and exits,
+without automatically continuing the 17k schedule.
+
+Before training and every 100 updates, evaluate the exact same 512 held-out
+examples and fixed flow noise/times. Validation uses the existing episode split
+(seed 42), shuffled selection seed 20260910, and noise seed 701. These are
+flow/delta diagnostics, not rollout success rates. The data iterator restarts
+on restore, as it does in the existing trainer. A before/after improvement
+alone does not isolate learning-rate causality without a matched 1e-5 control.

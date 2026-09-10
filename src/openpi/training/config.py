@@ -519,6 +519,8 @@ class TrainConfig:
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
+    # Scale only Con1 fusion projections, not alpha or the pretrained head.
+    con1_cross_attention_lr_multiplier: float = 1.0
     ema_decay: float | None = 0.99
 
     # Specifies which weights should be frozen.
