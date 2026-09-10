@@ -799,6 +799,7 @@ _CONFIGS = [
             use_vjepa_aux=True,
             vjepa_target_grid_size=8,
             use_con1=True,
+            con1_latent_dim=4224,
             con1_train_action_layers_from=14,
             con1_stage1_steps=2000,
             con1_stage2_steps=5000,
