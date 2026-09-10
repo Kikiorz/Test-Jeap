@@ -38,6 +38,7 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=20260910)
+    parser.add_argument("--checkpoint-step", type=int, default=None, help="default: latest")
     args = parser.parse_args()
 
     jax.config.update("jax_compilation_cache_dir", "/workspace/.cache/con1_jax")
@@ -67,7 +68,7 @@ def main() -> None:
     _, init_rng = jax.random.split(jax.random.key(config.seed))
     state, _ = train.init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(state)
-    state = checkpoints.restore_state(checkpoint_manager, state, loader)
+    state = checkpoints.restore_state(checkpoint_manager, state, loader, step=args.checkpoint_step)
     model_def = state.model_def
     pure = state.params.to_pure_dict()
 
