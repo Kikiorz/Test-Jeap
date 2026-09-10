@@ -189,6 +189,47 @@ roughly half the batch-128 runs if the step is compute bound.
 
 Experiment: `con1_b64_lr2x_floww_17k`.
 
+## Action-conditioned Con2 predictor (2026-09-10)
+
+Measured first with the kernel-ridge probe `scripts/probe_con1_action_conditioning.py`
+(1024 samples, 60/20/20 split, matched pipeline):
+
+| probe | eval NMSE |
+|---|---:|
+| existing delta head | 0.4825 |
+| z_t only | 0.4410 |
+| z_t + R_t (control, no action) | 0.4361 |
+| causal action prefix alone | 0.9500 |
+| z_t + R_t + causal actions | 0.4143 |
+
+Two readings. Actions alone are nearly as useless as the zero predictor
+(0.95 vs 1.0), because the same action moves the latent differently in different
+states, so the gain only appears through state-action interaction terms. And the
+matched control puts the action-conditioning gain at 0.4361 -> 0.4143, i.e.
+about 0.022 NMSE. The earlier verbal expectation of reaching 0.2-0.3 is not
+supported by this measurement.
+
+Implementation in `src/openpi/con1/modules.py`:
+
+* `AnchoredDeltaHead` gains `use_action_conditioning` / `action_dim`. Actions are
+  embedded as horizon-indexed tokens and attended with a strict causal mask, so
+  horizon j only reads actions a_{t..t+j-1}. `test_action_conditioning_shapes_and_strict_causality`
+  checks that perturbing action k changes horizon >= k only.
+* A per-horizon `direct_readout` from `[mean(R), z_t]` was added because the
+  attention path alone underfit (0.4825 against a 0.414 linear floor); this path
+  can express that floor immediately while the nonlinear branches refine it.
+* `train.py`-side: ground-truth actions condition the head during training. At
+  sampling time `_con1_prefix` runs once and the delta is re-derived per
+  denoising step from the clean-action estimate `a_hat = x_t - time * velocity`
+  (one-step lagged), which is the intended policy/world-model coupling.
+* `BaseAndCon1HeadWeightLoader` now allows head parameters that are absent from
+  an older head checkpoint (the new branches keep their fresh init) while still
+  rejecting unknown keys and shape mismatches.
+
+Config `pi05_libero_con1_action_cond_40k` runs the new head. A 2000-step stage-1
+smoke run measures whether the new head actually lowers `con1_delta_nmse`
+against the 0.48 baseline.
+
 ## Diagnostic 1: deterministic alpha scan (2026-09-10)
 
 `scripts/probe_con1_residual_causal.py` reuses the trainer's own restore path,
