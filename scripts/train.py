@@ -173,6 +173,14 @@ def train_step(
     ):
         flow_loss, vjepa_loss = model.compute_loss_components(rng, observation, actions, train=True)
         assert vjepa_loss is not None
+        if getattr(config.model, "use_con1", False):
+            flow_loss = jnp.mean(flow_loss)
+            delta_loss = jnp.mean(vjepa_loss)
+            return flow_loss + 0.2 * delta_loss, {
+                "flow_loss": flow_loss,
+                "con1_delta_loss": delta_loss,
+                "weighted_con1_delta_loss": 0.2 * delta_loss,
+            }
         if config.model.vjepa_aux_warmup_steps > 0:
             warmup = jnp.minimum(
                 state.step.astype(jnp.float32) / config.model.vjepa_aux_warmup_steps,

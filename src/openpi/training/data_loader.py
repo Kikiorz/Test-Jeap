@@ -297,7 +297,7 @@ def create_torch_dataset(
     )
 
     use_vjepa_aux = bool(getattr(model_config, "use_vjepa_aux", False))
-    if use_vjepa_aux and data_config.vjepa_target_root is None:
+    if use_vjepa_aux and data_config.vjepa_target_root is None and not bool(getattr(model_config, "use_con1", False)):
         raise ValueError("V-JEPA auxiliary training requires data.vjepa_target_root")
     if data_config.vjepa_target_root is not None:
         if not use_vjepa_aux:

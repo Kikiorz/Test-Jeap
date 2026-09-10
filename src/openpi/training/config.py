@@ -331,6 +331,9 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         }
         if self.vjepa_target_root is not None:
             repack_mapping["vjepa_target"] = "vjepa_target"
+        if self.con1_latent_root is not None:
+            repack_mapping["con1_current_latent"] = "con1_current_latent"
+            repack_mapping["con1_future_latents"] = "con1_future_latents"
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
 
         # The data transforms are applied to the data coming from the dataset *and* during inference.
@@ -727,6 +730,7 @@ _CONFIGS = [
         name="pi05_libero_con1_reciprocal_40k",
         model=pi0_config.Pi0Config(
             pi05=True,
+            discrete_state_input=False,
             action_horizon=10,
             use_vjepa_aux=True,
             vjepa_target_grid_size=8,
@@ -734,12 +738,12 @@ _CONFIGS = [
             con1_train_action_layers_from=14,
         ),
         data=LeRobotLiberoDataConfig(
-            repo_id="physical-intelligence/libero",
+            repo_id="/workspace/artifacts/datasets/lerobot_libero",
             base_config=DataConfig(
                 prompt_from_task=True,
                 con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
             ),
-            extra_delta_transform=True,
+            extra_delta_transform=False,
             con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(

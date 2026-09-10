@@ -283,14 +283,19 @@ class Pi0(_model.BaseModel):
             if observation.con1_future_latents is not None:
                 target = jax.lax.stop_gradient(observation.con1_future_latents.astype(jnp.float32))
                 valid = jnp.ones(target.shape[:-1], dtype=jnp.bool_)
-                con1_metrics = jnp.mean(jnp.square(delta_out["delta"] - (target - observation.con1_current_latent[:, None])))
+                con1_metrics = jnp.mean(
+                    jnp.square(delta_out["delta"] - (target - observation.con1_current_latent[:, None])),
+                    axis=(-1, -2),
+                )
         v_t = self.action_out_proj(action_hidden)
 
         flow_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
-        if not self.use_vjepa_aux:
+        if self.use_con1 and observation.vjepa_target is None:
+            if train and con1_metrics is None:
+                raise ValueError("Con1 training requires future latent labels")
+            return flow_loss, con1_metrics
+        if not self.use_vjepa_aux or observation.vjepa_target is None:
             return flow_loss, None
-        if observation.vjepa_target is None:
-            raise ValueError("V-JEPA auxiliary training requires observation.vjepa_target")
 
         query_out = prefix_out[:, -self.vjepa_num_queries :]
         predicted_target = self.predict_vjepa_target(query_out)
@@ -339,6 +344,9 @@ class Pi0(_model.BaseModel):
         flow_loss, aux_loss = self.compute_loss_components(rng, observation, actions, train=train)
         if aux_loss is None:
             return flow_loss
+
+        if self.use_con1:
+            return flow_loss + 0.2 * aux_loss[..., None]
 
         return flow_loss + self.vjepa_aux_weight * aux_loss[..., None]
 
