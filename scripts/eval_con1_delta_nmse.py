@@ -62,8 +62,10 @@ def main() -> None:
         model = nnx.merge(model_def, p)
         model.eval()
         obs = _model.preprocess_observation(None, observation, train=False)
-        tokens = model.extract_predictive_tokens(obs)
-        delta = model._con1_delta(tokens, obs.con1_current_latent, action_chunk)
+        # Use the production prefix path so the VLM pool (when enabled) matches
+        # exactly what training and sampling feed the head.
+        _, tokens, vlm_context = model._con1_prefix(obs)
+        delta = model._con1_delta(tokens, obs.con1_current_latent, action_chunk, vlm_context)
         return delta
 
     prun = jax.jit(run, out_shardings=replicated)
