@@ -112,9 +112,9 @@ class Observation(Generic[ArrayT]):
     # Optional current-frame V-JEPA latent used by Con1's anchored transition head.
     # It is an input-side feature (never a future label) and is kept separate from
     # ``vjepa_target`` so the auxiliary objective cannot accidentally leak it.
-    con1_current_latent: at.Float[ArrayT, "*b d"] | None = None
+    con1_current_latent: at.Float[ArrayT, "*b cd"] | None = None
     # Optional future latent sequence for the reciprocal Con1 transition loss.
-    con1_future_latents: at.Float[ArrayT, "*b h d"] | None = None
+    con1_future_latents: at.Float[ArrayT, "*b h cd"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
