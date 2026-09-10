@@ -191,6 +191,38 @@ Experiment: `con1_b64_lr2x_floww_17k`.
 
 ## Action-conditioned Con2 predictor (2026-09-10)
 
+### Correction: earlier probe NMSE numbers were leak-inflated
+
+The probe scripts (`probe_con1_feature_sufficiency.py`,
+`probe_con1_vlm_conditioning.py`, `probe_con1_action_conditioning.py`) shuffled
+(sample, horizon) *pairs* and then split those pairs into train/val/eval. The
+same sample therefore appeared in training under some horizons and in eval under
+others, and because a sample's deltas across horizons are highly correlated, the
+fit could interpolate instead of generalise. Every NMSE those scripts reported
+for a *fitted* estimator is therefore invalid, including the "0.414 linear
+floor" that motivated both the extra readout and the ridge warm start.
+
+`fit_con1_readout.py` uses the correct protocol (split by sample) with the same
+features `[mean(R), z_t]` and finds:
+
+| features | best lambda | held-out NMSE |
+|---|---:|---:|
+| raw, 4864-d | 1e4 | 0.871 |
+| random projection to 1024-d | 1e4 | 0.884 |
+
+So a linear map from these features reaches only ~0.87, far worse than the
+trained delta head at 0.474 (held out, sample split). Consequences:
+
+* The delta head is **not** underfit relative to a linear baseline; the
+  "a plain ridge beats the head by 0.07" claim is withdrawn.
+* The closed-form ridge warm start is not viable (0.87 > 0.474) and must not be
+  used.
+* The action-conditioning gain (+0.022) and the VLM-extra-input gain (+0.009)
+  were measured under the same leak and need re-measurement with a sample-level
+  split before any claim is made.
+* NMSE measured for a *fixed* model is unaffected by this bug, so the head's
+  0.4739 held-out number and the earlier alpha-scan stay valid.
+
 Measured first with the kernel-ridge probe `scripts/probe_con1_action_conditioning.py`
 (1024 samples, 60/20/20 split, matched pipeline):
 
