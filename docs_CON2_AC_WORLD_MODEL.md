@@ -170,14 +170,15 @@ More data needs more steps to pay off (at equal steps the 400-episode run trails
 the 100-episode one, on a harder held-out set), but it keeps improving through
 2000 steps and the action gap is stable at +0.05 to +0.10 NMSE.
 
-Headline numbers to quote (held-out episodes, copy-current = 1.0):
+Headline numbers to quote (copy-current = 1.0). The held-out episode set differs
+between rows, so compare rows only through the copy-current normalisation:
 
-| setting | h=1 (0.1 s) | h=2 (0.2 s) | h=4 (0.4 s) |
-|---|---:|---:|---:|
-| released AC weights, zero-shot | 1.067 | 1.097 | 1.233 |
-| fine-tuned, 100 episodes / 1000 steps | 0.809 | 0.764 | 0.760 |
-| fine-tuned, 400 episodes / 2000 steps | 0.831 | 0.785 | 0.772 |
-| from random init, same budget | 1.119 | 1.026 | 0.962 |
+| setting | held-out episodes | h=1 (0.1 s) | h=2 (0.2 s) | h=4 (0.4 s) |
+|---|---|---:|---:|---:|
+| released AC weights, zero-shot | 100-119 | 1.067 | 1.097 | 1.233 |
+| fine-tuned, 100 episodes / 1000 steps | 100-119 | 0.809 | 0.764 | 0.760 |
+| fine-tuned, 400 episodes / 2000 steps | 400-439 | 0.831 | 0.785 | 0.772 |
+| from random init, 100 episodes / 1000 steps | 100-119 | 1.119 | 1.026 | 0.962 |
 
 ### 3.5 Action ranking (energy landscape): the test that does show it
 
