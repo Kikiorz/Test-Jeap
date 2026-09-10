@@ -107,3 +107,21 @@ and remains there through 17000. No additional warmup or batch change.
 Tests for stage masks, unchanged non-fusion update scaling, and model gradient
 integration passed (11 tests) before launch. This run has training metrics;
 the canceled probe's fixed validation is not automatically run by train.py.
+
+## Active request: high-then-decay flow weighting
+
+The user asked that the action/flow objective be weighted higher early and
+cosinely decay toward a still-high floor. `Pi0Config` now carries
+`con1_flow_weight_initial=2.0`, `con1_flow_weight_final=1.0`, and
+`con1_flow_weight_decay_steps=15000`. During stage 1 (updates < 2000) the flow
+weight is pinned at 2.0; from 2000 through 17000 it decays from 2.0 to 1.0, so
+it stays above 1.5 for roughly the first half of the decay and never falls below
+the previous unit weight. The raw `flow_loss` metric stays unweighted for
+comparability; `weighted_flow_loss` and `flow_weight` are logged separately.
+
+This supersedes the previous `con1_b128_fusion3e5_17k_from1k` run, which was
+stopped before stage 2 and does not include the flow-weight schedule. The
+replacement experiment is `con1_b128_fusion3e5_floww_17k_from1k`, restored from
+the same pristine `1000` checkpoint with the 3x fusion LR and the new flow
+weighting active from update 1000 onward. The old runs are preserved, not
+deleted.
