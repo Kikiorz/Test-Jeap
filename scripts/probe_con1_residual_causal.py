@@ -41,6 +41,8 @@ def main() -> None:
     parser.add_argument("--exp-name", required=True, help="existing experiment under checkpoint_base_dir")
     parser.add_argument("--config", default="pi05_libero_con1_three_stage_40k",
                         help="named TrainConfig matching the experiment")
+    parser.add_argument("--split", default="train", choices=("train", "validation"),
+                        help="episode split; 'validation' is held out from Con1 training")
     parser.add_argument("--out", required=True)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--batches", type=int, default=8)
@@ -71,6 +73,13 @@ def main() -> None:
     if not resuming:
         raise ValueError(f"No checkpoint found under {config.checkpoint_dir}")
     loader = data_loader.create_data_loader(config, sharding=data_shard, shuffle=True)
+    if args.split == "validation":
+        # Evaluate on episodes the adapter was never trained on, so a positive
+        # paired delta is a generalisation result rather than fitting.
+        validation_data = dataclasses.replace(loader.data_config(), con1_split="validation")
+        loader = data_loader.create_torch_data_loader(
+            validation_data, config.model, config.model.action_horizon, config.batch_size,
+            sharding=data_shard, shuffle=True, num_workers=0, seed=args.seed)
     _, init_rng = jax.random.split(jax.random.key(config.seed))
     state, _ = train.init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(state)
@@ -168,6 +177,7 @@ def main() -> None:
         "restored_step": int(state.step),
         "batch_size": args.batch_size,
         "batches": args.batches,
+        "split": args.split,
         "seed": args.seed,
         "learned_alpha": learned_alpha,
         "action_dims": int(config.model.con1_action_dims),
