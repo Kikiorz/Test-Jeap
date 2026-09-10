@@ -35,6 +35,13 @@ def test_action_conditioning_shapes_and_strict_causality():
     z = jax.random.normal(jax.random.key(4), (2, latent_dim))
     actions = jax.random.normal(jax.random.key(5), (2, horizon, action_dim))
     variables = model.init(jax.random.key(6), r, z, actions)
+    # The value projection is zero-initialised by design, so activate it before
+    # testing causality; otherwise every horizon would be trivially unchanged.
+    import flax.traverse_util as traverse_util
+    flat = dict(traverse_util.flatten_dict(variables, sep="/"))
+    flat["params/action_value/kernel"] = jax.random.normal(
+        jax.random.key(9), flat["params/action_value/kernel"].shape)
+    variables = traverse_util.unflatten_dict(flat, sep="/")
     out = model.apply(variables, r, z, actions)
     assert out["delta"].shape == (2, horizon, latent_dim)
     assert np.all(np.isfinite(np.asarray(out["delta"])))
