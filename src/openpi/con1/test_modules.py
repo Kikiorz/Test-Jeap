@@ -27,6 +27,40 @@ def test_anchor_delta_shapes_and_loss():
     assert bool(jnp.isfinite(loss)); assert int(metrics["valid_count"]) == 3
 
 
+def test_action_conditioning_shapes_and_strict_causality():
+    horizon, latent_dim, width, action_dim = 4, 6, 8, 3
+    model = AnchoredDeltaHead(horizon=horizon, latent_dim=latent_dim, width=width,
+                              action_dim=action_dim, use_action_conditioning=True)
+    r = jax.random.normal(jax.random.key(3), (2, 5, 7))
+    z = jax.random.normal(jax.random.key(4), (2, latent_dim))
+    actions = jax.random.normal(jax.random.key(5), (2, horizon, action_dim))
+    variables = model.init(jax.random.key(6), r, z, actions)
+    out = model.apply(variables, r, z, actions)
+    assert out["delta"].shape == (2, horizon, latent_dim)
+    assert np.all(np.isfinite(np.asarray(out["delta"])))
+    # Horizon j must not see actions taken after step j, so perturbing the
+    # action at index k may only change horizons >= k.
+    for k in range(horizon):
+        perturbed = actions.at[:, k, :].add(5.0)
+        after = model.apply(variables, r, z, perturbed)["delta"]
+        diff = np.abs(np.asarray(after - out["delta"])).max(axis=(0, 2))
+        assert np.all(diff[:k] == 0.0), (k, diff)
+        assert diff[k] > 0.0, (k, diff)
+
+
+def test_action_conditioning_requires_action_chunk():
+    model = AnchoredDeltaHead(horizon=3, latent_dim=6, width=8,
+                              action_dim=3, use_action_conditioning=True)
+    r = jnp.ones((1, 5, 7)); z = jnp.ones((1, 6))
+    variables = model.init(jax.random.key(7), r, z, jnp.ones((1, 3, 3)))
+    try:
+        model.apply(variables, r, z)
+    except ValueError as exc:
+        assert "action chunk" in str(exc)
+    else:
+        raise AssertionError("missing action chunk must raise")
+
+
 def test_two_terms_are_not_claimed_independent():
     z = jnp.zeros((1, 2)); target = jnp.ones((1, 1, 2)); d = jnp.zeros_like(target)
     valid = jnp.ones((1, 1), dtype=bool)

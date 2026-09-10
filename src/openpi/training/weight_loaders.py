@@ -98,13 +98,20 @@ class BaseAndCon1HeadWeightLoader(WeightLoader):
         head = head.get("con1_delta_head", head)
         expected = flax.traverse_util.flatten_dict(merged["con1_delta_head"], sep="/")
         got = flax.traverse_util.flatten_dict(head, sep="/")
-        if set(expected) != set(got):
-            raise ValueError("Con1 head checkpoint namespace does not match current model")
+        # Newly added head branches (e.g. action conditioning, direct readout)
+        # have no counterpart in older head checkpoints and keep their fresh
+        # initialization. Anything the checkpoint has but the model lacks is a
+        # genuine mismatch.
+        unknown = set(got) - set(expected)
+        if unknown:
+            raise ValueError(f"Con1 head checkpoint has unknown parameters: {sorted(unknown)[:5]}")
         for key, value in got.items():
             if expected[key].shape != value.shape:
                 raise ValueError(f"Con1 head shape mismatch at {key}: {value.shape} != {expected[key].shape}")
-        merged["con1_delta_head"] = flax.traverse_util.unflatten_dict(
-            {key: np.asarray(value).astype(expected[key].dtype) for key, value in got.items()}, sep="/")
+        loaded = dict(expected)
+        loaded.update(
+            {key: np.asarray(value).astype(expected[key].dtype) for key, value in got.items()})
+        merged["con1_delta_head"] = flax.traverse_util.unflatten_dict(loaded, sep="/")
         return merged
 
 

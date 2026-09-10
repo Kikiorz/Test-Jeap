@@ -23,13 +23,23 @@ class AnchoredDeltaHead(nn.Module):
     horizon: int = 10
     latent_dim: int = 2816
     width: int = 512
+    action_dim: int = 0
+    use_action_conditioning: bool = False
 
     @nn.compact
-    def __call__(self, r_tokens, current_latent):
+    def __call__(self, r_tokens, current_latent, action_chunk=None):
         if r_tokens.ndim != 3 or current_latent.ndim != 2:
             raise ValueError("Expected R[B,N,E] and current latent[B,D]")
         if r_tokens.shape[0] != current_latent.shape[0] or current_latent.shape[-1] != self.latent_dim:
             raise ValueError("Anchor/batch dimensions disagree")
+        if self.use_action_conditioning:
+            if action_chunk is None:
+                raise ValueError("Action conditioning enabled but no action chunk was supplied")
+            if action_chunk.ndim != 3 or action_chunk.shape[1] != self.horizon:
+                raise ValueError("Action chunk must be [B, horizon, action_dim]")
+            if action_chunk.shape[-1] != self.action_dim:
+                raise ValueError(f"Action chunk width {action_chunk.shape[-1]} != {self.action_dim}")
+            action_chunk = jax.lax.stop_gradient(action_chunk.astype(jnp.float32))
         r = jax.lax.stop_gradient(r_tokens.astype(jnp.float32))
         anchor = jax.lax.stop_gradient(current_latent.astype(jnp.float32))
         r = nn.LayerNorm(name="r_norm")(r)
@@ -50,10 +60,46 @@ class AnchoredDeltaHead(nn.Module):
         attention = jax.nn.softmax(jnp.einsum("bmhd,bnhd->bhmn", q, k) / math.sqrt(self.width // 4), -1)
         context = jnp.einsum("bhmn,bnhd->bmhd", attention, v).reshape(slots.shape)
         hidden = slots + context
+
+        # Direct per-horizon linear readout of the pooled features. The
+        # attention path alone was measured to underfit badly (0.483 held-out
+        # NMSE against a 0.414 linear floor), because every output had to be
+        # learnt through attention + FFN. This path can express that floor
+        # directly while the nonlinear branches add refinement on top.
+        pooled = nn.LayerNorm(name="pool_norm")(r).mean(1)
+        readout = jnp.concatenate([pooled, anchor], axis=-1)
+        direct = nn.Dense(
+            self.horizon * self.latent_dim, name="direct_readout",
+            kernel_init=nn.initializers.normal(1e-4),
+        )(readout)
+        direct = direct.reshape(anchor.shape[0], self.horizon, self.latent_dim)
+
+        if self.use_action_conditioning:
+            # Actions enter as horizon-indexed tokens. A causal mask stops
+            # horizon j from reading actions that happen after step j.
+            action_hidden = nn.Dense(self.width, name="action_in")(action_chunk)
+            action_hidden = action_hidden + horizon_encoding(self.horizon, self.width)[None]
+            action_hidden = nn.LayerNorm(name="action_norm")(action_hidden)
+            aq = nn.Dense(self.width, use_bias=False, name="action_query")(hidden)
+            ak = nn.Dense(self.width, use_bias=False, name="action_key")(action_hidden)
+            av = nn.Dense(self.width, use_bias=False, name="action_value")(action_hidden)
+            heads = 4
+            aq = aq.reshape(*aq.shape[:2], heads, self.width // heads)
+            ak = ak.reshape(*ak.shape[:2], heads, self.width // heads)
+            av = av.reshape(*av.shape[:2], heads, self.width // heads)
+            logits = jnp.einsum("bqhd,bkhd->bhqk", aq, ak) / math.sqrt(self.width // heads)
+            step = jnp.arange(self.horizon)
+            causal = (step[None, :] <= step[:, None])[None, None]
+            logits = jnp.where(causal, logits, -1e30)
+            action_attn = jax.nn.softmax(logits, -1)
+            action_context = jnp.einsum("bhqk,bkhd->bqhd", action_attn, av).reshape(*hidden.shape)
+            hidden = hidden + action_context
+
         hidden = hidden + nn.Dense(self.width, name="ff_out")(
             nn.gelu(nn.Dense(2 * self.width, name="ff_in")(nn.LayerNorm(name="ff_norm")(hidden))))
         delta = nn.Dense(self.latent_dim, name="delta_out",
                          kernel_init=nn.initializers.normal(1e-4))(hidden)
+        delta = delta + direct
         return {"delta": delta, "future": anchor[:, None] + delta}
 
 

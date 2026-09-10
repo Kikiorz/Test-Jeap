@@ -81,6 +81,7 @@ class Pi0(_model.BaseModel):
         self.con1_sgr_beta = config.con1_sgr_beta
         self.con1_residual_weight = config.con1_residual_weight
         self.con1_action_dims = config.con1_action_dims
+        self.con1_action_conditioning = config.con1_action_conditioning
         self.con1_train_action_layers_from = config.con1_train_action_layers_from
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -123,11 +124,15 @@ class Pi0(_model.BaseModel):
             self.con1_delta_head = nnx_bridge.ToNNX(
                 AnchoredDeltaHead(horizon=config.action_horizon,
                                   latent_dim=config.con1_latent_dim,
-                                  width=config.con1_width)
+                                  width=config.con1_width,
+                                  action_dim=config.con1_action_dims,
+                                  use_action_conditioning=config.con1_action_conditioning)
             )
             self.con1_delta_head.lazy_init(
                 jnp.zeros((1, self.vjepa_num_queries, paligemma_config.width), dtype=jnp.float32),
                 jnp.zeros((1, config.con1_latent_dim), dtype=jnp.float32),
+                (jnp.zeros((1, config.action_horizon, config.con1_action_dims), dtype=jnp.float32)
+                 if config.con1_action_conditioning else None),
                 rngs=rngs,
             )
             self.con1_cross_attention = nnx_bridge.ToNNX(ActionDeltaCrossAttention(
@@ -295,7 +300,9 @@ class Pi0(_model.BaseModel):
         aux_loss = jnp.mean(1.0 - jnp.sum(predicted_target * target, axis=-1), axis=-1)
         return flow_loss, aux_loss
 
-    def _con1_context(self, observation):
+    def _con1_prefix(self, observation):
+        """Frozen prefix pass; independent of the action chunk, so callers can
+        run it once and re-derive the delta as the action estimate changes."""
         if observation.con1_current_latent is None:
             raise ValueError("Con1 requires a CURRENT-only teacher latent at both training and inference")
         tokens, mask, ar_mask = self.embed_prefix(observation)
@@ -304,9 +311,15 @@ class Pi0(_model.BaseModel):
             positions=jnp.cumsum(mask, axis=1) - 1)
         prefix = jax.lax.stop_gradient(prefix)
         cache = jax.tree.map(jax.lax.stop_gradient, cache)
-        delta = self.con1_delta_head(prefix[:, -self.vjepa_num_queries:],
-                                     observation.con1_current_latent)["delta"]
-        return (mask, cache), delta
+        return (mask, cache), jax.lax.stop_gradient(prefix[:, -self.vjepa_num_queries:])
+
+    def _con1_delta(self, r_tokens, current_latent, action_chunk=None):
+        return self.con1_delta_head(r_tokens, current_latent, action_chunk)["delta"]
+
+    def _con1_context(self, observation, action_chunk=None):
+        context, r_tokens = self._con1_prefix(observation)
+        delta = self._con1_delta(r_tokens, observation.con1_current_latent, action_chunk)
+        return context, delta
 
     def _con1_velocity(self, observation, x_t, time, context, delta):
         """One residual retrieval before blocks 14--17, shared by train/inference."""
@@ -344,7 +357,10 @@ class Pi0(_model.BaseModel):
         time = jax.random.beta(time_rng, 1.5, 1, actions.shape[:-2]) * .999 + .001
         x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
         u_t = noise - actions
-        context, delta = self._con1_context(observation)
+        # Action conditioning: predict the consequence of the demonstrated
+        # action chunk rather than the marginal future.
+        action_chunk = actions[..., : self.con1_action_dims] if self.con1_action_conditioning else None
+        context, delta = self._con1_context(observation, action_chunk)
         # One main forward. Its VJP supplies action sensitivity; stop_gradient
         # on q avoids second-order optimization of importance weights.
         v_t, pullback, aux = jax.vjp(
@@ -434,16 +450,26 @@ class Pi0(_model.BaseModel):
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
         if self.use_con1:
-            context, delta = self._con1_context(observation)
+            # The prefix does not depend on the action chunk, so run it once.
+            # With action conditioning the delta must be re-derived each step from
+            # the current clean-action estimate a_hat = x_t - time * velocity.
+            context, r_tokens = self._con1_prefix(observation)
+            current_latent = observation.con1_current_latent
+            initial_estimate = jnp.zeros(
+                (batch_size, self.action_horizon, self.con1_action_dims), dtype=noise.dtype
+            )
 
             def con1_step(carry):
-                x_t, time = carry
+                x_t, time, action_estimate = carry
+                condition = action_estimate if self.con1_action_conditioning else None
+                delta = self._con1_delta(r_tokens, current_latent, condition)
                 velocity, _ = self._con1_velocity(
                     observation, x_t, jnp.broadcast_to(time, (batch_size,)), context, delta)
-                return x_t + dt * velocity, time + dt
+                next_estimate = (x_t - time * velocity)[..., : self.con1_action_dims]
+                return x_t + dt * velocity, time + dt, next_estimate
 
             return jax.lax.while_loop(lambda carry: carry[1] >= -dt / 2,
-                                      con1_step, (noise, 1.0))[0]
+                                      con1_step, (noise, 1.0, initial_estimate))[0]
 
         # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)

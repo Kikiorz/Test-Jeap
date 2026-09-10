@@ -59,6 +59,9 @@ class Pi0Config(_model.BaseModelConfig):
     con1_flow_weight_initial: float = 2.0
     con1_flow_weight_final: float = 1.0
     con1_flow_weight_decay_steps: int = 15_000
+    # Feed the action chunk into the delta head so it predicts the consequence
+    # of the planned actions instead of a marginal future.
+    con1_action_conditioning: bool = False
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
     # then 5k joint flow with the action-sensitivity weighting enabled.
