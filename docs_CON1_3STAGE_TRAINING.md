@@ -189,6 +189,71 @@ roughly half the batch-128 runs if the step is compute bound.
 
 Experiment: `con1_b64_lr2x_floww_17k`.
 
+## Diagnostic 1: deterministic alpha scan (2026-09-10)
+
+`scripts/probe_con1_residual_causal.py` reuses the trainer's own restore path,
+fixes one batch of 64 samples plus its flow noise and time, and varies only the
+gate alpha (and optionally the residual output scale). Paired differences are
+causal for the frozen parameters, not sampling noise.
+
+Checkpoint 3000 (stage 2, action expert already unfrozen), `alpha_0` flow =
+0.019281:
+
+| alpha | correction RMS | flow | delta vs alpha=0 |
+|---:|---:|---:|---:|
+| 0.05 (learned) | 0.030 | 0.019312 | +3.1e-5 |
+| 0.25 | 0.150 | 0.019540 | +2.6e-4 |
+| 0.5 | 0.299 | 0.020136 | +8.6e-4 |
+| 1.0 | 0.599 | 0.022508 | +3.2e-3 |
+| learned alpha, residual x10 | 0.300 | 0.020142 | +8.6e-4 |
+
+Checkpoint 1000 (stage 1, base frozen), `alpha_0` flow = 0.019803:
+
+| alpha | correction RMS | flow | delta vs alpha=0 |
+|---:|---:|---:|---:|
+| 0.05 (learned) | 0.0028 | 0.019800 | -3.0e-6 |
+| 0.25 | 0.0140 | 0.019790 | -1.3e-5 |
+| 0.5 | 0.0280 | 0.019783 | -2.0e-5 |
+| 1.0 | 0.0561 | 0.019815 | +1.2e-5 |
+| learned alpha, residual x10 | 0.0281 | 0.019780 | -2.4e-5 |
+
+Reading: the branch has real authority (at alpha=1 it moves the action chunk by
+L2 0.053 against a velocity RMS of 1.02). In the frozen-base regime a roughly
+10x stronger residual reaches an optimum near correction RMS 0.028 and improves
+flow by about 2e-5 (0.1%). After stage-2 training the residual has grown to RMS
+0.599, ten times past that optimum, and every gate value now makes flow worse,
+with the degradation scaling like RMS squared. So the residual direction holds a
+small usable signal, but its magnitude is unbounded and stage 2 overshoots it.
+
+## Diagnostic 2: feature sufficiency (2026-09-10)
+
+`scripts/probe_con1_feature_sufficiency.py` collects R_t (PI0.5 query tokens),
+z_t, and cached future latents, then fits exact kernel-ridge probes in the full
+2816-d output space on a held-out split. 1536 samples, 60/20/20 split, lambda
+selected on the validation split.
+
+| probe | eval NMSE |
+|---|---:|
+| zero predictor | 1.000 |
+| existing delta head | 0.480 |
+| linear from z_t only | 0.417 |
+| linear from pooled R_t only | 0.424 |
+| linear from both | 0.414 |
+| random-Fourier nonlinear from both | 0.530 |
+
+Reading: the trained head is underfit, since a plain ridge from the same inputs
+beats it by 0.066 NMSE. But the ceiling is about 0.41, so roughly 41% of the
+delta variance is not recoverable from these inputs at all. Pooled R_t alone
+(0.424) is slightly worse than z_t alone (0.417), and adding R_t to z_t buys only
+0.003 NMSE, so the expensive predictive tokens carry almost no delta information
+beyond the current latent. The pooled representation also handicaps R_t, so the
+"head is underfit" finding is robust while the R_t ceiling is an upper bound on
+how good a token-level head could be.
+
+Combined with Diagnostic 1, improving the head from 0.48 to 0.41 NMSE is
+unlikely to change the flow outcome much, because the residual's usable effect
+at its optimum is already only about 0.1%.
+
 ### Stage 2 action-expert rate raised to 1e-5
 
 The user judged 2e-6 for the unfrozen action blocks too slow and asked for
