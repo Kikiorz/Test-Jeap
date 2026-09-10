@@ -164,7 +164,7 @@ def main() -> None:
             return r_pool
         return np.concatenate([r_pool, z0], axis=1)
 
-    lambdas = [1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1, 0.3, 1.0]
+    lambdas = [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0]
     report = {
         "exp_name": args.exp_name,
         "checkpoint_dir": str(config.checkpoint_dir),
