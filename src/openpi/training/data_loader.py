@@ -336,7 +336,7 @@ def create_torch_dataset(
         # a Subset over the full dataset so action chunks use the original
         # episode_data_index and can never cross a split boundary.
         if selected_episode_ids is not None:
-            frame_ranges = dataset.dataset.episode_data_index
+            frame_ranges = dataset._dataset.episode_data_index  # noqa: SLF001
             indices = []
             for episode_id in selected_episode_ids:
                 start = int(frame_ranges["from"][episode_id])
