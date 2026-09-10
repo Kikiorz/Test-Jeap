@@ -126,6 +126,10 @@ class Pi0Config(_model.BaseModelConfig):
                     if self.use_vjepa_aux
                     else None
                 ),
+                con1_current_latent=(
+                    jax.ShapeDtypeStruct([batch_size, self.con1_latent_dim], jnp.float32)
+                    if self.use_con1 else None
+                ),
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
