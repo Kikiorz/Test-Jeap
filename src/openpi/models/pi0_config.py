@@ -71,6 +71,7 @@ class Pi0Config(_model.BaseModelConfig):
     # Zero-initialised, bounded action-side adapter (Con1's LoRA analogue).
     con1_action_adapter: bool = False
     con1_adapter_scale: float = 1.0
+    con1_residual_budget: float = 0.0
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
     # then 5k joint flow with the action-sensitivity weighting enabled.

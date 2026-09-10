@@ -144,7 +144,8 @@ class Pi0(_model.BaseModel):
                 action_expert_config.width, width=config.con1_width,
                 alpha_initial=config.con1_alpha_initial,
                 use_action_adapter=config.con1_action_adapter,
-                adapter_scale=config.con1_adapter_scale))
+                adapter_scale=config.con1_adapter_scale,
+                residual_budget=config.con1_residual_budget))
             self.con1_cross_attention.lazy_init(
                 jnp.zeros((1, config.action_horizon, action_expert_config.width), dtype=jnp.float32),
                 jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32), rngs=rngs)

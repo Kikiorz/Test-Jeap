@@ -35,6 +35,27 @@ def test_action_adapter_is_a_no_op_at_init_but_gets_gradient():
     assert float(jnp.abs(flat["params/adapter_out/kernel"]).max()) > 0.0
 
 
+def test_residual_budget_caps_the_forward_perturbation():
+    """With a huge adapter the correction must still respect the relative cap."""
+    model = ActionDeltaCrossAttention(12, width=8, use_action_adapter=True,
+                                      adapter_scale=1e3, residual_budget=0.05)
+    h = jax.random.normal(jax.random.key(51), (2, 4, 12))
+    d = jax.random.normal(jax.random.key(52), (2, 4, 8))
+    variables = model.init(jax.random.key(53), h, d)
+    out = model.apply(variables, h, d)
+    corr = np.asarray(out["correction"], np.float64)
+    hid = np.asarray(h, np.float64)
+    corr_rms = np.sqrt((corr**2).mean(-1))
+    base_rms = np.sqrt((hid**2).mean(-1))
+    assert np.all(corr_rms <= 0.05 * base_rms + 1e-6), (corr_rms, base_rms)
+    # Unbounded, the same setup must violate the cap, proving the test bites.
+    loose = ActionDeltaCrossAttention(12, width=8, use_action_adapter=True,
+                                      adapter_scale=1e3, residual_budget=0.0)
+    loose_out = loose.apply(loose.init(jax.random.key(53), h, d), h, d)
+    loose_rms = np.sqrt((np.asarray(loose_out["correction"], np.float64) ** 2).mean(-1))
+    assert np.any(loose_rms > 0.05 * base_rms + 1e-6)
+
+
 def test_anchor_delta_shapes_and_loss():
     model = AnchoredDeltaHead(horizon=3, latent_dim=6, width=8)
     r = jnp.ones((2, 5, 7)); z = jnp.ones((2, 6))

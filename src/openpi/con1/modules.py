@@ -141,6 +141,11 @@ class ActionDeltaCrossAttention(nn.Module):
     # adds capacity that does not depend on the latent prediction at all.
     use_action_adapter: bool = False
     adapter_scale: float = 1.0
+    # Hard relative budget on the correction: per token, its RMS is capped at
+    # `residual_budget` times the RMS of the incoming action hidden state. 0
+    # disables the cap. The rescaling factor is stop-gradiented, so it bounds
+    # the forward perturbation without changing the gradient direction.
+    residual_budget: float = 0.0
 
     @nn.compact
     def __call__(self, action_hidden, predicted_delta):
@@ -170,9 +175,18 @@ class ActionDeltaCrossAttention(nn.Module):
             adapter = nn.Dense(self.action_width, name="adapter_out",
                                kernel_init=nn.initializers.zeros_init())(hidden)
             correction = correction + self.adapter_scale * adapter
+        if self.residual_budget > 0:
+            correction_rms = jnp.sqrt(jnp.mean(jnp.square(correction), axis=-1, keepdims=True))
+            base_rms = jnp.sqrt(
+                jnp.mean(jnp.square(action_hidden.astype(jnp.float32)), axis=-1, keepdims=True))
+            limit = self.residual_budget * jnp.maximum(base_rms, 1e-6)
+            shrink = jnp.minimum(1.0, limit / jnp.maximum(correction_rms, 1e-12))
+            correction = correction * jax.lax.stop_gradient(shrink)
         return {"hidden": action_hidden.astype(jnp.float32) + correction,
                 "correction": correction, "attention": attention,
-                "alpha": jax.nn.sigmoid(logit)}
+                "alpha": jax.nn.sigmoid(logit),
+                "budget_shrink": (jnp.ones_like(correction[..., :1]) if self.residual_budget <= 0
+                                  else jax.lax.stop_gradient(shrink))}
 
 
 def anchored_loss(delta, anchor, future_target, valid, *, delta_weight=1., feature_reduction="mean"):
