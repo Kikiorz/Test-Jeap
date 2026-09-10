@@ -109,16 +109,24 @@ def main() -> None:
         report = {"config": args.config, "samples": int(n), "mode": "horizon_agnostic",
                   "pairs": int(len(rows)), "nmse": {}, "lambda": None, "total_nmse": None}
         best = None
-        for lam in (1e-1, 1.0, 10.0, 100.0, 1000.0):
-            a = np.concatenate([flat_x[train_rows], np.ones((int(train_rows.sum()), 1))], axis=1)
-            normal = a.T @ a + lam * np.eye(a.shape[1])
-            weight = np.linalg.solve(normal, a.T @ flat_y[train_rows])
-            b = np.concatenate([flat_x[eval_rows], np.ones((int(eval_rows.sum()), 1))], axis=1)
-            score = _nmse(b @ weight, flat_y[eval_rows])
-            report["nmse"][str(lam)] = score
-            print(json.dumps({"lambda": lam, "heldout_nmse": score}), flush=True)
-            if best is None or score < best[0]:
-                best = (score, lam, weight)
+        # Evaluate raw features and a 1024-d random projection side by side; the
+        # earlier probe used the projection and reported a far lower NMSE, so
+        # the difference has to be attributed explicitly.
+        variants = {"raw": np.zeros((flat_x.shape[1], 0), np.float32)}
+        proj = np.random.default_rng(args.seed).normal(
+            0.0, 1.0 / np.sqrt(1024), size=(flat_x.shape[1], 1024)).astype(np.float32)
+        projected = (flat_x @ proj).astype(np.float64)
+        for tag, feats in (("raw", flat_x), ("proj1024", projected)):
+            for lam in (1e-1, 1.0, 10.0, 100.0, 1000.0, 1e4, 1e5):
+                a = np.concatenate([feats[train_rows], np.ones((int(train_rows.sum()), 1))], axis=1)
+                normal = a.T @ a + lam * np.eye(a.shape[1])
+                weight = np.linalg.solve(normal, a.T @ flat_y[train_rows])
+                b = np.concatenate([feats[eval_rows], np.ones((int(eval_rows.sum()), 1))], axis=1)
+                score = _nmse(b @ weight, flat_y[eval_rows])
+                report["nmse"][f"{tag}@{lam}"] = score
+                print(json.dumps({"variant": tag, "lambda": lam, "heldout_nmse": score}), flush=True)
+                if tag == "raw" and (best is None or score < best[0]):
+                    best = (score, lam, weight)
         _, lam, weight = best
         w = weight[:-1] / std.T
         bias = weight[-1] - (mean / std) @ weight[:-1]
