@@ -160,6 +160,53 @@ class VJepaTargetDataset(Dataset):
         if mmap is not None:
             mmap.close()
 
+
+class Con1LatentDataset(Dataset):
+    """Attach cached current and 10-step future latents to frame samples."""
+
+    def __init__(self, dataset: Dataset, root: str | Path, *, horizon: int = 10,
+                 latent_dim: int = 2816, mmap_cache_size: int = 16):
+        self._dataset = dataset
+        self._root = Path(root)
+        self._horizon = horizon
+        self._latent_dim = latent_dim
+        self._cache: OrderedDict[int, np.memmap] = OrderedDict()
+        if not (self._root / "manifest.json").is_file():
+            raise FileNotFoundError(f"Con1 latent manifest not found: {self._root}")
+        manifest = json.loads((self._root / "manifest.json").read_text())
+        if not manifest.get("complete") or int(manifest.get("latent_dim", -1)) != latent_dim:
+            raise ValueError("Incomplete or incompatible Con1 latent cache")
+        self._chunks_size = int(manifest.get("chunks_size", 1000))
+        self._mmap_cache_size = mmap_cache_size
+
+    def __len__(self):
+        return len(self._dataset)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        sample = dict(self._dataset[index])
+        episode = int(np.asarray(sample["episode_index"]).item())
+        frame = int(np.asarray(sample["frame_index"]).item())
+        if episode not in self._cache:
+            path = self._root / "episodes" / f"{episode:06d}_z.npy"
+            z = np.load(path, mmap_mode="r", allow_pickle=False)
+            if z.ndim != 2 or z.shape[-1] != self._latent_dim:
+                raise ValueError(f"Invalid Con1 latent episode: {path}")
+            self._cache[episode] = z
+        z = self._cache.pop(episode)
+        self._cache[episode] = z
+        while len(self._cache) > self._mmap_cache_size:
+            self._cache.popitem(last=False)
+        if not 0 <= frame < len(z):
+            raise IndexError("Con1 frame outside cached episode")
+        count = min(self._horizon, len(z) - frame - 1)
+        future = np.broadcast_to(np.asarray(z[frame], dtype=np.float32),
+                                 (self._horizon, self._latent_dim)).copy()
+        if count:
+            future[:count] = np.asarray(z[frame + 1:frame + 1 + count], dtype=np.float32)
+        sample["con1_current_latent"] = np.asarray(z[frame], dtype=np.float32)
+        sample["con1_future_latents"] = future
+        return sample
+
     def __getstate__(self):
         state = self.__dict__.copy()
         state["_cache"] = OrderedDict()
@@ -265,6 +312,16 @@ def create_torch_dataset(
             expected_image_key=data_config.vjepa_image_key,
             expected_num_frames=len(dataset),
             mmap_cache_size=data_config.vjepa_mmap_cache_size,
+        )
+    if data_config.con1_latent_root is not None:
+        if not bool(getattr(model_config, "use_con1", False)):
+            raise ValueError("Con1 latent cache configured for a model with use_con1=False")
+        dataset = Con1LatentDataset(
+            dataset,
+            data_config.con1_latent_root,
+            horizon=model_config.action_horizon,
+            latent_dim=model_config.con1_latent_dim,
+            mmap_cache_size=data_config.con1_latent_mmap_cache_size,
         )
 
     if data_config.prompt_from_task:

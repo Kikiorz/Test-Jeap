@@ -102,6 +102,9 @@ class DataConfig:
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    # Optional cached current/future latent sequence for reciprocal Con1.
+    con1_latent_root: str | None = None
+    con1_latent_mmap_cache_size: int = 16
 
 
 class GroupFactory(Protocol):
@@ -305,6 +308,8 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
     vjepa_image_key: str | None = None
+    con1_latent_root: str | None = None
+    con1_latent_mmap_cache_size: int = 16
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -371,6 +376,8 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             vjepa_mmap_cache_size=self.vjepa_mmap_cache_size,
             vjepa_future_offset=self.vjepa_future_offset,
             vjepa_image_key=self.vjepa_image_key,
+            con1_latent_root=self.con1_latent_root,
+            con1_latent_mmap_cache_size=self.con1_latent_mmap_cache_size,
         )
 
 

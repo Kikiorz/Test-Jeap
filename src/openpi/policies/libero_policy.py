@@ -82,6 +82,10 @@ class LiberoInputs(transforms.DataTransformFn):
 
         if "vjepa_target" in data:
             inputs["vjepa_target"] = data["vjepa_target"]
+        if "con1_current_latent" in data:
+            inputs["con1_current_latent"] = data["con1_current_latent"]
+        if "con1_future_latents" in data:
+            inputs["con1_future_latents"] = data["con1_future_latents"]
 
         return inputs
 
