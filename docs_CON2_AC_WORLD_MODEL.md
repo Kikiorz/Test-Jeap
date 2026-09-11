@@ -284,15 +284,22 @@ transitions only). Protocol with no leakage: score the model on the **second
 half** of each episode, adapt on the **first half only**, then score the same
 untouched second half again.
 
-| adaptation | episodes | NMSE before | NMSE after | improved |
-|---|---:|---:|---:|---:|
-| 4 steps, lr 1e-5 | 5 | 0.8494 | 0.8511 | 3/5 |
-| 30 steps, lr 1e-4 | 8 | 0.9645 | **0.9465** | 5/8 |
+| adaptation | episodes | NMSE before | NMSE after | mean delta | improved |
+|---|---:|---:|---:|---:|---:|
+| 4 steps, lr 1e-5 | 5 | 0.8494 | 0.8511 | +0.0017 | 3/5 |
+| 30 steps, lr 1e-4 | 8 | 0.9645 | **0.9465** | -0.0180 | 5/8 |
+| **30 steps, lr 1e-4, replay, 40 episodes** | 40 | 0.9590 | 0.9631 | **+0.0042 +/- 0.0068** | 22/40 |
+| **30 steps, lr 2e-5, replay, 40 episodes** | 40 | 0.8708 | 0.8710 | **+0.0002 +/- 0.0038** | 20/40 |
+| no adaptation (control) | 40 | - | - | 0.000000 | 0/40 |
 
-At a trivial budget the effect is noise and one episode regresses; with 30 steps
-the held-out error drops ~2%, so the TTT path works but needs a real schedule
-(more steps, replay across episodes, early stopping on the observed transition
-loss) before it is a paper number.
+The 8-episode run that showed a 2% gain does not survive: with 40 episodes and a
+cross-episode replay buffer the effect is **statistically indistinguishable from
+zero** at both learning rates (the 1e-4 delta is +0.6 standard errors, the win
+rate is 22/40 = chance), while the no-adaptation control reproduces the metric
+exactly. Vanilla test-time training - gradient steps on the observed transition
+loss with no anchor - therefore buys nothing at this data scale. It needs a
+different schedule (much smaller steps, an anchor/KL term toward the pretrained
+predictor, or a validation-based early stop) before it can be claimed.
 
 ### 3.8b Timebase: match the model, not the dataset
 
