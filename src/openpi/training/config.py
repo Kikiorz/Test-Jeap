@@ -1184,6 +1184,74 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        # Identical to pi05_libero_con1_action_adapter_40k (same adapter, same
+        # freeze pattern, same schedule) except for the latent space: the delta
+        # head predicts, and the cross-attention injects, the mean of the PI0.5
+        # VLM predictive tokens (64 x 2048 -> 2048) instead of the pooled
+        # V-JEPA 2.1 latent (2816). Measured motivation: on held-out episodes
+        # the VLM latent's future is far more learnable (delta NMSE vs the
+        # copy-current baseline 0.45 vs 0.73 at 4k-9k steps) and the V-JEPA
+        # latent carries no transferable action information at any resolution.
+        name="pi05_libero_con1_action_adapter_vlm_40k",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=False,
+            action_horizon=10,
+            use_vjepa_aux=True,
+            vjepa_target_grid_size=8,
+            use_con1=True,
+            con1_action_adapter=True,
+            con1_residual_budget=0.05,
+            con1_latent_dim=2048,
+            con1_action_dims=7,
+            con1_train_action_layers_from=14,
+            con1_stage1_steps=2000,
+            con1_stage2_steps=5000,
+            con1_stage3_steps=5000,
+            con1_sgr_beta=0.5,
+            con1_delta_weight=0.2,
+            con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0,
+            con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="/workspace/artifacts/datasets/lerobot_libero",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+                           "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/assets",
+                asset_id="physical-intelligence/libero",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_vlm_pooled",
+            ),
+            extra_delta_transform=False,
+            con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_vlm_pooled",
+        ),
+        weight_loader=weight_loaders.BaseAndCon1HeadWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/params",
+            "/workspace/artifacts/checkpoints/con1_vlm_head_40k_10k/checkpoint_010000.msgpack",
+        ),
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+            )),
+        ),
+        num_train_steps=12_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=12_000, decay_lr=1e-5),
+        save_interval=1000,
+        keep_period=1000,
+        log_interval=10,
+        batch_size=128,
+        ema_decay=None,
+    ),
+    TrainConfig(
         # Con1 with a bounded, zero-initialised action-side adapter and no latent
         # residual dependence. The adapter is the LoRA analogue: exact no-op at
         # step zero, capacity added on the action path itself.
