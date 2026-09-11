@@ -91,6 +91,9 @@ class Pi0(_model.BaseModel):
         self.con1_residual_weight = config.con1_residual_weight
         self.con1_action_dims = config.con1_action_dims
         self.con1_action_conditioning = config.con1_action_conditioning
+        self.con1_action_conditioning_source = config.con1_action_conditioning_source
+        if self.con1_action_conditioning_source not in ("demonstration", "estimate"):
+            raise ValueError("con1_action_conditioning_source must be 'demonstration' or 'estimate'")
         self.con1_train_action_layers_from = config.con1_train_action_layers_from
         self.con1_metric = config.con1_metric
         self.con1_metric_align_weight = config.con1_metric_align_weight
@@ -394,10 +397,26 @@ class Pi0(_model.BaseModel):
         time = jax.random.beta(time_rng, 1.5, 1, actions.shape[:-2]) * .999 + .001
         x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
         u_t = noise - actions
-        # Action conditioning: predict the consequence of the demonstrated
-        # action chunk rather than the marginal future.
-        action_chunk = actions[..., : self.con1_action_dims] if self.con1_action_conditioning else None
-        context, delta = self._con1_context(observation, action_chunk)
+        # Action conditioning: predict the consequence of the action chunk rather
+        # than the marginal future.
+        if not self.con1_action_conditioning:
+            context, delta = self._con1_context(observation, None)
+        elif self.con1_action_conditioning_source == "estimate":
+            # Sampling feeds the head the *previous denoising step's* estimate,
+            # not the demonstrated chunk. Reproduce that distribution: a
+            # stop-gradient probe pass with the demonstrated chunk gives the
+            # one-step-lagged estimate `x_t - t * v`, and the real (differentiable)
+            # pass is then conditioned on it. Without this the head only ever sees
+            # the training-time chunk and cannot learn to use the action.
+            context, delta_probe = self._con1_context(observation, actions[..., : self.con1_action_dims])
+            velocity_probe, _ = self._con1_velocity(
+                observation, x_t, time, context, jax.lax.stop_gradient(delta_probe))
+            estimate = jax.lax.stop_gradient(
+                x_t - time[..., None, None] * velocity_probe)[..., : self.con1_action_dims]
+            context, delta = self._con1_context(observation, estimate)
+        else:
+            action_chunk = actions[..., : self.con1_action_dims]
+            context, delta = self._con1_context(observation, action_chunk)
         # One main forward. Its VJP supplies action sensitivity; stop_gradient
         # on q avoids second-order optimization of importance weights.
         v_t, pullback, aux = jax.vjp(
@@ -414,7 +433,8 @@ class Pi0(_model.BaseModel):
         # objective, and by the gradient balancer, so it is computed whenever any
         # of them is active - and only then.
         need_sensitivity = (jnp.asarray(beta) > 0) | (
-            self.con1_metric and (self.con1_metric_align_weight > 0 or self.con1_balance_strength > 0))
+            (self.con1_balance_strength > 0)
+            or (self.con1_metric and self.con1_metric_align_weight > 0))
         sensitivity = jax.lax.cond(
             jnp.asarray(need_sensitivity),
             lambda _: jax.lax.stop_gradient(pullback(2 * error / action_count)[0]),
@@ -446,11 +466,18 @@ class Pi0(_model.BaseModel):
         # The configured 0.2-vs-1.0 weights are not the effective balance: the
         # latent term's gradient on the head is measured to be ~700x larger. The
         # factor below is detached, so it cannot be gamed by shrinking the loss.
-        if self.con1_metric and self.con1_balance_strength > 0:
-            delta_grad = jax.grad(
-                lambda d: metric_delta_loss(
-                    d, observation.con1_current_latent, observation.con1_future_latents,
-                    observation.con1_future_valid, scale, weights=weights)[0])(delta)
+        if self.con1_balance_strength > 0:
+            if self.con1_metric:
+                delta_grad = jax.grad(
+                    lambda d: metric_delta_loss(
+                        d, observation.con1_current_latent, observation.con1_future_latents,
+                        observation.con1_future_valid, scale, weights=weights)[0])(delta)
+            else:
+                delta_grad = jax.grad(
+                    lambda d: control_weighted_delta_loss(
+                        d, observation.con1_current_latent, observation.con1_future_latents,
+                        observation.con1_future_valid, aux["attention"], sensitivity, beta=beta,
+                        action_valid=action_valid)[0])(delta)
             latent_weight = self.con1_delta_weight * balanced_latent_weight(
                 sensitivity, delta_grad, self.con1_balance_strength)
         else:

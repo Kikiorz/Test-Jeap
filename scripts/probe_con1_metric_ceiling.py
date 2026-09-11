@@ -44,12 +44,18 @@ def fit_diagonal(r, g):
 
 def fit_low_rank(r, g, rank):
     """M = argmin ||M r - g||_F^2 restricted to rank `rank`."""
-    u, s, vt = np.linalg.svd(r @ r.T + 1e-6 * np.eye(r.shape[0]), full_matrices=True)
-    keep = slice(0, rank)
-    # M = G R^T (R R^T)^-1 truncated: (G V S^-1) U^T
-    cross = g @ r.T
-    m = (cross @ vt.T[:, keep] / s[keep]) @ u[:, keep].T
-    return m
+    # Work in the N x N Gram space: N (samples) << D (latent dim), so this is
+    # ~D/N times cheaper than an SVD of the D x D covariance and numerically
+    # equivalent for the truncated solution.
+    gram = r.T @ r + 1e-6 * np.eye(r.shape[1])
+    eigenvalues, eigenvectors = np.linalg.eigh(gram)
+    order = np.argsort(eigenvalues)[::-1][:rank]
+    values = np.maximum(eigenvalues[order], 1e-12)
+    basis = eigenvectors[:, order]
+    # U = R V / S  (right singular vectors scaled), then M = (G V) (S^-2) U^T
+    u = r @ basis / values
+    gv = g @ basis
+    return (gv / values) @ u.T
 
 
 def main() -> None:
@@ -137,7 +143,10 @@ def main() -> None:
         future_np = np.asarray(future, np.float32)
         for sample in range(len(chunk)):
             keep = valid[sample, :, 0] & action_valid[sample, :, 0]
-            if not keep.any():
+            # Only windows whose horizons are all valid: a ragged tail would make
+            # the per-sample feature vectors different lengths, and the fit needs
+            # one row per sample with a consistent horizon layout.
+            if not keep.all():
                 continue
             residual = (delta_np[sample] - (future_np[sample] - current_np[sample][None]))[keep].reshape(-1)
             residuals.append(residual)
@@ -145,9 +154,19 @@ def main() -> None:
             flags.append(batch_index)
         print(json.dumps({"collected_batch": batch_index + 1, "of": args.collect_batches}), flush=True)
 
-    r = np.stack(residuals).astype(np.float64)
-    g = np.stack(gradients).astype(np.float64)
-    batch_id = np.asarray(flags)
+    cache_path = Path(args.out).with_suffix(".npz")
+    if cache_path.exists():
+        # The collection is the expensive part (one full policy forward per
+        # sample); the fits are cheap with the Gram-space formulation, so a
+        # cached collection lets the fit be re-run freely.
+        cached = np.load(cache_path)
+        r, g, batch_id = cached["r"], cached["g"], cached["batch_id"]
+    else:
+        r = np.stack(residuals).astype(np.float64)
+        g = np.stack(gradients).astype(np.float64)
+        batch_id = np.asarray(flags)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(cache_path, r=r, g=g, batch_id=batch_id)
     train_mask = batch_id < args.train_batches
     val_mask = (batch_id >= args.train_batches) & (batch_id < args.train_batches + args.val_batches)
     test_mask = batch_id >= args.train_batches + args.val_batches

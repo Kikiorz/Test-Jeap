@@ -113,3 +113,75 @@ def test_plain_head_checkpoint_load(tmp_path, monkeypatch):
     monkeypatch.setattr(weight_loaders.CheckpointWeightLoader, "load", lambda self, _: reference)
     loaded = weight_loaders.BaseAndCon1HeadWeightLoader("unused", str(path)).load(reference)
     np.testing.assert_array_equal(loaded["con1_delta_head"]["dense"]["kernel"], 1.)
+
+
+def test_action_conditioning_estimate_path_runs_and_differs_from_demonstration():
+    """Training must be able to condition on the estimate sampling actually uses.
+
+    Sampling feeds the delta head `x_t - t * v` (one denoising step lagged), never
+    the demonstrated chunk. This pins the wiring (both sources run and report the
+    standard diagnostics). Note the two losses *do* coincide at step 0, and that
+    is correct: the head's action branch is zero-initialised, so it contributes
+    nothing until it trains.
+    """
+    base = dict(pi05=True, use_vjepa_aux=True, use_con1=True,
+                paligemma_variant="dummy", action_expert_variant="dummy",
+                con1_train_action_layers_from=0, con1_width=8, con1_latent_dim=6,
+                action_horizon=10, max_token_len=8, con1_action_conditioning=True,
+                con1_action_dims=7)
+
+    def loss_for(source):
+        config = pi0_config.Pi0Config(**base, con1_action_conditioning_source=source)
+        model = config.create(jax.random.key(0))
+        obs = dataclasses.replace(config.fake_obs(batch_size=2),
+            con1_current_latent=jnp.ones((2, 6)),
+            con1_future_latents=jnp.ones((2, 10, 6)) * (1.0 + 0.1 * jnp.arange(10)[None, :, None]),
+            con1_future_valid=jnp.ones((2, 10), bool))
+        total, metrics = model.compute_con1_loss(
+            jax.random.key(1), obs, config.fake_act(batch_size=2), beta=0.0)
+        return float(total), metrics
+
+    demo, demo_metrics = loss_for("demonstration")
+    estimate, estimate_metrics = loss_for("estimate")
+    assert np.isfinite(demo) and np.isfinite(estimate)
+    assert "con1_delta_nmse" in demo_metrics and "con1_delta_nmse" in estimate_metrics
+    # At initialisation the action branch is an exact no-op, so both sources must
+    # give the same loss; any difference here would mean the zero-init invariant
+    # was broken.
+    np.testing.assert_allclose(demo, estimate, rtol=1e-6)
+
+
+def test_gradient_balancing_rescales_the_latent_term_without_the_metric():
+    """Balancing must work on the plain Euclidean path, not only with the metric.
+
+    Measured motivation: the latent term contributes ~695x more gradient to the
+    head than the action term, so with the configured 0.2 weight the head is
+    effectively trained by an action-irrelevant objective. With balancing on, the
+    effective weight must move away from the configured value (and the metric
+    must stay off).
+    """
+    base = dict(pi05=True, use_vjepa_aux=True, use_con1=True,
+                paligemma_variant="dummy", action_expert_variant="dummy",
+                con1_train_action_layers_from=0, con1_width=8, con1_latent_dim=6,
+                action_horizon=10, max_token_len=8, con1_action_conditioning=True,
+                con1_action_dims=7, con1_action_conditioning_source="estimate")
+
+    def metrics_for(balance):
+        config = pi0_config.Pi0Config(**base, con1_balance_strength=balance)
+        model = config.create(jax.random.key(0))
+        obs = dataclasses.replace(config.fake_obs(batch_size=2),
+            con1_current_latent=jnp.ones((2, 6)),
+            con1_future_latents=jnp.ones((2, 10, 6)) * (1.0 + 0.1 * jnp.arange(10)[None, :, None]),
+            con1_future_valid=jnp.ones((2, 10), bool))
+        total, metrics = model.compute_con1_loss(
+            jax.random.key(1), obs, config.fake_act(batch_size=2), beta=0.5)
+        assert np.isfinite(float(total))
+        return metrics
+
+    un_balanced = metrics_for(0.0)
+    balanced = metrics_for(1.0)
+    np.testing.assert_allclose(float(un_balanced["con1_latent_weight"]),
+                               float(un_balanced["con1_delta_loss"] * 0 + 0.2), rtol=1e-6)
+    # The balancer is a detached rescale: different from the configured weight.
+    assert abs(float(balanced["con1_latent_weight"]) - 0.2) > 1e-9, "balancer did not rescale"
+    assert np.isfinite(float(balanced["con1_latent_weight"]))
