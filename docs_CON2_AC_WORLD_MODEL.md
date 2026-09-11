@@ -380,6 +380,28 @@ conditioning on them removes state-propagation error (0.752 -> 0.722 at 1 s).
 The gap is small, so latent-dynamics error - not state drift - is what limits
 the 1 s horizon.
 
+### 3.8e Cache audit (passed)
+
+Every number above is computed from cached tokens, so the cache itself has to be
+reproducible. The Con1 pipeline shipped a real bug of exactly this shape - the
+offline cache was built with one encoder and serving used another, injecting a
+constant offset into every downstream metric - which is why this is checked
+explicitly (`scripts/verify_ac_cache.py`, episodes 0 / 7 / 42 / 400, 12 random
+frames each):
+
+| quantity | worst case over episodes |
+|---|---:|
+| tokens, mean absolute difference vs a fresh online encode | 1.2e-05 |
+| tokens, mean difference relative to token scale | **7.6e-06** |
+| actions, max absolute difference | **0.0** |
+| states, max absolute difference | **0.0** |
+
+The token difference is fp16 storage rounding (the cache is fp16, the fresh
+encode fp32; individual near-zero tokens can differ by a large *relative*
+amount, which is why the criterion is the mean against the token scale). Actions
+and states reproduce bit-exactly, so the cached pipeline matches the online
+path.
+
 ## 3.9 Library surface
 
 Everything above is reproduced by the ``scripts/probe_ac_*`` entry points, and
