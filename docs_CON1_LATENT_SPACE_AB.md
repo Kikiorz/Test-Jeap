@@ -119,7 +119,8 @@ for every row, paired against the zero-correction reference:
 | variant | flow | correction RMS | delta vs base | t |
 |---|---|---|---|---|
 | base (correction = 0) | 0.017220 | — | — | — |
-| **action adapter (latent-free)** | **0.016889** | 0.345 | **−1.93%** | **3.2** |
+| action adapter (latent-free) | 0.016889 | 0.345 | −1.93% | 3.20 |
+| **adapter + live cross-attention** | **0.016810** | 0.382 | **−2.38%** | **3.26** |
 | latent-only JEPA | 0.017061 | 0.154 | −0.93% | 2.6 |
 | latent-only VLM | 0.017082 | 0.181 | −0.80% | 2.0 |
 
@@ -127,10 +128,16 @@ Reading:
 
 * the latent-conditioned path now carries real signal (it was exactly inert
   before), so the structural diagnosis was right;
-* but it recovers only about half of what the latent-free action adapter
-  recovers, and it does so with half the correction amplitude — the error the
-  adapter removes is largely not in the latent;
+* on its own it recovers only about half of what the latent-free action adapter
+  recovers, and with half the correction amplitude — most of the error the
+  adapter removes is not in the latent;
+* with **both paths live** (`pi05_libero_con1_adapter_livecross_40k`) the
+  latent still adds a real increment on top of the adapter: paired per-batch
+  comparison against the adapter alone is **−0.46% at t = −2.74**, and against
+  the base policy **−2.38% at t = 3.26**. This is the best configuration
+  measured, and it is the first in which the latent branch is demonstrably
+  load-bearing rather than decorative;
 * JEPA and VLM are within noise of each other once the path is alive;
-* the adapter alone is the first variant that beats the base policy at more
-  than three standard errors on held-out batches (−1.93% +- 0.6pp, t = 3.2),
-  and it is the checkpoint the LIBERO-Plus sweep deployed.
+* the two variants that beat the base policy at more than three standard errors
+  are the adapter alone (deployed for the LIBERO-Plus sweep) and the adapter
+  with the live latent path (the recommended Con1 checkpoint).
