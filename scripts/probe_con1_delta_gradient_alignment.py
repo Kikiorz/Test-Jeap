@@ -123,6 +123,13 @@ def main() -> None:
         best_fraction = float(np.dot(gm, ga) / max(np.dot(ga, ga), 1e-12))
         norm_action = float(np.linalg.norm(ga))
         norm_mse = float(np.linalg.norm(gm))
+        # The training latent term is a masked mean over valid positions *and*
+        # latent dimensions, so its gradient carries a 1/(count*latent_dim)
+        # factor that the raw residual above does not. Report both scales: the
+        # training-normalised one is what actually competes with the flow term.
+        valid_count = float(valid.sum()) * float(np.asarray(delta, np.float32).shape[-1])
+        gm_train = gm / max(valid_count, 1.0)
+        norm_mse_train = float(np.linalg.norm(gm_train))
         # First-order efficiency at equal delta_z step norm is the cosine, so one
         # reference step fixes both: the action step hits the target reduction and
         # the latent step is scaled to the same delta_z displacement.
@@ -130,7 +137,10 @@ def main() -> None:
         eta_mse = eta_action * norm_action / max(norm_mse, 1e-30)
         rows = {"batch": batch_index, "flow": flow, "cos_mse_vs_action": cos,
                 "mse_fraction_of_best": best_fraction,
-                "norm_ratio_mse_over_action": norm_mse / max(norm_action, 1e-12)}
+                "norm_ratio_mse_over_action": norm_mse / max(norm_action, 1e-12),
+                "norm_ratio_train_normalised": norm_mse_train / max(norm_action, 1e-30),
+                "cos_train_normalised_mse_vs_action": float(
+                    np.dot(gm_train, ga) / max(norm_mse_train * norm_action, 1e-30))}
         with sharding.set_mesh(mesh):
             flow_mse = float(flow_run(params, obs, x_t, device_time, context,
                                       delta - eta_mse * jnp.asarray(gm.reshape(delta.shape)),
@@ -151,6 +161,8 @@ def main() -> None:
         "mean_cos_mse_vs_action": float(np.mean([r["cos_mse_vs_action"] for r in records])),
         "mean_mse_fraction_of_best": float(np.mean([r["mse_fraction_of_best"] for r in records])),
         "mean_norm_ratio": float(np.mean([r["norm_ratio_mse_over_action"] for r in records])),
+        "mean_norm_ratio_train_normalised": float(
+            np.mean([r["norm_ratio_train_normalised"] for r in records])),
         "target_reduction": args.target_reduction,
         "measured_flow_reduction": {
             "mse": float(np.mean([r["flow_reduction_mse"] for r in records])),

@@ -114,3 +114,48 @@ So "we feed the action in and it still does not improve" has a concrete
 explanation at the mechanism level: in the deployed model the action is not fed
 to the predictor, and in the models where it is, it is fed with an objective
 (Euclidean latent reconstruction) whose direction is orthogonal to the action.
+
+### The two objectives are not in conflict - they are imbalanced
+
+Con1 is nominally "train the head to predict the future latent"; the alignment
+probe says the latent gradient direction does not help the action. Those two
+statements do not contradict each other, but the sizes involved do explain the
+behaviour. The training latent term is a masked mean over valid positions *and*
+latent dimensions, so its gradient on `delta_z` is
+`2 * error / (count * latent_dim)`. Measured on the same 192 samples:
+
+| quantity | value |
+|---|---:|
+| \|\|g_mse\|\| / \|\|g_action\|\| (raw residual scale) | 6.0e8 |
+| \|\|g_mse\|\| / \|\|g_action\|\| (**training normalisation**) | **695** (253-1040 per batch) |
+| cosine (unchanged by the normalisation) | -0.0064 |
+
+With the configured weights (`con1_delta_weight = 0.2` against `flow_weight =
+1.0-2.0`) the latent term still contributes roughly **70-140x more gradient
+magnitude to the head than the action term does**, while pointing in a
+direction that is orthogonal to it. Re-weighting cannot fix this: multiplying
+the latent term by any weight in `[0, 1]` (which is what the sensitivity-guided
+re-weighting does) cannot close a 700x gap, and it does not rotate the direction.
+
+So the correct relationship between the two parts is:
+
+| part | responsibility |
+|---|---|
+| Con1 (head + adapter + flow) | *what* to predict: supplies the latent target and the interface into the action expert |
+| Con2 (`F_phi`) | *how to measure it*: a metric whose gradient direction is action relevant, and which is also the right objective for test-time adaptation |
+
+They are complementary, not competing. The current implementation only looks
+like a conflict because the metric is arbitrary with respect to control and its
+gradient is two to three orders of magnitude larger than the control signal.
+
+Actionable order of fixes:
+
+1. **Balance the two terms in gradient-norm terms, not loss-value terms** (the
+   current 0.2 vs 1.0 looks balanced as a loss and is 70-140x imbalanced as a
+   gradient).
+2. **Replace the Euclidean metric with `F_phi`** (direction), trained by
+   direction distillation against `g_action`.
+3. **Enable the head's action conditioning and match its training-time chunk to
+   the inference-time chunk** (the deployed config leaves conditioning off, and
+   where it is on, training sees demonstrated chunks while sampling sees a
+   one-step-lagged estimate).
