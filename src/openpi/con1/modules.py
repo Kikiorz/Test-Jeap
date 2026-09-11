@@ -141,6 +141,13 @@ class ActionDeltaCrossAttention(nn.Module):
     # adds capacity that does not depend on the latent prediction at all.
     use_action_adapter: bool = False
     adapter_scale: float = 1.0
+    # Zero keeps the original behaviour: the correction is exactly zero at step
+    # zero, but the key/value/query projections then receive no gradient until
+    # the output projection has moved on its own. A small non-zero standard
+    # deviation lets the latent-conditioned path train from the first step while
+    # the gate keeps the perturbation negligible. The `alpha=0` identity with
+    # the base policy is preserved by the gate regardless of this value.
+    out_init_std: float = 0.0
     # Hard relative budget on the correction: per token, its RMS is capped at
     # `residual_budget` times the RMS of the incoming action hidden state. 0
     # disables the cap. The rescaling factor is stop-gradiented, so it bounds
@@ -161,8 +168,10 @@ class ActionDeltaCrossAttention(nn.Module):
         k = nn.Dense(self.width, use_bias=False, name="key")(predicted_delta.astype(jnp.float32))
         v = nn.Dense(self.width, use_bias=False, name="value")(predicted_delta.astype(jnp.float32))
         attention = jax.nn.softmax(jnp.einsum("bhd,bjd->bhj", q, k) / math.sqrt(self.width), -1)
+        out_init = (nn.initializers.zeros_init() if self.out_init_std <= 0
+                    else nn.initializers.normal(stddev=self.out_init_std))
         residual = nn.Dense(self.action_width, use_bias=False, name="out",
-                            kernel_init=nn.initializers.zeros_init())(attention @ v)
+                            kernel_init=out_init)(attention @ v)
         logit = self.param("alpha_logit", lambda _: jnp.asarray(
             math.log(self.alpha_initial / (1 - self.alpha_initial)), dtype=jnp.float32))
         correction = jax.nn.sigmoid(logit) * residual

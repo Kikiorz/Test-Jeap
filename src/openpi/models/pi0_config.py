@@ -79,6 +79,11 @@ class Pi0Config(_model.BaseModelConfig):
     # Zero-initialised, bounded action-side adapter (Con1's LoRA analogue).
     con1_action_adapter: bool = False
     con1_adapter_scale: float = 1.0
+    # Standard deviation of the small random initialisation on the
+    # latent-conditioned cross-attention output projection. 0 reproduces the
+    # original zero-init (exact no-op at step zero, but no gradient on the
+    # key/value/query projections until the output has moved).
+    con1_cross_attention_out_init: float = 0.0
     con1_residual_budget: float = 0.0
     # Learned, bounded, positive-definite metric on the latent-delta residual.
     # Off by default so every existing run is bit-identical: with the metric on,

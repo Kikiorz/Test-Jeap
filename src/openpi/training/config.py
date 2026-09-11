@@ -1252,6 +1252,204 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        # Both paths live at once: the latent-free action adapter *and* a
+        # latent-conditioned cross-attention that actually receives gradient
+        # from step 0 (non-zero output init, wider gate). If the latent carries
+        # anything the adapter cannot already express, this beats the adapter
+        # alone; if it is purely additive noise, it lands where the adapter is.
+        name="pi05_libero_con1_adapter_livecross_40k",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=False,
+            action_horizon=10,
+            use_vjepa_aux=True,
+            vjepa_target_grid_size=8,
+            use_con1=True,
+            con1_action_adapter=True,
+            con1_cross_attention_out_init=0.02,
+            con1_alpha_initial=0.3,
+            con1_residual_budget=0.05,
+            con1_action_dims=7,
+            con1_train_action_layers_from=14,
+            con1_stage1_steps=2000,
+            con1_stage2_steps=5000,
+            con1_stage3_steps=5000,
+            con1_sgr_beta=0.5,
+            con1_delta_weight=0.2,
+            con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0,
+            con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="/workspace/artifacts/datasets/lerobot_libero",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+                           "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/assets",
+                asset_id="physical-intelligence/libero",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
+            ),
+            extra_delta_transform=False,
+            con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
+        ),
+        weight_loader=weight_loaders.BaseAndCon1HeadWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/params",
+            "/workspace/artifacts/checkpoints/con1_anchored_head_40k_20k_batch256_lr1e5/checkpoint_020000.msgpack",
+        ),
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+            )),
+        ),
+        num_train_steps=12_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=12_000, decay_lr=1e-5),
+        save_interval=1000,
+        keep_period=1000,
+        log_interval=10,
+        batch_size=128,
+        ema_decay=None,
+    ),
+    TrainConfig(
+        # Latent-only Con1: the latent-free action adapter branch is removed, so
+        # the cross-attention over the predicted delta is the *only* added
+        # capacity. The output projection gets a small non-zero init so the
+        # key/value/query projections receive gradient from step 0 (with the
+        # original zero init they only start moving after the output has drifted
+        # on its own). The alpha gate still makes alpha=0 bit-identical to the
+        # base policy.
+        name="pi05_libero_con1_latentonly_jepa_40k",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=False,
+            action_horizon=10,
+            use_vjepa_aux=True,
+            vjepa_target_grid_size=8,
+            use_con1=True,
+            con1_action_adapter=False,
+            con1_cross_attention_out_init=0.02,
+            con1_alpha_initial=0.3,
+            con1_residual_budget=0.05,
+            con1_action_dims=7,
+            con1_train_action_layers_from=14,
+            con1_stage1_steps=2000,
+            con1_stage2_steps=5000,
+            con1_stage3_steps=5000,
+            con1_sgr_beta=0.5,
+            con1_delta_weight=0.2,
+            con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0,
+            con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="/workspace/artifacts/datasets/lerobot_libero",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+                           "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/assets",
+                asset_id="physical-intelligence/libero",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
+            ),
+            extra_delta_transform=False,
+            con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_v1",
+        ),
+        weight_loader=weight_loaders.BaseAndCon1HeadWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/params",
+            "/workspace/artifacts/checkpoints/con1_anchored_head_40k_20k_batch256_lr1e5/checkpoint_020000.msgpack",
+        ),
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+            )),
+        ),
+        num_train_steps=12_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=12_000, decay_lr=1e-5),
+        save_interval=1000,
+        keep_period=1000,
+        log_interval=10,
+        batch_size=128,
+        ema_decay=None,
+    ),
+    TrainConfig(
+        # Same latent-only coupling, but the delta head predicts the mean of the
+        # PI0.5 VLM predictive tokens instead of the pooled V-JEPA 2.1 latent.
+        name="pi05_libero_con1_latentonly_vlm_40k",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=False,
+            action_horizon=10,
+            use_vjepa_aux=True,
+            vjepa_target_grid_size=8,
+            use_con1=True,
+            con1_action_adapter=False,
+            con1_cross_attention_out_init=0.02,
+            con1_alpha_initial=0.3,
+            con1_residual_budget=0.05,
+            con1_latent_dim=2048,
+            con1_action_dims=7,
+            con1_train_action_layers_from=14,
+            con1_stage1_steps=2000,
+            con1_stage2_steps=5000,
+            con1_stage3_steps=5000,
+            con1_sgr_beta=0.5,
+            con1_delta_weight=0.2,
+            con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0,
+            con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="/workspace/artifacts/datasets/lerobot_libero",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+                           "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/assets",
+                asset_id="physical-intelligence/libero",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_vlm_pooled",
+            ),
+            extra_delta_transform=False,
+            con1_latent_root="/workspace/artifacts/con1/anchored_40k_features_vlm_pooled",
+        ),
+        weight_loader=weight_loaders.BaseAndCon1HeadWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_robot_sweep/checkpoints/openpi/"
+            "pi05_libero_vjepa_aux/pi05_vjepa_pair32_q64_w01_seed42_fsdp2_b128_continue60k_exact/40000/params",
+            "/workspace/artifacts/checkpoints/con1_vlm_head_40k_10k/checkpoint_010000.msgpack",
+        ),
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+            )),
+        ),
+        num_train_steps=12_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=12_000, decay_lr=1e-5),
+        save_interval=1000,
+        keep_period=1000,
+        log_interval=10,
+        batch_size=128,
+        ema_decay=None,
+    ),
+    TrainConfig(
         # Con1 with a bounded, zero-initialised action-side adapter and no latent
         # residual dependence. The adapter is the LoRA analogue: exact no-op at
         # step zero, capacity added on the action path itself.

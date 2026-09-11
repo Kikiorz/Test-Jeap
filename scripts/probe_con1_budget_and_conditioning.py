@@ -27,6 +27,38 @@ from openpi.models import model as _model
 from openpi.training import checkpoints, config as configs, data_loader, sharding
 
 
+def _path_names(path) -> list[str]:
+    names = []
+    for entry in path:
+        for attribute in ("name", "key", "idx"):
+            if hasattr(entry, attribute):
+                names.append(str(getattr(entry, attribute)))
+                break
+        else:
+            names.append(str(entry))
+    return names
+
+
+def _zero_correction(params):
+    """Base-policy reference: zero the Con1 correction at its output projection.
+
+    Zeroing the output kernel makes the correction identically zero while
+    leaving every restored parameter in place, so the run differs from the
+    adapter run only by the correction itself.
+    """
+    def zero(path, leaf):
+        names = _path_names(path)
+        # Bridged Linen parameters appear as "<layer>/kernel/value".
+        if ("con1_cross_attention" in names and len(names) >= 3
+                and names[-1] == "value" and names[-2] == "kernel"
+                and names[-3] in ("out", "adapter_out")):
+            print("ZEROED", "/".join(names), getattr(leaf, "shape", None), flush=True)
+            return jnp.zeros_like(leaf)
+        return leaf
+
+    return jax.tree_util.tree_map_with_path(zero, params)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
@@ -37,6 +69,10 @@ def main() -> None:
     parser.add_argument("--budgets", type=float, nargs="+", default=[0.05, 0.10, 0.20, 0.0],
                         help="Residual budgets to compare; 0 disables the cap.")
     parser.add_argument("--checkpoint-step", type=int, default=None)
+    parser.add_argument("--zero-correction", action="store_true",
+                        help="Silence the Con1 correction so the run measures the base policy.")
+    parser.add_argument("--dump-param-paths", action="store_true",
+                        help="Print the Con1 parameter paths and exit (naming check).")
     parser.add_argument("--seed", type=int, default=20260913)
     args = parser.parse_args()
 
@@ -61,7 +97,16 @@ def main() -> None:
     params = state.params
     physical = int(config.model.con1_action_dims)
     if not config.model.con1_action_adapter:
-        raise ValueError("This probe needs the residual action adapter")
+        if not config.model.con1_cross_attention_out_init > 0:
+            raise ValueError("This probe needs a Con1 correction path")
+    if args.dump_param_paths:
+        for path, leaf in jax.tree_util.tree_flatten_with_path(params)[0]:
+            names = [str(getattr(p, "key", getattr(p, "name", p))) for p in path]
+            if "con1" in "/".join(names):
+                print("PARAM", "/".join(names), getattr(leaf, "shape", None))
+        return
+    if args.zero_correction:
+        params = _zero_correction(params)
     # Note: the deployed adapter config leaves the *head* unconditioned; the
     # action-conditioning variants (zero/shuffled chunk) only apply when
     # con1_action_conditioning is set, so they are skipped otherwise.

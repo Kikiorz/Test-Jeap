@@ -100,3 +100,37 @@ coupling*, not the target:
 
 Until one of those is in place, any latent-space choice will keep measuring as
 a no-op, which is exactly what all six experiments to date show.
+
+## 5. Round two: making the latent path live
+
+Both fixes were implemented (new config flag `con1_cross_attention_out_init`,
+new configs `pi05_libero_con1_latentonly_{jepa,vlm}_40k`, and a
+`--zero-correction` probe mode that zeroes the Con1 output kernels to measure
+the exact base policy). First attempt used a deliberately conservative
+`out_init_std=1e-3` with the default gate `alpha_initial=0.05`: the correction
+energy stayed at **0.000000 for all 1000 steps** and the training flow loss did
+not move — with the zero-init removed but a tiny init left in place, the
+key/value/query projections still never receive useful gradient. Raising the
+init to `0.02` and the gate to `0.30` makes the path live.
+
+Final measurement, 72 paired batches x 8 samples, identical protocol and seed
+for every row, paired against the zero-correction reference:
+
+| variant | flow | correction RMS | delta vs base | t |
+|---|---|---|---|---|
+| base (correction = 0) | 0.017220 | — | — | — |
+| **action adapter (latent-free)** | **0.016889** | 0.345 | **−1.93%** | **3.2** |
+| latent-only JEPA | 0.017061 | 0.154 | −0.93% | 2.6 |
+| latent-only VLM | 0.017082 | 0.181 | −0.80% | 2.0 |
+
+Reading:
+
+* the latent-conditioned path now carries real signal (it was exactly inert
+  before), so the structural diagnosis was right;
+* but it recovers only about half of what the latent-free action adapter
+  recovers, and it does so with half the correction amplitude — the error the
+  adapter removes is largely not in the latent;
+* JEPA and VLM are within noise of each other once the path is alive;
+* the adapter alone is the first variant that beats the base policy at more
+  than three standard errors on held-out batches (−1.93% +- 0.6pp, t = 3.2),
+  and it is the checkpoint the LIBERO-Plus sweep deployed.
