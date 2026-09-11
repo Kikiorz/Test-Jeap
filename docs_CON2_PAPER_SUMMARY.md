@@ -49,6 +49,7 @@ episodes; the 5 Hz rows use 5 steps = 1 s.
 | fine-tuned, 10 fps, longer AR curriculum | - | - | 0.938 |
 | **fine-tuned, 5 Hz (recommended)** | **0.710** | **0.656** | **0.731** |
 | fine-tuned, 5 Hz, 400 episodes | 0.783 | 0.736 | 0.783 |
+| fine-tuned, 5 Hz, 400 episodes, 4000 steps | **0.755** | **0.702** | **0.769** |
 | fine-tuned, 5 Hz, executed actions/states as rollout input | 0.725 | 0.680 | 0.722 |
 | from random init, same budget | 1.119 | 1.026 | 0.962 |
 
