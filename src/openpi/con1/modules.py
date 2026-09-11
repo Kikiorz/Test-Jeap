@@ -226,23 +226,19 @@ def anchored_loss(delta, anchor, future_target, valid, *, delta_weight=1., featu
     return metrics["loss"], metrics
 
 
-def control_weighted_delta_loss(delta, anchor, future_target, valid, attention, sensitivity,
-                                *, beta, action_valid=None, temperature=.1):
-    """Last-layer usage x action sensitivity with a uniform supervision floor.
+def sensitivity_horizon_weights(attention, sensitivity, valid, *, beta, action_valid=None,
+                                temperature=.1, prediction=None):
+    """Per-horizon supervision weights: last-layer usage x action sensitivity.
 
-    q is detached: the model cannot lower loss by moving its own weights toward
-    easy horizons. Invalid episode-tail labels get neither loss nor gradient.
-    Zero sensitivity (including zero-initialized adapters) falls back to uniform.
+    Detached, and floored at the uniform distribution: invalid episode-tail
+    labels get neither loss nor gradient, and a zero sensitivity (including a
+    zero-initialised adapter) falls back to uniform. Extracted so the Euclidean
+    and the learned-metric losses weight horizons identically.
     """
-    if delta.shape != future_target.shape or valid.shape != delta.shape[:-1]:
-        raise ValueError("Con1 label/mask shapes disagree")
     mask = valid.astype(bool)
     count = mask.sum(-1, keepdims=True)
     uniform = mask.astype(jnp.float32) / jnp.maximum(count, 1)
-    safe_future = jnp.where(mask[..., None], future_target.astype(jnp.float32), anchor[:, None])
-    target = jax.lax.stop_gradient(safe_future - anchor[:, None].astype(jnp.float32))
-    pred = jnp.where(mask[..., None], delta.astype(jnp.float32), 0.)
-    mse = jnp.square(pred - target).mean(-1)
+    pred = jnp.where(mask[..., None], (sensitivity if prediction is None else prediction).astype(jnp.float32), 0.)
     if action_valid is None:
         action_valid = jnp.ones(attention.shape[:2], dtype=bool)
     usage = (attention.astype(jnp.float32) * action_valid[..., None]).sum(1)
@@ -256,9 +252,149 @@ def control_weighted_delta_loss(delta, anchor, future_target, valid, attention, 
     use_control = (normalizer > 1e-12) & (strength.sum(-1, keepdims=True) > 1e-12)
     control = jnp.where(use_control, relevance / jnp.maximum(normalizer, 1e-12), uniform)
     q = jax.lax.stop_gradient((1 - beta) * uniform + beta * control)
+    return q
+
+
+def control_weighted_delta_loss(delta, anchor, future_target, valid, attention, sensitivity,
+                                *, beta, action_valid=None, temperature=.1):
+    """Last-layer usage x action sensitivity with a uniform supervision floor.
+
+    q is detached: the model cannot lower loss by moving its own weights toward
+    easy horizons. Invalid episode-tail labels get neither loss nor gradient.
+    Zero sensitivity (including zero-initialized adapters) falls back to uniform.
+    """
+    if delta.shape != future_target.shape or valid.shape != delta.shape[:-1]:
+        raise ValueError("Con1 label/mask shapes disagree")
+    mask = valid.astype(bool)
+    count = mask.sum(-1, keepdims=True)
+    safe_future = jnp.where(mask[..., None], future_target.astype(jnp.float32), anchor[:, None])
+    target = jax.lax.stop_gradient(safe_future - anchor[:, None].astype(jnp.float32))
+    pred = jnp.where(mask[..., None], delta.astype(jnp.float32), 0.)
+    mse = jnp.square(pred - target).mean(-1)
+    q = sensitivity_horizon_weights(attention, sensitivity, valid, beta=beta,
+                                    action_valid=action_valid, temperature=temperature,
+                                    prediction=pred)
     # Weight examples by valid horizon count; beta=0 is the global masked MSE.
     denom = jnp.maximum(count.sum(), 1)
     loss = jnp.sum(jnp.sum(q * mse, axis=-1) * count[:, 0]) / denom
     plain_mse = jnp.sum(mse) / denom
     zero_mse = jnp.sum(jnp.square(target).mean(-1)) / denom
     return loss, {"con1_delta_nmse": plain_mse / jnp.maximum(zero_mse, 1e-12)}
+
+
+class DeltaMetric(nn.Module):
+    """Bounded diagonal positive-definite metric on the latent-delta residual.
+
+    ``F(r) = mean_d ( m_d * r_d^2 )`` with ``m = 1 + max_scale * tanh(theta)``.
+
+    * **Exactly Euclidean at initialisation** (``theta = 0`` -> ``m = 1``), so
+      switching it on cannot jump away from the current behaviour.
+    * **Positive definite with a single zero at ``r = 0``** for any ``theta``
+      because ``m_d >= 1 - max_scale > 0``. The head therefore can never be
+      driven towards a wrong latent; the metric only re-weights *which*
+      residual directions are paid for, the target ``delta_z*`` is unchanged.
+    * **Non-zero gradient at the identity**, which is what makes it trainable:
+      ``m`` enters linearly. Two textbook parameterisations fail here and are
+      deliberately not used - ``I + U U^T`` is quadratic in ``U``, and
+      ``A = p q^T`` is bilinear in ``(p, q)``; both have an exact saddle at the
+      identity, so their parameters would never leave zero.
+
+    A diagonal metric can re-weight latent dimensions but cannot rotate the
+    gradient. Rotation needs a non-diagonal metric, which in turn needs a
+    parameterisation whose gradient does not vanish at ``I``; that is future
+    work, not something to smuggle in with a frozen parameter block.
+    """
+
+    latent_dim: int = 2816
+    max_scale: float = 0.5
+
+    @nn.compact
+    def __call__(self, residual):
+        if residual.ndim != 3 or residual.shape[-1] != self.latent_dim:
+            raise ValueError(f"Expected residual[B,H,{self.latent_dim}], got {residual.shape}")
+        if not 0 <= self.max_scale < 1:
+            raise ValueError("max_scale must be in [0, 1) so the metric stays positive definite")
+        theta = self.param("theta", nn.initializers.zeros, (self.latent_dim,))
+        scale = 1.0 + self.max_scale * jnp.tanh(theta)
+        return metric_value(residual.astype(jnp.float32), scale), scale
+
+
+def metric_value(residual, scale):
+    """Per-horizon quadratic form of the diagonal metric."""
+    return (jnp.square(residual) * scale).mean(-1)
+
+
+def metric_gradient(residual, scale):
+    """dF/dresidual for the diagonal metric."""
+    return 2.0 * scale * residual / residual.shape[-1]
+
+
+def metric_delta_loss(delta, anchor, future_target, valid, scale, *, weights=None):
+    """Masked, optionally sensitivity-weighted loss under a learned metric.
+
+    Drop-in replacement for :func:`control_weighted_delta_loss`: same masking,
+    same weighting contract, but the quadratic form is the learned metric
+    instead of the identity. ``scale`` is the per-dimension weight produced by
+    :class:`DeltaMetric`; with ``scale = 1`` (the initialisation) the value is
+    identical to the Euclidean masked MSE. ``weights`` are renormalised per
+    sample over valid horizons, so passing a plain mask means uniform weighting.
+    """
+    if delta.shape != future_target.shape or valid.shape != delta.shape[:-1]:
+        raise ValueError("Con1 label/mask shapes disagree")
+    mask = valid.astype(bool)
+    count = mask.sum(-1, keepdims=True)
+    safe_future = jnp.where(mask[..., None], future_target.astype(jnp.float32), anchor[:, None])
+    target = jax.lax.stop_gradient(safe_future - anchor[:, None].astype(jnp.float32))
+    residual = jnp.where(mask[..., None], delta.astype(jnp.float32) - target, 0.0)
+    per_horizon = metric_value(residual, scale)
+    if weights is None:
+        weights = mask.astype(jnp.float32)
+    weights = jax.lax.stop_gradient(weights.astype(jnp.float32) * mask)
+    weights = weights / jnp.maximum(weights.sum(-1, keepdims=True), 1e-12)
+    denom = jnp.maximum(count.sum(), 1)
+    loss = jnp.sum(jnp.sum(weights * per_horizon, axis=-1) * count[:, 0]) / denom
+    plain = jnp.sum(jnp.where(mask, per_horizon, 0.0)) / denom
+    zero = jnp.sum(jnp.square(target).mean(-1)) / denom
+    return loss, {"con1_delta_nmse": plain / jnp.maximum(zero, 1e-12)}
+
+
+def direction_alignment_loss(delta, anchor, future_target, valid, sensitivity, scale):
+    """Train the metric so its gradient points along the action direction.
+
+    ``sensitivity`` is the already-computed ``d(action flow)/d(delta)``. The
+    cosine is scale free, so this objective cannot game the magnitude of the
+    latent term - only its direction.
+    """
+    if sensitivity.shape != delta.shape:
+        raise ValueError("sensitivity must match the delta shape")
+    mask = valid.astype(bool)
+    target = jax.lax.stop_gradient(
+        jnp.where(mask[..., None], future_target.astype(jnp.float32), anchor[:, None])
+        - anchor[:, None].astype(jnp.float32))
+    residual = jnp.where(mask[..., None], delta.astype(jnp.float32) - target, 0.0)
+    direction = metric_gradient(residual, scale)
+    action = jnp.where(mask[..., None], jax.lax.stop_gradient(sensitivity.astype(jnp.float32)), 0.0)
+    flat_direction = direction.reshape(direction.shape[0], -1)
+    flat_action = action.reshape(action.shape[0], -1)
+    denominator = (jnp.linalg.norm(flat_direction, axis=-1) * jnp.linalg.norm(flat_action, axis=-1))
+    active = denominator > 1e-12
+    cosine = jnp.where(active, jnp.sum(flat_direction * flat_action, axis=-1) / jnp.maximum(denominator, 1e-12), 0.0)
+    weight = jnp.where(active, 1.0, 0.0)
+    loss = 1.0 - jnp.sum(cosine * weight) / jnp.maximum(weight.sum(), 1.0)
+    return loss, {"con1_metric_cosine": jnp.sum(cosine * weight) / jnp.maximum(weight.sum(), 1.0)}
+
+
+def balanced_latent_weight(flow_gradient, delta_gradient, strength):
+    """Gradient-scale balancing factor for the latent term.
+
+    The measured imbalance is large: the latent term contributes ~700x more
+    gradient magnitude to the head than the flow term does (see
+    ``docs_CON1_DELTA_GRADIENT_ALIGNMENT.md``), so the configured 0.2 vs 1.0
+    weights are not the effective balance. This returns a detached factor that
+    makes the two contributions comparable, interpolated by ``strength``
+    (``0`` keeps the configured weights exactly).
+    """
+    flow_norm = jnp.linalg.norm(flow_gradient.reshape(-1))
+    delta_norm = jnp.linalg.norm(delta_gradient.reshape(-1))
+    ratio = jax.lax.stop_gradient(flow_norm / jnp.maximum(delta_norm, 1e-12))
+    return (1.0 - strength) + strength * ratio

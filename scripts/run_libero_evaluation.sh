@@ -129,6 +129,12 @@ fi
 if [[ "${RETRY_ERRORS:-0}" == "1" ]]; then
     eval_args+=(--args.retry-errors)
 fi
+if [[ -n "${ONLY_CATEGORY:-}" ]]; then
+    eval_args+=(--args.only-category "$ONLY_CATEGORY")
+fi
+if [[ -n "${ONLY_DIFFICULTY_LEVEL:-}" ]]; then
+    eval_args+=(--args.only-difficulty-level "$ONLY_DIFFICULTY_LEVEL")
+fi
 if [[ "$MODE" == "plus" ]]; then
     eval_args+=(
         --args.classification-path

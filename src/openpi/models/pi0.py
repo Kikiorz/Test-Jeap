@@ -12,7 +12,16 @@ from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
-from openpi.con1.modules import AnchoredDeltaHead, ActionDeltaCrossAttention, control_weighted_delta_loss
+from openpi.con1.modules import (
+    AnchoredDeltaHead,
+    ActionDeltaCrossAttention,
+    DeltaMetric,
+    balanced_latent_weight,
+    control_weighted_delta_loss,
+    direction_alignment_loss,
+    metric_delta_loss,
+    sensitivity_horizon_weights,
+)
 
 logger = logging.getLogger("openpi")
 
@@ -83,6 +92,9 @@ class Pi0(_model.BaseModel):
         self.con1_action_dims = config.con1_action_dims
         self.con1_action_conditioning = config.con1_action_conditioning
         self.con1_train_action_layers_from = config.con1_train_action_layers_from
+        self.con1_metric = config.con1_metric
+        self.con1_metric_align_weight = config.con1_metric_align_weight
+        self.con1_balance_strength = config.con1_balance_strength
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         self.action_depth = action_expert_config.depth
@@ -149,6 +161,15 @@ class Pi0(_model.BaseModel):
             self.con1_cross_attention.lazy_init(
                 jnp.zeros((1, config.action_horizon, action_expert_config.width), dtype=jnp.float32),
                 jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32), rngs=rngs)
+            if config.con1_metric:
+                # Bounded diagonal metric on the latent residual; zero-initialised
+                # so it is the identity (the Euclidean loss) at step 0.
+                self.con1_delta_metric = nnx_bridge.ToNNX(
+                    DeltaMetric(latent_dim=config.con1_latent_dim,
+                                max_scale=config.con1_metric_max_scale))
+                self.con1_delta_metric.lazy_init(
+                    jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32),
+                    rngs=rngs)
 
         if self.use_vjepa_aux:
             query_init = jax.random.normal(
@@ -389,20 +410,62 @@ class Pi0(_model.BaseModel):
         action_mask = action_valid[..., None] & (jnp.arange(self.action_dim) < self.con1_action_dims)
         error = jnp.where(action_mask, v_t.astype(jnp.float32) - u_t.astype(jnp.float32), 0.)
         action_count = jnp.maximum(action_mask.sum(), 1)
+        # The action-direction VJP is needed by SGR, by the metric's alignment
+        # objective, and by the gradient balancer, so it is computed whenever any
+        # of them is active - and only then.
+        need_sensitivity = (jnp.asarray(beta) > 0) | (
+            self.con1_metric and (self.con1_metric_align_weight > 0 or self.con1_balance_strength > 0))
         sensitivity = jax.lax.cond(
-            jnp.asarray(beta) > 0,
+            jnp.asarray(need_sensitivity),
             lambda _: jax.lax.stop_gradient(pullback(2 * error / action_count)[0]),
             lambda _: jnp.zeros_like(delta), operand=None)
-        delta_loss, delta_metrics = control_weighted_delta_loss(
-            delta, observation.con1_current_latent, observation.con1_future_latents,
-            observation.con1_future_valid, aux["attention"], sensitivity, beta=beta,
-            action_valid=action_valid)
+        if self.con1_metric:
+            # Learned bounded metric on the same residual/target: identity at
+            # step 0, positive definite for every parameter value, so the only
+            # zero stays at delta = delta*.
+            _, scale = self.con1_delta_metric(delta)
+            weights = sensitivity_horizon_weights(
+                aux["attention"], sensitivity, observation.con1_future_valid, beta=beta,
+                action_valid=action_valid)
+            delta_loss, delta_metrics = metric_delta_loss(
+                delta, observation.con1_current_latent, observation.con1_future_latents,
+                observation.con1_future_valid, scale, weights=weights)
+            delta_metrics["con1_metric_scale_mean"] = jnp.mean(scale)
+            align_loss = jnp.zeros(())
+            if self.con1_metric_align_weight > 0:
+                align_loss, align_metrics = direction_alignment_loss(
+                    delta, observation.con1_current_latent, observation.con1_future_latents,
+                    observation.con1_future_valid, sensitivity, scale)
+                delta_metrics.update(align_metrics)
+        else:
+            delta_loss, delta_metrics = control_weighted_delta_loss(
+                delta, observation.con1_current_latent, observation.con1_future_latents,
+                observation.con1_future_valid, aux["attention"], sensitivity, beta=beta,
+                action_valid=action_valid)
+            align_loss = jnp.zeros(())
+        # The configured 0.2-vs-1.0 weights are not the effective balance: the
+        # latent term's gradient on the head is measured to be ~700x larger. The
+        # factor below is detached, so it cannot be gamed by shrinking the loss.
+        if self.con1_metric and self.con1_balance_strength > 0:
+            delta_grad = jax.grad(
+                lambda d: metric_delta_loss(
+                    d, observation.con1_current_latent, observation.con1_future_latents,
+                    observation.con1_future_valid, scale, weights=weights)[0])(delta)
+            latent_weight = self.con1_delta_weight * balanced_latent_weight(
+                sensitivity, delta_grad, self.con1_balance_strength)
+        else:
+            latent_weight = self.con1_delta_weight
         flow = jnp.square(error).sum() / action_count
         weighted_flow = flow_weight * flow
-        total = weighted_flow + self.con1_delta_weight * delta_loss + self.con1_residual_weight * aux["con1_residual_energy"]
+        weighted_delta = latent_weight * delta_loss
+        total = (weighted_flow + weighted_delta
+                 + self.con1_metric_align_weight * align_loss
+                 + self.con1_residual_weight * aux["con1_residual_energy"])
         return total, dict(delta_metrics, flow_loss=flow, weighted_flow_loss=weighted_flow,
                           flow_weight=flow_weight, con1_delta_loss=delta_loss,
-                          weighted_con1_delta_loss=self.con1_delta_weight * delta_loss,
+                          weighted_con1_delta_loss=weighted_delta,
+                          con1_latent_weight=latent_weight,
+                          con1_metric_align_loss=align_loss,
                           con1_alpha=aux["con1_alpha"], con1_residual_energy=aux["con1_residual_energy"],
                           sgr_beta=jnp.asarray(beta))
 

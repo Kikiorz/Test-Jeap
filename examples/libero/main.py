@@ -86,6 +86,8 @@ class Args:
     benchmark_mode: str = "standard"  # Either standard or plus
     benchmark_revision: Optional[str] = None  # Exact benchmark source commit/tag; required for durable results
     classification_path: Optional[str] = None  # Optional LIBERO-Plus task_classification.json override
+    only_category: Optional[str] = None  # Optional LIBERO-Plus subset filter (e.g. "Camera Viewpoints")
+    only_difficulty_level: Optional[int] = None  # Optional LIBERO-Plus difficulty filter (1-5)
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
     num_trials_per_task: int = 50  # Number of rollouts per task
     task_start: int = 0  # Inclusive global task index
@@ -284,6 +286,24 @@ def eval_libero(args: Args) -> None:
         args.num_task_shards,
         args.task_shard_id,
     )
+    # Optional LIBERO-Plus subset selection. Filtering happens after the
+    # range/shard split, so each shard still owns a disjoint slice of the suite
+    # and the run header keeps describing the full task set. Defaults to no
+    # filtering, which leaves every existing run byte-identical.
+    if args.only_category or args.only_difficulty_level is not None:
+        if benchmark_mode != "plus":
+            raise ValueError("--args.only-category / --args.only-difficulty-level require --args.benchmark-mode plus")
+        selected = len(task_ids)
+        task_ids = [
+            task_id for task_id in task_ids
+            if (args.only_category is None or task_infos[task_id].category == args.only_category)
+            and (args.only_difficulty_level is None
+                 or task_infos[task_id].difficulty_level == args.only_difficulty_level)
+        ]
+        logging.info(
+            "Subset filter: category=%s difficulty=%s -> %d of %d tasks in this shard",
+            args.only_category, args.only_difficulty_level, len(task_ids), selected,
+        )
     max_steps = _get_max_steps(args.task_suite_name)
     run_header = _make_run_header(
         args,

@@ -72,6 +72,19 @@ class Pi0Config(_model.BaseModelConfig):
     con1_action_adapter: bool = False
     con1_adapter_scale: float = 1.0
     con1_residual_budget: float = 0.0
+    # Learned, bounded, positive-definite metric on the latent-delta residual.
+    # Off by default so every existing run is bit-identical: with the metric on,
+    # `theta = 0` reproduces the Euclidean loss exactly and only the *direction*
+    # of the latent gradient can change (measured to be orthogonal to the
+    # action-improving direction, see docs_CON1_DELTA_GRADIENT_ALIGNMENT.md).
+    con1_metric: bool = False
+    con1_metric_max_scale: float = 0.5
+    con1_metric_align_weight: float = 0.0
+    # Gradient-scale balancing of the latent term against the flow term,
+    # interpolated from the configured weights (0.0) to equal gradient magnitude
+    # (1.0). The measured imbalance is ~700x, so the configured 0.2 vs 1.0 is not
+    # the effective balance.
+    con1_balance_strength: float = 0.0
     con1_action_dims: int = 7
     # Three-stage coupling schedule: 2k adapter warm-up, 5k joint flow,
     # then 5k joint flow with the action-sensitivity weighting enabled.

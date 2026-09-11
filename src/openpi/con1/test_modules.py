@@ -4,6 +4,14 @@ import numpy as np
 
 from openpi.con1.modules import ActionDeltaCrossAttention, AnchoredDeltaHead, anchored_loss
 from openpi.con1.modules import control_weighted_delta_loss
+from openpi.con1.modules import (
+    DeltaMetric,
+    balanced_latent_weight,
+    direction_alignment_loss,
+    metric_gradient,
+    metric_delta_loss,
+    metric_value,
+)
 
 
 def test_no_q0_and_zero_residual():
@@ -246,3 +254,105 @@ def test_sgr_mask_detach_and_zero_sensitivity_fallback():
     assert np.isfinite(grad).all()
     np.testing.assert_array_equal(jax.grad(fn, 1)(delta, attention, jnp.ones_like(delta), .5), 0.)
     np.testing.assert_array_equal(jax.grad(fn, 2)(delta, attention, jnp.ones_like(delta), .5), 0.)
+
+
+def _metric_vars(latent_dim, seed=0):
+    metric = DeltaMetric(latent_dim=latent_dim)
+    variables = metric.init(jax.random.key(seed), jnp.zeros((1, 2, latent_dim)))
+    return metric, variables
+
+
+def test_delta_metric_starts_as_the_identity():
+    """At initialisation F must equal the Euclidean per-horizon mean square."""
+    latent_dim = 16
+    metric, variables = _metric_vars(latent_dim)
+    residual = jax.random.normal(jax.random.key(1), (2, 3, latent_dim))
+    value, scale = metric.apply(variables, residual)
+    np.testing.assert_allclose(value, jnp.square(residual).mean(-1), rtol=1e-6)
+    np.testing.assert_allclose(scale, 1.0)
+
+
+def test_delta_metric_is_positive_definite_with_a_single_zero():
+    latent_dim = 16
+    metric, variables = _metric_vars(latent_dim)
+    # Push theta away from zero so the metric is a real perturbation.
+    params = variables["params"]
+    params["theta"] = jax.random.normal(jax.random.key(3), params["theta"].shape) * 3.0
+    zero, _ = metric.apply(variables, jnp.zeros((1, 2, latent_dim)))
+    np.testing.assert_allclose(zero, 0.0, atol=1e-12)
+    residual = jax.random.normal(jax.random.key(4), (1, 2, latent_dim))
+    value, _ = metric.apply(variables, residual)
+    assert np.all(np.asarray(value) > 0)
+    # The bound keeps the metric's anisotropy in a controlled range.
+    _, scale = metric.apply(variables, residual)
+    assert np.all(np.asarray(scale) >= 1.0 - metric.max_scale - 1e-6)
+    assert np.all(np.asarray(scale) <= 1.0 + metric.max_scale + 1e-6)
+
+
+def test_metric_gradient_matches_autodiff():
+    latent_dim = 8
+    metric, variables = _metric_vars(latent_dim)
+    params = variables["params"]
+    params["theta"] = jax.random.normal(jax.random.key(5), params["theta"].shape) * 1.5
+    residual = jax.random.normal(jax.random.key(6), (2, 2, latent_dim))
+    scale = 1.0 + metric.max_scale * jnp.tanh(params["theta"])
+
+    def total(r):
+        return metric_value(r, scale).sum()
+
+    reference = jax.grad(total)(residual)
+    np.testing.assert_allclose(metric_gradient(residual, scale), reference, rtol=1e-5, atol=1e-6)
+
+
+def test_metric_loss_reduces_to_the_euclidean_mse_at_init():
+    latent_dim = 8
+    metric, variables = _metric_vars(latent_dim)
+    delta = jax.random.normal(jax.random.key(7), (2, 3, latent_dim))
+    anchor = jax.random.normal(jax.random.key(8), (2, latent_dim))
+    future = anchor[:, None, :] + jax.random.normal(jax.random.key(9), (2, 3, latent_dim)) * 0.1
+    valid = jnp.array([[True, True, False], [True, True, True]])
+    _, scale = metric.apply(variables, delta)
+    loss, _ = metric_delta_loss(delta, anchor, future, valid, scale,
+                                weights=valid.astype(jnp.float32))
+    euclidean, _ = control_weighted_delta_loss(
+        delta, anchor, future, valid,
+        jnp.ones((2, 3, 3)), jnp.zeros_like(delta), beta=0.0)
+    np.testing.assert_allclose(loss, euclidean, rtol=1e-6)
+
+
+def test_direction_alignment_optimises_u_but_is_scale_free():
+    latent_dim = 8
+    metric, variables = _metric_vars(latent_dim)
+    delta = jax.random.normal(jax.random.key(10), (4, 2, latent_dim))
+    anchor = jnp.zeros((4, latent_dim))
+    future = anchor[:, None, :] + delta * 0.5
+    valid = jnp.ones((4, 2), dtype=bool)
+    # A fixed synthetic "action direction" that is not the residual direction.
+    sensitivity = jax.random.normal(jax.random.key(11), delta.shape)
+
+    def alignment(params):
+        scale = 1.0 + metric.max_scale * jnp.tanh(params["theta"])
+        return direction_alignment_loss(delta, anchor, future, valid, sensitivity, scale)[0]
+
+    # gradient wrt the metric parameters
+    grads = jax.grad(alignment)(variables["params"])
+    assert any(np.any(np.asarray(g) != 0) for g in jax.tree.leaves(grads))
+    before = float(alignment(variables["params"]))
+    params = variables["params"]
+    for _ in range(50):
+        grads = jax.grad(alignment)(params)
+        params = jax.tree.map(lambda p, g: p - 0.05 * g, params, grads)
+    after = float(alignment(params))
+    assert after < before, f"alignment did not improve: {before} -> {after}"
+    # Scaling the sensitivity must not change the loss (scale-free objective).
+    scale = 1.0 + metric.max_scale * jnp.tanh(params["theta"])
+    scaled = direction_alignment_loss(delta, anchor, future, valid, sensitivity * 37.0, scale)[0]
+    np.testing.assert_allclose(scaled, after, rtol=1e-5)
+
+
+def test_balanced_latent_weight_interpolates_between_configured_and_balanced():
+    flow_gradient = jnp.ones((1, 4)) * 3.0
+    delta_gradient = jnp.ones((1, 4)) * 600.0
+    assert float(balanced_latent_weight(flow_gradient, delta_gradient, 0.0)) == 1.0
+    balanced = float(balanced_latent_weight(flow_gradient, delta_gradient, 1.0))
+    np.testing.assert_allclose(balanced, 3.0 / 600.0, rtol=1e-6)
