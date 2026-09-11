@@ -286,20 +286,24 @@ untouched second half again.
 
 | adaptation | episodes | NMSE before | NMSE after | mean delta | improved |
 |---|---:|---:|---:|---:|---:|
-| 4 steps, lr 1e-5 | 5 | 0.8494 | 0.8511 | +0.0017 | 3/5 |
-| 30 steps, lr 1e-4 | 8 | 0.9645 | **0.9465** | -0.0180 | 5/8 |
-| **30 steps, lr 1e-4, replay, 40 episodes** | 40 | 0.9590 | 0.9631 | **+0.0042 +/- 0.0068** | 22/40 |
-| **30 steps, lr 2e-5, replay, 40 episodes** | 40 | 0.8708 | 0.8710 | **+0.0002 +/- 0.0038** | 20/40 |
+| 30 steps, lr 1e-4, cross-episode replay (200 windows) | 40 | 0.9590 | 0.9631 | +0.0042 +/- 0.0068 | 22/40 |
+| 30 steps, lr 2e-5, cross-episode replay (200 windows) | 40 | 0.8708 | 0.8710 | +0.0002 +/- 0.0038 | 20/40 |
+| **30 steps, lr 1e-4, current-episode buffer, loss gate** | 40 | 0.9382 | **0.9056** | **-0.0327 +/- 0.0077** | **33/40** |
 | no adaptation (control) | 40 | - | - | 0.000000 | 0/40 |
 
-The 8-episode run that showed a 2% gain does not survive: with 40 episodes and a
-cross-episode replay buffer the effect is **statistically indistinguishable from
-zero** at both learning rates (the 1e-4 delta is +0.6 standard errors, the win
-rate is 22/40 = chance), while the no-adaptation control reproduces the metric
-exactly. Vanilla test-time training - gradient steps on the observed transition
-loss with no anchor - therefore buys nothing at this data scale. It needs a
-different schedule (much smaller steps, an anchor/KL term toward the pretrained
-predictor, or a validation-based early stop) before it can be claimed.
+The first two rows are why TTT looked useless: with a 200-window cross-episode
+replay buffer the gradient is dominated by other episodes and the held-out
+effect is zero. Adapting on **this episode's own first half** instead gives a
+**3.5% held-out improvement** at 4.2 standard errors, 33 of 40 episodes better.
+The no-adaptation control reproduces the metric exactly (0.000000), so this is
+not evaluation noise.
+
+Two honest caveats: in the current-episode configuration the observed-loss gate
+kept all 40 updates (30 steps on 8 windows always reduce the loss on those
+windows), so the gate is not what produces the gain here - it matters only when
+the buffer is mixed, where the per-episode loss improvement correlates -0.5 with
+the held-out delta. And the gain is measured on prediction error, not on policy
+success; whether it survives inside a closed-loop rollout is untested.
 
 ### 3.8b Timebase: match the model, not the dataset
 

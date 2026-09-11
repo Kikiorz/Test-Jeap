@@ -29,6 +29,7 @@ from openpi.con2.ac_world_model import (  # noqa: E402
     adapt,
     load_predictor,
     normalize_reps,
+    teacher_forced_loss,
 )
 
 
@@ -69,6 +70,13 @@ def batch_from(tokens, actions, states, windows, context, stride=1):
             torch.from_numpy(np.stack(state_batch)))
 
 
+@torch.no_grad()
+def observed_loss(model, token_batch, action_batch, state_batch, auto_steps):
+    """Mean cooldown loss on the adaptation buffer (no gradient, no labels)."""
+    return float(teacher_forced_loss(model, token_batch, action_batch, state_batch,
+                                     auto_steps=auto_steps))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, required=True)
@@ -85,6 +93,10 @@ def main():
                         help="Frames between window steps; 2 matches the released 4-5 fps timebase.")
     parser.add_argument("--no-adapt", type=int, default=0,
                         help="Evaluate with adaptation disabled to quantify the drift floor.")
+    parser.add_argument("--gate", choices=["none", "loss"], default="none",
+                        help="'loss' keeps an episode's update only if the observed transition "
+                             "loss improved by at least --gate-margin (relative).")
+    parser.add_argument("--gate-margin", type=float, default=0.0)
     parser.add_argument("--adapt-steps", type=int, default=4)
     parser.add_argument("--auto-steps", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
@@ -119,7 +131,12 @@ def main():
             continue
         before = score(model, tokens, actions, states, eval_index, args.context, device, args.frame_stride)
         losses = []
+        kept = None
+        observed_before = observed_after = None
         if not args.no_adapt:
+            snapshot = None
+            if args.gate == "loss":
+                snapshot = {k: v.detach().clone() for k, v in model.predictor.state_dict().items()}
             for index in buffer_index:
                 replay.append(batch_from(tokens, actions, states, [index], args.context, args.frame_stride))
             if args.replay_windows:
@@ -133,14 +150,28 @@ def main():
                 keep = rng.permutation(len(token_batch))[:args.buffer_windows]
                 token_batch, action_batch, state_batch = (token_batch[keep], action_batch[keep],
                                                           state_batch[keep])
-            losses = adapt(model, optimizer, token_batch.to(device), action_batch.to(device),
-                           state_batch.to(device), steps=args.adapt_steps, auto_steps=args.auto_steps)
+            token_batch = token_batch.to(device)
+            action_batch = action_batch.to(device)
+            state_batch = state_batch.to(device)
+            if args.gate == "loss":
+                observed_before = observed_loss(model, token_batch, action_batch, state_batch,
+                                                args.auto_steps)
+            losses = adapt(model, optimizer, token_batch, action_batch, state_batch,
+                           steps=args.adapt_steps, auto_steps=args.auto_steps)
+            if args.gate == "loss":
+                observed_after = observed_loss(model, token_batch, action_batch, state_batch,
+                                               args.auto_steps)
+                improvement = (observed_before - observed_after) / max(abs(observed_before), 1e-9)
+                kept = improvement >= args.gate_margin
+                if not kept:
+                    model.predictor.load_state_dict(snapshot)
         after = score(model, tokens, actions, states, eval_index, args.context, device, args.frame_stride)
         records.append({"episode": episode, "length": int(length), "windows": len(eval_index),
                         "nmse_before": before, "nmse_after": after,
                         "adapt_loss_start": losses[0] if losses else None,
                         "adapt_loss_end": losses[-1] if losses else None,
-                        "replay_size": len(replay)})
+                        "observed_before": observed_before, "observed_after": observed_after,
+                        "update_kept": kept, "replay_size": len(replay)})
         print(json.dumps(records[-1]), flush=True)
 
     deltas = np.array([r["nmse_after"] - r["nmse_before"] for r in records])
@@ -151,6 +182,9 @@ def main():
         "learning_rate": args.learning_rate,
         "replay_windows": args.replay_windows,
         "no_adapt": bool(args.no_adapt),
+        "gate": args.gate,
+        "gate_margin": args.gate_margin,
+        "updates_kept": int(sum(1 for r in records if r.get("update_kept"))),
         "mean_nmse_before": float(np.mean([r["nmse_before"] for r in records])),
         "mean_nmse_after": float(np.mean([r["nmse_after"] for r in records])),
         "mean_delta": float(deltas.mean()) if len(deltas) else None,

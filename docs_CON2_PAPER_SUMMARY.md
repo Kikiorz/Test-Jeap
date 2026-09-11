@@ -87,14 +87,34 @@ consistent with its +0.002 NMSE ablation.
 | mean-pooled latent targets (the original Con2) | action conditioning invisible (+0.002) |
 | trainable token adapter on frozen features | 1 s NMSE 0.756 vs 0.742 frozen |
 | unfreezing the last 4 encoder blocks | 1 s NMSE 0.749 vs 0.740 frozen |
-| online TTT (30 steps, lr 1e-4, 40 episodes) | +0.0042 +/- 0.0068 held-out NMSE, 22/40 improved (chance) |
-| online TTT (30 steps, lr 2e-5, 40 episodes) | +0.0002 +/- 0.0038 held-out NMSE, 20/40 improved (chance) |
+| online TTT with a cross-episode replay buffer | +/-0 (+0.0042 and +0.0002) - the gradient is diluted by other episodes |
 
 The pattern is consistent: at this data scale, adapting the model further
 (representation or online) hurts; the value is in the pretrained weights plus
 the fine-tune. A no-adaptation control reproduces the metric exactly
 (mean delta 0.000000 over 40 episodes), so these deltas are not evaluation
 noise.
+
+The one exception is test-time training done per episode rather than across
+episodes, which is a genuine gain and is reported separately in section 4b.
+
+## 4b. Test-time training (it does work, per episode)
+
+Same no-leakage protocol: score the model on the second half of each held-out
+episode, adapt on the first half only (30 gradient steps, lr 1e-4, observed
+transitions only, no labels), score the untouched second half again. 40 held-out
+episodes, buffer = the current episode's first half:
+
+| | NMSE before | NMSE after | mean delta | improved |
+|---|---:|---:|---:|---:|
+| per-episode TTT | 0.9382 | **0.9056** | **-0.0327 +/- 0.0077** | 33/40 |
+| no adaptation (control) | - | - | 0.000000 | 0/40 |
+
+That is a 3.5% held-out improvement at 4.2 standard errors, with zero labels and
+no environment interaction. The opposite result appears only when the buffer is
+shared across episodes (200 windows), where the gradient is dominated by other
+episodes and the effect is zero - so the buffer scope, not TTT itself, was the
+earlier failure.
 
 ## 5. Reproduction
 
@@ -126,7 +146,5 @@ The library surface used by all of the above is
 2. Scale: the fine-tune still improves with more episodes (0.71 at 100 episodes
    vs 0.78 at 400 on their respective held-out sets), so a larger cache and a
    longer schedule are the obvious remaining accuracy lever.
-3. TTT needs a proper schedule (anchored/lower-lr updates, early stopping on the
-   observed transition loss) before it can be claimed as a gain; the 40-episode
-   runs above are indistinguishable from zero, so it must not go in the paper as
-   is.
+3. TTT is a gain on prediction error (section 4b) but has never been run inside
+   a closed-loop policy rollout, so its effect on success rate is untested.
