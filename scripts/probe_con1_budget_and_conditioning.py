@@ -1,0 +1,165 @@
+"""Does the 5% residual budget cap Con1's accuracy, and is the action path live?
+
+The adapter's correction is capped at ``residual_budget`` times the RMS of the
+incoming action hidden state. The alpha sweep already showed the cap - not the
+gate - is the binding constraint (the correction RMS stays 0.345 for every
+alpha), which raises the obvious question: if the model is saturated at 5%, does
+relaxing the cap buy accuracy?
+
+This probe re-evaluates the *same checkpoint* (same parameters, same losses)
+under different budgets, so the comparison is paired and needs no retraining.
+It also zeroes / shuffles the action conditioning to measure whether the
+conditioning path is live end-to-end.
+"""
+
+import argparse
+import dataclasses
+import json
+from pathlib import Path
+
+import flax.nnx as nnx
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+import train
+from openpi.models import model as _model
+from openpi.training import checkpoints, config as configs, data_loader, sharding
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--exp-name", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batches", type=int, default=6)
+    parser.add_argument("--budgets", type=float, nargs="+", default=[0.05, 0.10, 0.20, 0.0],
+                        help="Residual budgets to compare; 0 disables the cap.")
+    parser.add_argument("--checkpoint-step", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=20260913)
+    args = parser.parse_args()
+
+    jax.config.update("jax_compilation_cache_dir", "/workspace/.cache/con1_jax")
+    config = dataclasses.replace(
+        configs.get_config(args.config),
+        batch_size=args.batch_size, num_workers=0, wandb_enabled=False,
+        exp_name=args.exp_name, checkpoint_base_dir="/workspace/artifacts/checkpoints", resume=True,
+    )
+    mesh = sharding.make_mesh(config.fsdp_devices)
+    data_shard = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
+    replicated = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    manager, resuming = checkpoints.initialize_checkpoint_dir(
+        config.checkpoint_dir, keep_period=config.keep_period, overwrite=False, resume=True)
+    if not resuming:
+        raise ValueError(f"No checkpoint under {config.checkpoint_dir}")
+    loader = data_loader.create_data_loader(config, sharding=data_shard, shuffle=True)
+    _, init_rng = jax.random.split(jax.random.key(config.seed))
+    state, _ = train.init_train_state(config, init_rng, mesh, resume=True)
+    jax.block_until_ready(state)
+    state = checkpoints.restore_state(manager, state, loader, step=args.checkpoint_step)
+    params = state.params
+    physical = int(config.model.con1_action_dims)
+    if not config.model.con1_action_adapter:
+        raise ValueError("This probe needs the residual action adapter")
+    # Note: the deployed adapter config leaves the *head* unconditioned; the
+    # action-conditioning variants (zero/shuffled chunk) only apply when
+    # con1_action_conditioning is set, so they are skipped otherwise.
+    conditioned = bool(config.model.con1_action_conditioning)
+
+    def model_def_with_budget(budget):
+        cfg = dataclasses.replace(config, model=dataclasses.replace(
+            config.model, con1_residual_budget=budget))
+        return nnx.graphdef(cfg.model.create(jax.random.key(0)))
+
+    defs = {budget: model_def_with_budget(budget) for budget in args.budgets}
+
+    def flow_of(definition, nparams, observation, x_t, time, action_chunk, action_mask, count, u_t):
+        model = nnx.merge(definition, nparams)
+        model.eval()
+        obs = _model.preprocess_observation(None, observation, train=False)
+        context, delta = model._con1_context(obs, action_chunk)
+        velocity, aux = model._con1_velocity(obs, x_t, time, context, delta)
+        error = jnp.where(action_mask, velocity - u_t, 0.0)
+        # The adapter reports mean(correction^2), so this is the correction RMS
+        # the budget is actually capping.
+        correction_rms = jnp.sqrt(aux["con1_residual_energy"])
+        return jnp.square(error).sum() / count, correction_rms, delta
+
+    flow_run = {budget: jax.jit(functools_partial(flow_of, definition),
+                                out_shardings=(replicated, replicated, replicated))
+                for budget, definition in defs.items()}
+
+    records = []
+    iterator = iter(loader)
+    for batch_index in range(args.batches):
+        observation, actions = next(iterator)
+        host = jax.device_get(observation)
+        chunk = np.asarray(jax.device_get(actions), np.float32)[..., :physical]
+        noise_rng, time_rng = jax.random.split(jax.random.key(args.seed + batch_index))
+        noise = jax.random.normal(noise_rng, actions.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, actions.shape[:-2]) * 0.999 + 0.001
+        x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
+        u_t = noise - actions
+        valid = np.asarray(host.con1_future_valid, bool)[..., None]
+        action_valid = np.concatenate([np.ones_like(valid[:, :1]), valid[:, :-1]], axis=1)
+        action_mask = action_valid & (np.arange(actions.shape[-1])[None, None, :] < physical)
+        count = jnp.asarray(max(float(action_mask.sum()), 1.0))
+        device = dict(mask=jax.device_put(action_mask, replicated), u_t=jax.device_put(u_t, replicated),
+                      time=jax.device_put(time, replicated))
+        rng = np.random.default_rng(args.seed + batch_index)
+        variants = {"true": chunk}
+        if conditioned:
+            variants["zero"] = np.zeros_like(chunk)
+            variants["shuffled"] = chunk[rng.permutation(len(chunk))]
+        row = {"batch": batch_index}
+        for budget, run in flow_run.items():
+            for name, conditioning in variants.items():
+                with sharding.set_mesh(mesh):
+                    flow, corr_rms, delta = run(params, observation,
+                                                jax.device_put(conditioning, replicated),
+                                                x_t, device["time"], device["mask"], count, device["u_t"])
+                row[f"flow_b{budget}_{name}"] = float(flow)
+                if name == "true":
+                    row[f"correction_rms_b{budget}"] = float(corr_rms)
+        base = row[f"flow_b{args.budgets[0]}_true"]
+        for budget in args.budgets:
+            row[f"delta_vs_b{args.budgets[0]}_b{budget}"] = (row[f"flow_b{budget}_true"] - base)
+        for name in variants:
+            if name != "true":
+                row[f"delta_{name}"] = row[f"flow_b{args.budgets[0]}_{name}"] - base
+        records.append(row)
+        print(json.dumps(row), flush=True)
+
+    def mean(key):
+        values = np.asarray([r[key] for r in records], dtype=float)
+        return float(values.mean()), float(values.std(ddof=1) / max(np.sqrt(len(values)), 1e-9))
+
+    summary = {"config": args.config, "exp_name": args.exp_name, "restored_step": int(state.step),
+               "samples": args.batches * args.batch_size, "budgets": args.budgets,
+               "flow": {}, "correction_rms": {}, "deltas": {}, "records": records}
+    for budget in args.budgets:
+        summary["flow"][f"budget_{budget}"] = mean(f"flow_b{budget}_true")
+        if f"correction_rms_b{budget}" in records[0]:
+            summary["correction_rms"][f"budget_{budget}"] = mean(f"correction_rms_b{budget}")
+        key = f"delta_vs_b{args.budgets[0]}_b{budget}"
+        summary["deltas"][f"budget_{budget}_vs_{args.budgets[0]}"] = mean(key)
+    for name in ("zero", "shuffled"):
+        if f"delta_{name}" in records[0]:
+            summary["deltas"][f"conditioning_{name}_vs_true"] = mean(f"delta_{name}")
+    summary["head_action_conditioning"] = conditioned
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    print("RESULT", json.dumps({k: v for k, v in summary.items() if k != "records"}, indent=1), flush=True)
+
+
+def functools_partial(function, definition):
+    def wrapped(nparams, observation, action_chunk, x_t, time, action_mask, count, u_t):
+        return function(definition, nparams, observation, x_t, time, action_chunk,
+                        action_mask, count, u_t)
+    return wrapped
+
+
+if __name__ == "__main__":
+    main()

@@ -71,3 +71,46 @@ time per batch. The cosine is stable across batches and is scale-free, which is
 why it is the number to trust; the absolute flow reductions depend on the step
 calibration (the action step was verified to land in the linear regime: 0.97%
 measured against 1% predicted).
+
+## Two follow-up measurements (same checkpoint)
+
+### The 5% residual budget is *not* what limits Con1
+
+`scripts/probe_con1_budget_and_conditioning.py` rebuilds the model with a
+different `con1_residual_budget` and re-evaluates the *same* parameters, so the
+comparison is paired and needs no retraining:
+
+| budget | correction RMS | flow |
+|---|---:|---:|
+| 0.05 (deployed) | 0.3476 | 0.34762 |
+| 0.10 | 0.3476 | 0.34762 |
+| 0.20 | 0.3476 | 0.34762 |
+| 0 (uncapped) | 0.3476 | 0.34762 |
+| 1e-4 (sanity control) | 0.00173 | +3.6e-4 worse |
+
+Identical to the last digit for every budget at or above 5%, while 1e-4 clips
+the correction and costs accuracy - so the knob works and the cap simply never
+binds. 5% of the action-hidden RMS is larger than the correction the adapter
+produces. This **retracts** the earlier claim in
+`docs_CON1_3STAGE_TRAINING.md` that "the 5% relative budget is the binding
+constraint": what the alpha-sweep invariance actually shows is that the adapter
+branch (not the alpha-gated attention branch) dominates the correction, so the
+gate has nothing to do.
+
+Consequence: relaxing the retention budget cannot buy accuracy. The limit has
+to be the objective, not the magnitude.
+
+### The deployed Con1 head is not action-conditioned at all
+
+`pi05_libero_con1_action_adapter_40k` - the configuration that is trained and
+served - sets `con1_action_adapter=True` but leaves `con1_action_conditioning`
+at its default **False**. The action chunk is therefore never fed to the delta
+head; the action enters only through (i) the adapter's query (the action
+expert's hidden state) and (ii) the flow-loss VJP. The variants that do feed the
+chunk (`..._action_cond_40k`, `..._action_only_40k`, `..._vlm_ctx_40k`) are the
+ones whose action ranking was measured at or below chance.
+
+So "we feed the action in and it still does not improve" has a concrete
+explanation at the mechanism level: in the deployed model the action is not fed
+to the predictor, and in the models where it is, it is fed with an objective
+(Euclidean latent reconstruction) whose direction is orthogonal to the action.
