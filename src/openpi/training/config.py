@@ -840,6 +840,49 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     TrainConfig(
+        # SimpENV camera-fix validation: same frozen-VLM Con1 recipe, but the
+        # base view is image_1 (third-person) and the wrist view is image_0, which
+        # is what the SimplerEnv camera statistics say they are.
+        name="pi05_bridge_con1_v01",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, discrete_state_input=False,
+            use_con1=True, con1_latent_dim=2048,
+            con1_action_adapter=True, con1_cross_attention_out_init=0.02,
+            con1_alpha_initial=0.3, con1_residual_budget=0.05,
+            con1_action_dims=7, con1_train_action_layers_from=0,
+            con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
+            con1_sgr_beta=0.0,
+            con1_delta_weight=0.05, con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0, con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotBridgeDataConfig(
+            repo_id="local/bridge_view01_c0",
+            assets=AssetsConfig(assets_dir="/workspace/ts_JEPA_simpenv/assets/pi05_bridge",
+                                asset_id="local/bridge_view0"),
+            base_config=DataConfig(prompt_from_task=True,
+                                   con1_latent_root="/workspace/data/bridge_vlm_latents01"),
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000, peak_lr=1e-5, decay_steps=30_000, decay_lr=1e-5),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+                nnx_utils.PathRegex(".*con2.*"),
+            )),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/1999/params",
+            missing_regex=".*con[12].*"),
+        num_train_steps=20_000,
+    ),
+    TrainConfig(
         # SimpENV v3: same Con1 coupling but with the VLM unfrozen. The frozen
         # variant plateaus around 2-3% on SimplerEnv-WidowX because pi0.5 has
         # never seen the Bridge/WidowX camera; unfreezing needs a lower LR
