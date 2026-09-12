@@ -332,17 +332,27 @@ def restore_params(
 
     with ocp.PyTreeCheckpointer() as ckptr:
         metadata = ckptr.metadata(params_path)
-        item = {"params": metadata["params"]}
+        try:
+            # Published checkpoints wrap the tree as {"params": ...}.
+            item = {"params": metadata["params"]}
+            unwrap = True
+        except TypeError:
+            # Newer orbax returns a StepMetadata for a bare pyTree checkpoint;
+            # restore the tree as-is and keep it un-wrapped.
+            item = None
+            unwrap = False
 
+        restore_args = None
+        if item is not None:
+            restore_args = jax.tree.map(
+                lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+            )
         params = ckptr.restore(
             params_path,
-            ocp.args.PyTreeRestore(
-                item=item,
-                restore_args=jax.tree.map(
-                    lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
-                ),
-            ),
-        )["params"]
+            ocp.args.PyTreeRestore(item=item, restore_args=restore_args),
+        )
+        if unwrap:
+            params = params["params"]
 
     # If the params were saved with `save_state` during openpi training, every key path will end with "value", which is
     # added by `nnx.State`. We remove the "value" suffix here and always return what NNX calls a "pure dict".
