@@ -85,6 +85,16 @@ def main() -> None:
         for task, row in tasks.iterrows():
             handle.write(json.dumps({"task_index": int(row["task_index"]), "task": str(task)}) + "\n")
 
+    # v3 timestamps are dataset-global; the mp4s are per-file, so normalise each
+    # episode against the first timestamp seen in its own file.
+    file_start = {}
+    for _, row in episodes.iterrows():
+        for camera in CAMERAS:
+            key = (camera, int(scalar(row[f"videos/{camera}/chunk_index"])),
+                   int(scalar(row[f"videos/{camera}/file_index"])))
+            start = float(scalar(row[f"videos/{camera}/from_timestamp"]))
+            file_start[key] = min(file_start.get(key, start), start)
+
     episodes_lines, stats_lines = [], []
     offset = 0
     for _, row in episodes.iterrows():
@@ -109,7 +119,9 @@ def main() -> None:
                 origin = source / "videos" / camera / f"chunk-{chunk:03d}" / f"file-{file_index:03d}.mp4"
                 target.symlink_to(origin.resolve())
         # v2.1 reads frames by timestamp, so shift them into the shared mp4's clock.
-        stamps = np.round(camera_meta[CAMERAS[0]][2] + np.arange(length) / fps, 6)
+        primary = CAMERAS[0]
+        local_start = camera_meta[primary][2] - file_start[(primary, camera_meta[primary][0], camera_meta[primary][1])]
+        stamps = np.round(local_start + np.arange(length) / fps, 6)
         table = table.set_column(table.schema.get_field_index("timestamp"), "timestamp",
                                  pa.array(stamps.astype(np.float32)))
         # openpi's LeRobot config uses the column name "actions" (as the LIBERO
