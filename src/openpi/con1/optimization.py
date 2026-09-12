@@ -54,6 +54,9 @@ def scale_group_updates(tree, step, *, warmup=2000, fusion_multiplier=1., action
             factor = 1.
         elif "con1_cross_attention" in names:
             factor = .1 if "alpha_logit" in names else fusion_multiplier * jnp.where(step < warmup, 1., .5)
+        elif "con2_refine" in names:
+            # Con2 delta refinement trains at the same rate as the Con1 head.
+            factor = 1.
         elif "action_out_proj" in names or ("PaliGemma" in names and "llm" in names):
             factor = action_multiplier
         else:

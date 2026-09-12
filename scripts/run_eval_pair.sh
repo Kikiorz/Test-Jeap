@@ -26,6 +26,9 @@ start_server() {
   local name="$1" port="$2" config="$3" directory="$4" online_latent="$5"
   log "starting $name policy server on :$port"
   PYTHONPATH="$REPO/src" HF_HUB_OFFLINE=1 OPENPI_CON1_ONLINE_LATENT="$online_latent" \
+  OPENPI_CON1_VJEPA_CHECKPOINT="$WORK/vjepa2/vjepa2_1_vitg_384.pt" \
+  OPENPI_CON1_VJEPA_ROOT="$WORK/vjepa2_src" \
+  OPENPI_CON1_VJEPA_DEVICE="cuda:0" \
   XLA_PYTHON_CLIENT_MEM_FRACTION=0.45 \
     nohup "$PY" scripts/serve_policy.py --env LIBERO --port "$port" \
       policy:checkpoint --policy.config "$config" --policy.dir "$directory" \
