@@ -35,6 +35,12 @@ B_CFG=pi05_robotwin_con1con2_ctx_20k
 C_CFG=pi05_robotwin_con1_actcond_20k
 
 probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_base.json" --zero-correction
+# True released base: the config's own weight loader restores the released
+# checkpoint into every non-Con1/Con2 parameter and the correction is silenced,
+# so this row is the released policy rather than "arm A minus its correction".
+# Guarded because it is the newest code path and the A/B/C rows matter more.
+probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_basetrue.json" --base-weights \
+  || echo "[$(date -u +%H:%M:%S)] released-base probe failed; continuing without it"
 probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_a.json"
 probe "$B_CFG" robotwin_b_full "$OUT_DIR/robotwin_ab_b.json"
 

@@ -67,7 +67,7 @@ from pathlib import Path
 
 out = Path(sys.argv[1])
 entries = {}
-for name in ("base", "a", "b", "c"):
+for name in ("basetrue", "base", "a", "b", "c"):
     path = out / f"robotwin_ab_{name}.json"
     entries[name] = json.loads(path.read_text()) if path.exists() else None
 
@@ -84,6 +84,7 @@ def series(entry, field):
     return mean, std
 
 label = {
+    "basetrue": "released base",
     "base": "base (Con1 silenced)",
     "a": "arm A (Con1)",
     "b": "arm B (Con1+Con2+ctx)",
@@ -91,7 +92,7 @@ label = {
 }
 flows = {}
 print("=" * 68)
-for name in ("base", "a", "b", "c"):
+for name in ("basetrue", "base", "a", "b", "c"):
     mean, std = series(entries[name], "flow")
     rms, _ = series(entries[name], "correction_rms")
     if mean is None:
@@ -101,6 +102,10 @@ for name in ("base", "a", "b", "c"):
     print(f"{label[name]:26s} flow={mean:.6f} +-{std:.6f}  corr_rms={rms:.4f}")
 if "base" in flows and "a" in flows:
     print(f"arm A vs base        : {(flows['a'] / flows['base'] - 1) * 100:+.2f}%")
+if "basetrue" in flows and "base" in flows:
+    print(f"base vs released     : {(flows['base'] / flows['basetrue'] - 1) * 100:+.2f}%")
+if "basetrue" in flows and "a" in flows:
+    print(f"arm A vs released    : {(flows['a'] / flows['basetrue'] - 1) * 100:+.2f}%")
 if "base" in flows and "b" in flows:
     print(f"arm B vs base        : {(flows['b'] / flows['base'] - 1) * 100:+.2f}%")
 if "a" in flows and "b" in flows:
@@ -124,7 +129,8 @@ def per_batch(entry):
         key = next((k for k in records[0] if k.startswith("flow_")), None)
     return [record.get(key) for record in records]
 
-for left, right in (("a", "base"), ("b", "base"), ("b", "a"), ("c", "base"), ("c", "a")):
+for left, right in (("a", "base"), ("b", "base"), ("b", "a"), ("c", "base"), ("c", "a"),
+                    ("a", "basetrue"), ("base", "basetrue")):
     lv, rv = per_batch(entries[left]), per_batch(entries[right])
     if not lv or not rv or len(lv) != len(rv):
         continue

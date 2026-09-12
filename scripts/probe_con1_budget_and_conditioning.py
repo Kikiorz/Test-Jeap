@@ -59,6 +59,29 @@ def _zero_correction(params):
     return jax.tree_util.tree_map_with_path(zero, params)
 
 
+def _released_base_params(config, params):
+    """Swap every non-Con1/Con2 parameter for the released base checkpoint.
+
+    The arm checkpoints were initialised from the released model and then
+    fine-tuned a subset of the action-expert layers, so the plain
+    ``--zero-correction`` row still carries that fine-tuning. Substituting the
+    released weights back in (the config's own weight loader is the exact one
+    used at initialisation) and then silencing the correction yields a true
+    released-base row that can be compared on the same batches.
+    """
+    spec = jax.tree.map(lambda leaf: jax.ShapeDtypeStruct(leaf.shape, leaf.dtype), params)
+    loaded = config.weight_loader.load(spec)
+
+    def pick(path, base_leaf, trained_leaf):
+        names = _path_names(path)
+        if "con1" in names or "con2" in names:
+            # Missing from the released checkpoint, and zeroed by the caller.
+            return trained_leaf
+        return base_leaf
+
+    return jax.tree_util.tree_map_with_path(pick, loaded, params)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
@@ -71,6 +94,10 @@ def main() -> None:
     parser.add_argument("--checkpoint-step", type=int, default=None)
     parser.add_argument("--zero-correction", action="store_true",
                         help="Silence the Con1 correction so the run measures the base policy.")
+    parser.add_argument("--base-weights", action="store_true",
+                        help="Also restore the released base checkpoint into every non-Con1/Con2 "
+                             "parameter, giving the true released-base row in the same harness. "
+                             "Implies silencing the correction.")
     parser.add_argument("--dump-param-paths", action="store_true",
                         help="Print the Con1 parameter paths and exit (naming check).")
     parser.add_argument("--seed", type=int, default=20260913)
@@ -106,6 +133,9 @@ def main() -> None:
                 print("PARAM", "/".join(names), getattr(leaf, "shape", None))
         return
     if args.zero_correction:
+        params = _zero_correction(params)
+    if args.base_weights:
+        params = _released_base_params(config, params)
         params = _zero_correction(params)
     # Note: the deployed adapter config leaves the *head* unconditioned; the
     # action-conditioning variants (zero/shuffled chunk) only apply when
