@@ -840,6 +840,26 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     TrainConfig(
+        # SimpENV full-data base: plain pi0.5 fine-tune on the whole Bridge
+        # dataset (no Con1). This is the step that has to succeed before the
+        # Con1/Con2 arms mean anything: the earlier arms trained on 1.9-7.5% of
+        # Bridge and sat at the 1-3% noise floor.
+        name="pi05_bridge_full",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotBridgeDataConfig(
+            repo_id="local/bridge_full",
+            assets=AssetsConfig(asset_dir=None) if False else AssetsConfig(asset_id="local/bridge_full"),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000, peak_lr=5e-5, decay_steps=60_000, decay_lr=5e-5),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
+        num_train_steps=60_000,
+    ),
+    TrainConfig(
         # SimpENV camera-fix validation: same frozen-VLM Con1 recipe, but the
         # base view is image_1 (third-person) and the wrist view is image_0, which
         # is what the SimplerEnv camera statistics say they are.
