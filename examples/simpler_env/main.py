@@ -36,19 +36,43 @@ TASKS = {
 }
 
 
+def _quat_to_matrix(quat) -> np.ndarray:
+    """wxyz quaternion -> 3x3 rotation matrix."""
+    w, x, y, z = np.asarray(quat, dtype=np.float64)
+    norm = np.sqrt(w * w + x * x + y * y + z * z)
+    w, x, y, z = w / norm, x / norm, y / norm, z / norm
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def _matrix_to_rpy(rotation: np.ndarray) -> tuple[float, float, float]:
+    pitch = np.arcsin(np.clip(-rotation[2, 0], -1.0, 1.0))
+    roll = np.arctan2(rotation[2, 1], rotation[2, 2])
+    yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
+    return float(roll), float(pitch), float(yaw)
+
+
 def bridge_state(obs: dict) -> np.ndarray:
-    """8-dim Bridge state: [x, y, z, roll, pitch, yaw, 0, gripper_openness]."""
+    """8-dim Bridge state: [x, y, z, roll, pitch, yaw, 0, gripper_openness].
+
+    Bridge stores the end-effector pose **relative to the robot base**, while
+    SimplerEnv reports the world-frame ``tcp_pose`` (z is the table height, ~1 m,
+    versus a Bridge z mean of 0.064). Feeding the world pose costs ~18 standard
+    deviations on z and flips the roll, so the base transform is mandatory.
+    """
     tcp = np.asarray(obs["extra"]["tcp_pose"], dtype=np.float64).reshape(-1)  # xyz + quat(wxyz)
-    pos, quat = tcp[:3], tcp[3:7]
-    w, x, y, z = quat
-    # quaternion -> roll/pitch/yaw
-    roll = np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-    pitch = np.arcsin(np.clip(2 * (w * y - z * x), -1.0, 1.0))
-    yaw = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    base = np.asarray(obs["agent"]["base_pose"], dtype=np.float64).reshape(-1)  # xyz + quat(wxyz)
+    base_rotation = _quat_to_matrix(base[3:7])
+    relative_position = base_rotation.T @ (tcp[:3] - base[:3])
+    relative_rotation = base_rotation.T @ _quat_to_matrix(tcp[3:7])
+    roll, pitch, yaw = _matrix_to_rpy(relative_rotation)
     qpos = np.asarray(obs["agent"]["qpos"], dtype=np.float64).reshape(-1)
     # The two finger joints mirror each other; openness in [0, 1] with 1 = open.
     openness = float(np.clip(1.0 - np.mean(np.abs(qpos[-2:])) / 0.04, 0.0, 1.0))
-    return np.concatenate([pos, [roll, pitch, yaw], [0.0], [openness]]).astype(np.float32)
+    return np.concatenate([relative_position, [roll, pitch, yaw], [0.0], [openness]]).astype(np.float32)
 
 
 def to_env_action(action: np.ndarray, *, open_threshold: float) -> np.ndarray:
