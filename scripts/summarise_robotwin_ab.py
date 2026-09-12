@@ -24,10 +24,12 @@ LABELS = {
     "b": "arm B (Con1+Con2+ctx)",
     "c": "arm C (Con1+action-cond)",
     "d": "arm D (Con1+head x5 LR)",
+    "a_graft": "arm A + offline head (diagnostic)",
 }
-ORDER = ("basetrue", "base", "a", "b", "c", "d")
+ORDER = ("basetrue", "base", "a", "a_graft", "b", "c", "d")
 COMPARISONS = (("a", "base"), ("b", "base"), ("b", "a"), ("c", "base"), ("c", "a"),
-               ("d", "base"), ("d", "a"), ("a", "basetrue"), ("base", "basetrue"))
+               ("d", "base"), ("d", "a"), ("a_graft", "a"), ("a_graft", "base"),
+               ("a", "basetrue"), ("base", "basetrue"))
 
 
 def parse() -> argparse.Namespace:

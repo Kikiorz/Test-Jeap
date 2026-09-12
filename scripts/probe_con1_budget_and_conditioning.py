@@ -18,9 +18,11 @@ import json
 from pathlib import Path
 
 import flax.nnx as nnx
+import flax.traverse_util
 import jax
 import jax.numpy as jnp
 import numpy as np
+from flax import serialization
 
 import train
 from openpi.models import model as _model
@@ -92,6 +94,35 @@ def _released_base_params(config, params):
     return params
 
 
+def _graft_head(params, checkpoint: Path) -> None:
+    """Replace the delta head with an offline-trained one, in place.
+
+    A head-only run on the same cache reaches ~0.72 held-out delta NMSE while the
+    jointly trained head sits at ~0.82, and the two trees were verified to line up
+    as `con1_delta_head/<key>` (19/19 leaves). Grafting the better head into an
+    existing checkpoint therefore tests whether a better latent predictor buys
+    action accuracy **without** paying for another joint training arm. It is a
+    diagnostic, not a method result: the rest of Con1 (cross-attention, adapter)
+    was trained against the weaker head's outputs.
+    """
+    blob = serialization.msgpack_restore(checkpoint.read_bytes())
+    head = blob["params"] if isinstance(blob, dict) and "params" in blob else blob
+    head_flat = flax.traverse_util.flatten_dict(head, sep="/")
+
+    pure = params.to_pure_dict()
+    flat = flax.traverse_util.flatten_dict(pure, sep="/")
+    grafted = 0
+    for key, value in head_flat.items():
+        target = f"con1_delta_head/{key}"
+        if target in flat:
+            flat[target] = jnp.asarray(value, flat[target].dtype)
+            grafted += 1
+    if grafted != len(head_flat):
+        raise ValueError(f"grafted {grafted} of {len(head_flat)} head leaves; key layout changed")
+    print(f"GRAFTED {grafted} head leaves from {checkpoint}", flush=True)
+    params.replace_by_pure_dict(flax.traverse_util.unflatten_dict(flat, sep="/"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
@@ -108,6 +139,10 @@ def main() -> None:
                         help="Also restore the released base checkpoint into every non-Con1/Con2 "
                              "parameter, giving the true released-base row in the same harness. "
                              "Implies silencing the correction.")
+    parser.add_argument("--head-weights", type=Path, default=None,
+                        help="Graft an offline-trained AnchoredDeltaHead over this checkpoint's "
+                             "head. Diagnostic: measures whether a better latent predictor moves "
+                             "the action loss, holding everything else at the checkpoint's values.")
     parser.add_argument("--dump-param-paths", action="store_true",
                         help="Print the Con1 parameter paths and exit (naming check).")
     parser.add_argument("--seed", type=int, default=20260913)
@@ -147,6 +182,8 @@ def main() -> None:
     if args.base_weights:
         params = _released_base_params(config, params)
         params = _zero_correction(params)
+    if args.head_weights is not None:
+        _graft_head(params, args.head_weights)
     # Note: the deployed adapter config leaves the *head* unconditioned; the
     # action-conditioning variants (zero/shuffled chunk) only apply when
     # con1_action_conditioning is set, so they are skipped otherwise.

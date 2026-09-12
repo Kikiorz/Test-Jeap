@@ -59,4 +59,15 @@ if [[ -d "$D_DIR/$STEP" ]]; then
 else
   echo "[$(date -u +%H:%M:%S)] no arm D checkpoint at step $STEP in $D_DIR; skipping arm D"
 fi
+
+# Diagnostic row: arm A's checkpoint with the offline-trained head grafted in.
+# It answers "would a better latent predictor buy action accuracy?" without a
+# second joint training run. Guarded, and clearly not a trained arm.
+HEAD_CKPT="${HEAD_CKPT:-/workspace/artifacts/con2/robotwin_head_warmstart.msgpack}"
+if [[ -f "$HEAD_CKPT" ]]; then
+  probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_a_graft.json" --head-weights "$HEAD_CKPT" \
+    || echo "[$(date -u +%H:%M:%S)] grafted-head probe failed; continuing"
+else
+  echo "[$(date -u +%H:%M:%S)] no offline head at $HEAD_CKPT; skipping the grafted-head row"
+fi
 echo "[$(date -u +%H:%M:%S)] probes done"
