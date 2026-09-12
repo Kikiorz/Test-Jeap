@@ -54,6 +54,11 @@ class SimplerEnvInputs(transforms.DataTransformFn):
             inputs["actions"] = data["actions"]
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
+        # Con1/Con2 side channels must travel with the sample; the LIBERO
+        # transform forwards them too.
+        for key in ("vjepa_target", "con1_current_latent", "con1_future_latents", "con1_future_valid"):
+            if key in data:
+                inputs[key] = data[key]
         return inputs
 
 
