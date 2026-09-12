@@ -825,7 +825,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/2000/params", missing_regex=".*con[12].*"),
+            "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/1999/params", missing_regex=".*con[12].*"),
         num_train_steps=20_000,
     ),
     TrainConfig(
@@ -859,7 +859,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/2000/params", missing_regex=".*con[12].*"),
+            "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/1999/params", missing_regex=".*con[12].*"),
         num_train_steps=20_000,
     ),
     #
