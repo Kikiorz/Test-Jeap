@@ -58,6 +58,31 @@ path alone was measured to underfit badly (0.483 held-out NMSE against a 0.414
 linear floor)") - and the head's raw token mean is deliberately exposed so the
 readout can be warm-started from a closed-form solution.
 
+## Separating optimisation from architecture
+
+`scripts/train_robotwin_head_cpu.py` trains `AnchoredDeltaHead` alone on the cache
+with its own schedule (CPU only, so the running arms keep the GPUs):
+
+| head | delta NMSE (mean over h=1..16) |
+|---|---|
+| jointly trained head, arm A @ ~8k steps | 0.820 (train batches) |
+| head-only, random init, step 0 | 1.000 |
+| head-only, 3,000 steps @ lr 1e-4 | **0.737** (held-out episodes) |
+| linear ridge ceiling | 0.659 |
+
+So a head with an identical architecture but a schedule of its own drops from
+1.000 to 0.737 in under ten minutes of CPU time, i.e. **well below the 0.82 the
+joint run reaches after ~8,000 GPU steps**. The head is undertrained, not
+incapable: in the joint run it shares a 1e-5 schedule with the whole model and
+receives its signal only through a weighted sum with the action flow term.
+
+Longer head-only runs (12k steps @ 1e-4 and 6k @ 3e-4) are queued to find out
+whether it closes the remaining gap to the 0.659 linear ceiling.
+
+Implication for the next arm: warm the head up on the cache before joint
+training, the way the LIBERO recipe does, instead of asking the joint objective
+to train it from random init at the model's learning rate.
+
 ## Reproduce
 
 ```bash
