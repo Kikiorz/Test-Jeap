@@ -25,9 +25,17 @@ def split_episodes(episodes, *, fraction=.1, seed=42):
     for task in sorted({e["task_id"] for e in episodes}):
         ids = sorted(e["id"] for e in episodes if e["task_id"] == task)
         if len(ids) < 2:
-            raise ValueError("Each task needs >=2 episodes for a non-leaking holdout")
+            # Datasets whose "task" is a free-form instruction (Bridge/OXE) often
+            # have exactly one episode per task, so a per-task holdout is not
+            # available. Those episodes stay in train; the fallback below covers
+            # the case where no task has a second episode at all.
+            continue
         rng = np.random.default_rng(np.random.SeedSequence([seed, task]))
         heldout.update(rng.permutation(ids)[:min(len(ids) - 1, max(1, round(len(ids) * fraction)))].tolist())
+    if not heldout:
+        ids = sorted(e["id"] for e in episodes)
+        rng = np.random.default_rng(np.random.SeedSequence([seed, "episode-level"]))
+        heldout.update(rng.permutation(ids)[:max(1, round(len(ids) * fraction))].tolist())
     return ([e for e in episodes if e["id"] not in heldout], [e for e in episodes if e["id"] in heldout])
 
 
