@@ -120,7 +120,10 @@ def worker(args):
     rows = episodes(args)
     tasks = {e['task_index']:e['task'] for e in map(json.loads,(args.dataset/'meta/tasks.jsonl').read_text().splitlines())}
     base = config.get_config(args.base_config)
-    base = dataclasses.replace(base, model=dataclasses.replace(base.model, vjepa_target_grid_size=8))
+    # This stage only extracts the frozen VLM prefix, so the Con1/Con2 modules
+    # must be off: the released base checkpoint does not contain them.
+    base = dataclasses.replace(base, model=dataclasses.replace(
+        base.model, vjepa_target_grid_size=8, use_con1=False, use_con2=False))
     policy = policy_config.create_trained_policy(base, args.checkpoint)
     extract = nnx_utils.module_jit(policy._model.extract_predictive_tokens)
     state_manifest = json.loads((args.states/'manifest.json').read_text())
