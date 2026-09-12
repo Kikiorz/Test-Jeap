@@ -112,7 +112,7 @@ def main() -> None:
         np.save(out / "episodes" / f"{episode:06d}_r.npy", np.zeros((len(z), 1, 1), dtype=np.float16))
         entries.append({
             "id": episode,
-            "task_id": int(table["task_index"][0].as_py()),
+            "task_id": task_id,
             "length": int(len(z)),
             "z": f"episodes/{episode:06d}_z.npy",
             "r": f"episodes/{episode:06d}_r.npy",
