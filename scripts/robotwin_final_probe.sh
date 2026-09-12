@@ -61,12 +61,18 @@ fallback_step() {
 wait_for_finish() {
   # The runner hands over from arm A to arm B with a short gap, so require the
   # runner itself to be gone as well and then re-check after a settle delay.
-  while pgrep -f "scripts/train.py" >/dev/null 2>&1 \
-     || pgrep -f "run_robotwin_arms_continue.sh" >/dev/null 2>&1; do
+  #
+  # Match on the *full* invocation, not a substring: `pgrep -f` scans whole
+  # command lines, and a leftover launcher shell whose text mentions
+  # "scripts/train.py" (for example a debug echo) matches forever and pins this
+  # loop open. That happened once tonight and would have stopped arms C and D
+  # from ever starting.
+  while pgrep -f "python -u scripts/train.py" >/dev/null 2>&1 \
+     || pgrep -f "bash scripts/run_robotwin_arms_continue.sh" >/dev/null 2>&1; do
     sleep 60
   done
   sleep 30
-  if pgrep -f "scripts/train.py" >/dev/null 2>&1; then
+  if pgrep -f "python -u scripts/train.py" >/dev/null 2>&1; then
     wait_for_finish
   fi
 }
