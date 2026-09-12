@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Identify the state/action convention the RoboTwin JEPA-WAM base was trained on.
 
-The released RoboTwin release stores absolute joint targets (``action[t] ==
+The released RoboTwin dataset stores absolute joint targets (``action[t] ==
 state[t+1]``), while the base checkpoint's action statistics have ~zero mean and
 a different spread, so the release is not in the base's action space. The base's
-own flow-matching loss is the decisive test: with the frames, prompts, noise and
-flow time held fixed, only the correct convention makes the target ``u_t =
-noise - action`` match the network's velocity.
+own flow-matching loss is the decisive test: with the frames, prompts, flow time
+and noise held fixed, only the correct convention makes the target
+``u_t = noise - action`` line up with the network's velocity.
+
+Every candidate is pushed through the *same* transform chain the training job
+uses, so normalisation and padding are identical to training; nothing is fitted
+or approximated by hand.
 """
 
 from __future__ import annotations
@@ -24,8 +28,8 @@ import train
 from openpi.models import model as _model
 from openpi.training import config as configs, data_loader, sharding
 
-# Dims whose sign is mirrored between the release and the base (shoulder/elbow
-# of both arms), and the two gripper dims, which the base keeps in [-1, 1].
+# Dims mirrored between the release and the base (shoulder/elbow of both arms)
+# and the two gripper dims, which the base keeps in [-1, 1].
 FLIP_DIMS = (1, 2, 8, 9)
 GRIPPER_DIMS = (6, 13)
 
@@ -66,97 +70,56 @@ def main() -> None:
         data_config, model_config.action_horizon, model_config)
     dataset = data_loader.transform_dataset(raw_dataset, data_config)
 
-    raw = [raw_dataset[i] for i in range(args.samples)]
-    transformed = [dataset[i] for i in range(args.samples)]
-    print(json.dumps({"raw_keys": sorted(raw[0].keys()),
-                      "transformed_keys": sorted(transformed[0].keys())}), flush=True)
-
     horizon = model_config.action_horizon
-    action_key = "actions" if "actions" in raw[0] else "action"
-    raw_actions = np.stack([np.asarray(r[action_key], np.float32)[:horizon] for r in raw])
-    raw_states = np.stack([np.asarray(r["observation.state"], np.float32) for r in raw])
-    norm_actions = np.stack([np.asarray(t["actions"], np.float32)[:horizon] for t in transformed])
-    norm_state = np.stack([np.asarray(t["state"], np.float32) for t in transformed])
-    physical = raw_actions.shape[-1]
-    print(json.dumps({"raw_actions": list(raw_actions.shape),
-                      "norm_actions": list(norm_actions.shape),
-                      "physical_dims": physical}), flush=True)
+    raw_samples = [raw_dataset[i] for i in range(args.samples)]
+    print(json.dumps({"samples": len(raw_samples), "horizon": horizon}), flush=True)
 
-    # The pipeline normalises with the checkpoint's statistics; recover that
-    # affine map per dimension from the raw/normalised pair so any candidate
-    # convention can be normalised the same way.
-    def fit(raw_values, norm_values):
-        x = raw_values.reshape(-1, physical)
-        y = norm_values.reshape(-1, physical)
-        keep = np.isfinite(x).all(axis=1) & np.isfinite(y).all(axis=1)
-        x, y = x[keep], y[keep]
-        if len(x) < 2:
-            raise ValueError("not enough finite samples to fit the normalisation map")
-        scale = np.ones(physical, np.float32)
-        shift = np.zeros(physical, np.float32)
-        for d in range(physical):
-            if np.ptp(x[:, d]) < 1e-9:
-                continue
-            design = np.stack([x[:, d], np.ones(len(x))], axis=1)
-            solution, *_ = np.linalg.lstsq(design, y[:, d], rcond=None)
-            scale[d], shift[d] = solution
-        residual = float(np.abs((x * scale + shift) - y).max())
-        return scale, shift, residual
+    def variant_actions(name, actions, states):
+        if name == "abs":
+            return actions
+        if name == "delta_now":
+            return actions - states[:1]
+        if name == "delta_step":
+            return actions - states
+        if name == "delta_end":
+            return actions - states[-1:]
+        if name == "delta_mean":
+            return actions - states.mean(axis=0, keepdims=True)
+        raise ValueError(name)
 
-    action_scale, action_shift, action_residual = fit(
-        raw_actions, norm_actions[..., :physical] if norm_actions.shape[-1] >= physical else norm_actions)
-    state_scale, state_shift, state_residual = fit(
-        raw_states, norm_state[..., :physical] if norm_state.shape[-1] >= physical else norm_state)
-    print(json.dumps({"action_fit_residual": action_residual, "state_fit_residual": state_residual}),
-          flush=True)
-
-    # Build the batched observation once; only the state and the action target
-    # change between candidates.
-    def to_observation(sample):
-        item = {key: np.asarray(value)[None] for key, value in sample.items() if key != "actions"}
-        return _model.Observation.from_dict(item)
-
-    action_variants = {
-        "abs": lambda a, s: a,
-        "delta_now": lambda a, s: a - s[:, :1, :],
-        "delta_step": lambda a, s: a - s[:, :horizon, :],
-        "delta_end": lambda a, s: a - s[:, -1:, :],
-        "delta_mean": lambda a, s: a - s.mean(axis=1, keepdims=True),
-    }
-    state_variants = {
-        "raw": (False, False),
-        "flip": (True, False),
-        "flip+grip": (True, True),
-    }
+    action_variants = ["abs", "delta_now", "delta_step", "delta_end", "delta_mean"]
+    state_variants = {"raw": (False, False), "flip": (True, False), "flip+grip": (True, True)}
 
     report = {}
     for state_name, (flip, gripper) in state_variants.items():
-        for action_name, fn in action_variants.items():
+        for action_name in action_variants:
             losses = []
-            for index, sample in enumerate(transformed):
-                observation = to_observation(sample)
-                variant_state = transform_state(raw_states[index], flip, gripper)
-                normalised_state = variant_state * state_scale + state_shift
-                padded_state = np.zeros(observation.state.shape[-1], np.float32)
-                padded_state[:physical] = normalised_state
-                candidate = fn(raw_actions[index][None], raw_states[index][None])[0]
-                normalised = candidate * action_scale + action_shift
-                padded = np.zeros(observation.actions.shape[-1], np.float32)
-                padded[:horizon, :physical] = normalised
-                observation = dataclasses.replace(
-                    observation,
-                    state=jnp.asarray(padded_state)[None],
-                )
-                out = model.compute_loss(jax.random.key(0), observation,
-                                         jnp.asarray(padded)[None], train=True)
-                flow = out[0] if isinstance(out, tuple) else out
+            for sample in raw_samples:
+                raw_state = np.asarray(sample["observation.state"], np.float32)
+                raw_actions = np.asarray(sample["actions"], np.float32)[:horizon]
+                # action[t] == state[t+1] in this release, so the chunk's states
+                # are the current state followed by the chunk's own targets.
+                chunk_states = np.concatenate([raw_state[None], raw_actions[:-1]], axis=0)
+                variant_state = transform_state(raw_state, flip, gripper)
+                variant_actions = variant_actions(action_name, raw_actions, chunk_states)
+                patched = dict(sample)
+                patched["observation.state"] = variant_state
+                patched["actions"] = variant_actions
+                out = dataset._transform(patched)
+                item = {key: np.asarray(value)[None] for key, value in out.items()
+                        if key not in ("actions", "actions_is_pad")}
+                observation = _model.Observation.from_dict(item)
+                actions = jnp.asarray(np.asarray(out["actions"], np.float32)[None])
+                result = model.compute_loss(jax.random.key(0), observation, actions, train=True)
+                flow = result[0] if isinstance(result, tuple) else result
                 losses.append(float(jnp.mean(flow)))
-            report[f"{state_name}|{action_name}"] = float(np.mean(losses))
-            print(json.dumps({f"{state_name}|{action_name}": report[f"{state_name}|{action_name}"]}),
-                  flush=True)
+            key = f"{state_name}|{action_name}"
+            report[key] = float(np.mean(losses))
+            print(json.dumps({key: report[key]}), flush=True)
 
-    best = min(report, key=report.get)
-    report["_best"] = best
+    ranked = sorted((value, key) for key, value in report.items())
+    report["_ranking"] = [f"{key}: {value:.4f}" for value, key in ranked]
+    report["_best"] = ranked[0][1]
     text = json.dumps(report, indent=2, sort_keys=True)
     print("RESULT", text)
     with open(args.out, "w") as handle:
