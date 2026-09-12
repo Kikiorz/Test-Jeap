@@ -102,16 +102,24 @@ def validate_sources(args):
         raise ValueError('Teacher state/dataset contract mismatch')
     # Old manifest describes its OLD downstream orthogonal loader, not raw
     # stored states. These arrays must be non-normalized raw Phi(o_k).
+    usable = []
     for e in rows:
         eid = e['episode_index']
         p = args.states/'states'/f'chunk-{eid//m["chunks_size"]:03d}'/f'episode_{eid:06d}.npy'
-        record = json.loads(p.with_suffix('.json').read_text())
+        if not p.is_file():
+            continue  # stage 1 has not reached this episode yet; resume later
+        if p.with_suffix('.json').is_file():
+            record = json.loads(p.with_suffix('.json').read_text())
+        else:
+            record = None
         z = np.load(p, mmap_mode='r', allow_pickle=False)
-        if (record['event'] != 'complete' or record['episode'] != eid
-                or record['frames'] != e['length'] or z.shape != (e['length'],args.latent_dim)
-                or z.dtype != np.float16 or not np.isfinite(z).all()):
+        if record is not None and (record['event'] != 'complete' or record['episode'] != eid
+                                   or record['frames'] != e['length']):
             raise ValueError(f'Uncommitted/invalid raw teacher states: {eid}')
-    return rows, m
+        if z.shape != (e['length'], args.latent_dim) or z.dtype != np.float16 or not np.isfinite(z).all():
+            raise ValueError(f'Uncommitted/invalid raw teacher states: {eid}')
+        usable.append(e)
+    return usable, m
 
 
 def worker(args):

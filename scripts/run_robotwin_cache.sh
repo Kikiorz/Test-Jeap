@@ -37,7 +37,7 @@ echo "[$(date -u +%H:%M:%S)] stage 1 done" | tee -a "$LOG"
 echo "[$(date -u +%H:%M:%S)] stage 2: frozen VLM prefix tokens" | tee -a "$LOG"
 PYTHONPATH="$ROOT/src" \
   .venv/bin/python -u scripts/cache_con1_features.py \
-    --dataset "$DATASET" \
+    --dataset "${DATASET_INLINE:-$DATASET}" \
     --states "$STATES" \
     --checkpoint "$POLICY_CKPT" \
     --output "$FEATURES" \
