@@ -26,6 +26,29 @@ CAMERAS = [
 IMAGE_TYPE = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
 
 
+def huggingface_features(length: int) -> dict:
+    """HF feature spec LeRobot reads from the parquet metadata.
+
+    LeRobot decides how to decode a column from the file's `huggingface`
+    metadata, not from `meta/info.json`; without this the camera columns look
+    like plain structs and the loader fails with "Could not infer dtype of dict".
+    """
+    value = lambda dtype: {"dtype": dtype, "_type": "Value"}  # noqa: E731
+    sequence = lambda dtype, n: {"feature": value(dtype), "length": n, "_type": "Sequence"}  # noqa: E731
+    features = {
+        "observation.state": sequence("float32", 14),
+        "actions": sequence("float32", 14),
+        "timestamp": value("float32"),
+        "frame_index": value("int64"),
+        "episode_index": value("int64"),
+        "index": value("int64"),
+        "task_index": value("int64"),
+    }
+    for camera in CAMERAS:
+        features[camera] = {"_type": "Image"}
+    return {"info": {"features": features}}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -65,7 +88,9 @@ def main() -> None:
                 pa.array(payload, type=IMAGE_TYPE),
             )
         target.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, target)
+        metadata = dict(table.schema.metadata or {})
+        metadata[b"huggingface"] = json.dumps(huggingface_features(int(entry["length"]))).encode()
+        pq.write_table(table.replace_schema_metadata(metadata), target)
         return episode
 
     done = 0
