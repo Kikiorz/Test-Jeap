@@ -27,7 +27,8 @@ probe() {
   NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 HF_HOME=/workspace/.hf_home HF_HUB_OFFLINE=1 \
     .venv/bin/python -u scripts/probe_con1_budget_and_conditioning.py \
       --config "$config" --exp-name "$exp" --checkpoint-step "$STEP" \
-      --batch-size "$BATCH_SIZE" --batches "$BATCHES" --budgets 0.05 \
+      --batch-size "$BATCH_SIZE" --batches "$BATCHES" \
+      --budgets ${PROBE_BUDGETS:-0.05} \
       --out "$out" "$@"
 }
 
@@ -75,4 +76,14 @@ if [[ -f "$HEAD_CKPT" ]]; then
 else
   echo "[$(date -u +%H:%M:%S)] no offline head at $HEAD_CKPT; skipping the grafted-head row"
 fi
+
+# Last, and in a subshell so PROBE_BUDGETS stays local: does relaxing Con1's 5%
+# residual cap buy accuracy? The probe's own notes say the cap - not the gate -
+# is what limits the correction, which is a different explanation for Con2's
+# weakness than "the predicted delta is uninformative". Running it at the very
+# end means an OOM here costs only this row.
+(
+  export PROBE_BUDGETS="0.05 0.2"
+  probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_a_budgets.json"
+) || echo "[$(date -u +%H:%M:%S)] multi-budget probe failed (likely OOM); continuing"
 echo "[$(date -u +%H:%M:%S)] probes done"
