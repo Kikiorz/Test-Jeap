@@ -95,3 +95,10 @@ ten Con1 parameters untouched.
 Consequence for the 4.5k result: the control was slightly *better* than a true
 no-correction baseline, so the reported -11.77% is a slight **underestimate** of
 the Con1 gain. The 12k table uses the fixed control.
+
+Quantitative confirmation, read straight off arm A's 12k checkpoint:
+`adapter_out/bias` has RMS **0.02737**, and the buggy base row measured
+`correction_rms` **0.0278**. They agree because zeroing `out/kernel` makes
+`residual = 0`, so the surviving correction is exactly `adapter_scale * adapter`
+- the bias, added *after* the sigmoid gate rather than multiplied by it. The
+0.028 was not a rounding artefact; it was that leaf.
