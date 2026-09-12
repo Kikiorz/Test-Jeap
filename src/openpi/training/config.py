@@ -1361,8 +1361,11 @@ _CONFIGS = [
             con1_latent_root="/workspace/artifacts/con1/robotwin_clean20_19999_features_v1",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/workspace/artifacts/models/jepa_wam_pi05_robotwin/checkpoints/openpi/"
-            "pi05_robotwin_clean_20_vjepa_aux/pi05_robotwin_vjepa_delta50_b128_fsdp4_gpu0123_seed42/19999/params",
+            # Publish-layout copy of the released step checkpoint: the release
+            # ships only the training layout (no params/_CHECKPOINT_METADATA), so
+            # scripts/publish_robotwin_checkpoint.py rewrites it first.
+            "/workspace/artifacts/models/jepa_wam_pi05_robotwin_publish/"
+            "pi05_robotwin_clean_20_vjepa_aux/19999/params",
             missing_regex=".*con[12].*",
         ),
         freeze_filter=nnx.All(
