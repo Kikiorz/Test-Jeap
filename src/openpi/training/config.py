@@ -758,6 +758,40 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     TrainConfig(
+        # SimpENV warm-up: train ONLY the Con1 delta head (everything else
+        # frozen) so the head has a sane latent-delta prediction before the
+        # joint fine-tune starts. This mirrors the LIBERO recipe, where the head
+        # is trained separately and then loaded into the coupling runs.
+        name="pi05_bridge_con1_warm",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, discrete_state_input=False,
+            use_con1=True, con1_latent_dim=2048,
+            con1_action_adapter=False, con1_cross_attention_out_init=0.02,
+            con1_alpha_initial=0.3, con1_residual_budget=0.05,
+            con1_action_dims=7, con1_train_action_layers_from=0,
+            con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
+            con1_delta_weight=1.0, con1_residual_weight=0.0,
+            con1_flow_weight_initial=1.0, con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotBridgeDataConfig(
+            repo_id="local/bridge_view0",
+            assets=AssetsConfig(assets_dir="/workspace/ts_JEPA_simpenv/assets/pi05_bridge",
+                                asset_id="local/bridge_view0"),
+            base_config=DataConfig(prompt_from_task=True,
+                                   con1_latent_root="/workspace/data/bridge_vlm_latents"),
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=5e-5, decay_steps=5_000, decay_lr=5e-5),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/models/pi05_base/params", missing_regex=".*con[12].*"),
+        freeze_filter=nnx.All(nnx.Param, nnx.Not(nnx_utils.PathRegex(".*con1_delta_head.*"))),
+        num_train_steps=5_000,
+    ),
+    TrainConfig(
         # SimpENV arm A: pi0.5 + Bridge with the Con1 coupling. No R_t anywhere -
         # the delta head attends over the whole live VLM prefix and the latent
         # target is pi0.5's own pooled prefix (cached offline). The action expert
@@ -773,6 +807,7 @@ _CONFIGS = [
             # step 0, so the stage boundaries are set to their minimum (1).
             con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
             con1_delta_weight=0.2, con1_residual_weight=1e-3,
+            con1_balance_strength=1.0,
             con1_flow_weight_initial=2.0, con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
         ),
@@ -789,7 +824,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/workspace/models/pi05_base/params", missing_regex=".*con[12].*"),
+            "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/1500/params", missing_regex=".*con[12].*"),
         num_train_steps=20_000,
     ),
     TrainConfig(
@@ -806,6 +841,7 @@ _CONFIGS = [
             # step 0, so the stage boundaries are set to their minimum (1).
             con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
             con1_delta_weight=0.2, con1_residual_weight=1e-3,
+            con1_balance_strength=1.0,
             con1_flow_weight_initial=2.0, con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
         ),
@@ -822,7 +858,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/workspace/models/pi05_base/params", missing_regex=".*con[12].*"),
+            "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/1500/params", missing_regex=".*con[12].*"),
         num_train_steps=20_000,
     ),
     #
