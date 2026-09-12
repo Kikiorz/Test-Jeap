@@ -40,7 +40,7 @@ def main() -> None:
         base_config=dataclasses.replace(base.data.base_config, con1_latent_root=None))
     config = dataclasses.replace(
         base, data=data,
-        model=dataclasses.replace(base.model, use_con1=False, use_con2=False),
+        model=dataclasses.replace(base.model, use_con1=False, use_con2=False, use_vjepa_aux=False),
         batch_size=args.batch_size, num_workers=0, wandb_enabled=False,
         exp_name="base_loss_probe", resume=False)
     mesh = sharding.make_mesh(config.fsdp_devices)

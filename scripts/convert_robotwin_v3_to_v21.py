@@ -110,6 +110,9 @@ def main() -> None:
         stamps = np.round(camera_meta[CAMERAS[0]][2] + np.arange(length) / fps, 6)
         table = table.set_column(table.schema.get_field_index("timestamp"), "timestamp",
                                  pa.array(stamps.astype(np.float32)))
+        # openpi's LeRobot config uses the column name "actions" (as the LIBERO
+        # dataset does); the v3 release calls it "action".
+        table = table.rename_columns(["actions" if name == "action" else name for name in table.column_names])
         pq.write_table(table, output / "data" / "chunk-000" / f"episode_{episode:06d}.parquet")
         offset += length
 
