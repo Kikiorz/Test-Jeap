@@ -117,6 +117,31 @@ information*. The candidates are the latent-free adapter and the cross-attention
 acting as an extra conditioning path - which is exactly what the
 only-residual / only-adapter rows measure.
 
+## A third prior, about the gradient form of Con2
+
+`docs_CON1_WM_ACTION_JUDGMENT.md` measures whether a world-model *gradient step*
+on the policy's own chunk moves it towards the demonstration (80 samples):
+
+| quantity | value |
+|---|---:|
+| world-model energy reduction | +25,732 (the step works on its own objective) |
+| mean distance to the demonstrated chunk | 1.525 -> 1.564 |
+| fraction of samples moved closer | **16.3%** (chance is 50%) |
+
+Its conclusion: the world-model gradient is not an action-improvement direction -
+it lowers the model's own energy while moving the action away from the expert in
+84% of cases. What *is* real is the model's **ranking** ability: with 12
+candidates it places the executed chunk first 49% (0.2 s) / 67% (0.4 s) of the
+time against 8.3% chance. The document's recommended design is therefore
+ranking-based adaptation - sample chunks, score them against observed
+transitions, move the adapter towards the better-scoring ones - rather than a
+gradient source.
+
+Scope note: this concerns the *gradient* form of Con2 discussed earlier. The Con2
+implemented in the openpi model and measured by arm B is a feed-forward refiner,
+`delta_used = delta_pred + F(delta_pred, z_t)`, which is a different object and is
+not contradicted by this measurement.
+
 ## What the table is not
 
 `docs_ROBOTWIN_PROBE_CAVEATS.md`: it is a **training-distribution** measurement
