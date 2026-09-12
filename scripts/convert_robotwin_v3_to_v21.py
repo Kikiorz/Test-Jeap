@@ -100,7 +100,9 @@ def main() -> None:
             file_index = int(scalar(row[f"videos/{camera}/file_index"]))
             start = float(scalar(row[f"videos/{camera}/from_timestamp"]))
             camera_meta[camera] = (chunk, file_index, start)
-            target_dir = output / "videos" / "chunk-000" / camera
+            # The v2.1 video path template indexes by episode chunk, i.e.
+            # episode_index // chunks_size.
+            target_dir = output / "videos" / f"chunk-{episode // 1000:03d}" / camera
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / f"episode_{episode:06d}.mp4"
             if not target.exists():
