@@ -111,6 +111,22 @@ root cause", **not** "the head fix failed".
 Conversely, if arm D does move the action flow, that would contradict a measured
 LIBERO result and would be the more interesting finding of the two.
 
+### Arm B has, in effect, already run this experiment
+
+Worth keeping in view when arm D reports. At 4.5k the two arms differed sharply
+in latent quality and not at all in the action:
+
+| arm | `con1_delta_nmse` @4.5k | flow @4.5k |
+|---|---:|---:|
+| A | ~0.88 | 0.003667 |
+| B | 0.773 (0.7065 by 9k) | 0.003664 (B vs A t = 0.16) |
+
+B has a materially better latent head at equal steps and its action is identical.
+That is the same shape of result arm D would produce if the head is not the
+mediator. Caveat: B changes two things at once (the Con2 refiner *and* the
+whole-prefix context), so it is suggestive rather than a clean single-variable
+test - which is precisely what arm D is for.
+
 It also sharpens what the RoboTwin Con1 gain can and cannot be: the -11.8% flow
 improvement is real, but per (1) it cannot be reaching the action *through latent
 information*. The candidates are the latent-free adapter and the cross-attention
