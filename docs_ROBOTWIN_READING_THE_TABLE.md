@@ -69,6 +69,54 @@ Fixed before the numbers arrived, see `docs_CON1_LATENT_CEILING.md`:
   |t| >= 3;
 * anything in between is reported as inconclusive at this budget.
 
+## The upstream prior that governs the whole table
+
+Two LIBERO measurements predate tonight and constrain how any RoboTwin arm may
+be read. Both are in this repo; check them before concluding anything.
+
+**1. `docs_LATENT_ACTION_INFORMATION.md` - what Con1 predicts carries almost no
+action information.** Held-out linear probes (26,367 train / 4,562 held out):
+
+| features | R^2 immediate action | R^2 10-step chunk |
+|---|---:|---:|
+| previous action | **0.962** | **0.705** |
+| `z_t` | 0.263 | 0.130 |
+| **`Delta z` (the quantity Con1 predicts)** | **0.047** | **0.033** |
+
+The action is almost pure temporal continuity, and adding the latent to the
+previous action makes held-out prediction *worse*. The document's own conclusion:
+"every coupling that routes this latent into the action is structurally a no-op -
+which is exactly what the four earlier experiments measured. The problem is
+*upstream of the coupling*."
+
+**2. `docs_CON1_DELTA_GRADIENT_ALIGNMENT.md` - the delta-MSE direction is
+orthogonal to the action-improving direction.** At equal `delta_z` step norm, the
+action direction reduces flow by +0.97% while the latent-MSE direction reduces it
+by -0.028% (efficiency -0.029). Re-weighting cannot fix a Euclidean loss whose
+gradient is orthogonal to what helps.
+
+The same document also settles a hypothesis I raised tonight: **the residual
+budget does not bind.** On LIBERO, budgets 0.05 / 0.10 / 0.20 give an identical
+correction RMS (0.3476) and identical flow (0.34762). So the multi-budget row is
+expected to be a no-op, and "the cap is throttling the correction" is not the
+explanation for Con2.
+
+### What this means for tonight
+
+Arms C, D and F all try to make the *latent prediction* better. Given (1) and
+(2), the **expected** outcome is that they leave the action flow essentially
+unchanged. If that is what happens, the correct reading is "consistent with the
+root cause", **not** "the head fix failed".
+
+Conversely, if arm D does move the action flow, that would contradict a measured
+LIBERO result and would be the more interesting finding of the two.
+
+It also sharpens what the RoboTwin Con1 gain can and cannot be: the -11.8% flow
+improvement is real, but per (1) it cannot be reaching the action *through latent
+information*. The candidates are the latent-free adapter and the cross-attention
+acting as an extra conditioning path - which is exactly what the
+only-residual / only-adapter rows measure.
+
 ## What the table is not
 
 `docs_ROBOTWIN_PROBE_CAVEATS.md`: it is a **training-distribution** measurement
