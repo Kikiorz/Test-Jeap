@@ -353,7 +353,10 @@ class Pi0(_model.BaseModel):
     def _con1_prefix(self, observation):
         """Frozen prefix pass; independent of the action chunk, so callers can
         run it once and re-derive the delta as the action estimate changes."""
-        if observation.con1_current_latent is None:
+        if observation.con1_current_latent is None and self.use_vjepa_aux:
+            # The JEPA-WAM path needs the offline teacher latent; the SimpENV path
+            # computes its latent from the prefix it is already running (the
+            # pooled VLM prefix is exactly what the head was trained against).
             raise ValueError("Con1 requires a CURRENT-only teacher latent at both training and inference")
         tokens, mask, ar_mask = self.embed_prefix(observation)
         (prefix, _), cache = self.PaliGemma.llm(
@@ -403,7 +406,10 @@ class Pi0(_model.BaseModel):
 
     def _con1_context(self, observation, action_chunk=None):
         context, r_tokens, vlm_context = self._con1_prefix(observation)
-        delta = self._con1_delta(r_tokens, observation.con1_current_latent, action_chunk, vlm_context)
+        current_latent = observation.con1_current_latent
+        if current_latent is None:
+            current_latent = vlm_context["pooled"]
+        delta = self._con1_delta(r_tokens, current_latent, action_chunk, vlm_context)
         return context, delta
 
     def _con1_velocity(self, observation, x_t, time, context, delta):
@@ -627,6 +633,8 @@ class Pi0(_model.BaseModel):
             # the current clean-action estimate a_hat = x_t - time * velocity.
             context, r_tokens, vlm_context = self._con1_prefix(observation)
             current_latent = observation.con1_current_latent
+            if current_latent is None:
+                current_latent = vlm_context["pooled"]
             initial_estimate = jnp.zeros(
                 (batch_size, self.action_horizon, self.con1_action_dims), dtype=noise.dtype
             )
