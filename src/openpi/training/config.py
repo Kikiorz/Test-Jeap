@@ -821,9 +821,18 @@ _CONFIGS = [
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-5),
+            warmup_steps=1000, peak_lr=1e-5, decay_steps=30_000, decay_lr=1e-5),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+                nnx_utils.PathRegex(".*con2.*"),
+            )),
+        ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/1999/params", missing_regex=".*con[12].*"),
         num_train_steps=20_000,
@@ -855,9 +864,18 @@ _CONFIGS = [
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-5),
+            warmup_steps=1000, peak_lr=1e-5, decay_steps=30_000, decay_lr=1e-5),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+                nnx_utils.PathRegex(".*con2.*"),
+            )),
+        ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/workspace/checkpoints/pi05_bridge_con1_warm/simpenv_head_warm/1999/params", missing_regex=".*con[12].*"),
         num_train_steps=20_000,
