@@ -428,6 +428,10 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            # The LeRobot OXE conversion stores the action column in the
+            # singular ("action"), unlike the physical-intelligence LeRobot
+            # datasets which use "actions".
+            action_sequence_keys=("action",),
         )
 
 
