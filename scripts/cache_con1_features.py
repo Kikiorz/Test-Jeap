@@ -122,6 +122,8 @@ def worker(args):
 
     contract = json.loads((args.output/'contract.json').read_text())
     rows = episodes(args)
+    if args.max_episodes:
+        rows = rows[:args.max_episodes]
     tasks = {e['task_index']:e['task'] for e in map(json.loads,(args.dataset/'meta/tasks.jsonl').read_text().splitlines())}
     base = config.get_config(args.base_config)
     # This stage only extracts the frozen VLM prefix, so the Con1/Con2 modules
