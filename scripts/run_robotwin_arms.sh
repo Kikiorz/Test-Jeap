@@ -22,7 +22,7 @@ train() {
     "$ROOT/.venv/bin/python" -u scripts/train.py "$config" \
       --exp-name="$exp" \
       --checkpoint-base-dir=/workspace/artifacts/checkpoints \
-      --no-wandb-enabled --num-workers=0 --overwrite \
+      --no-wandb-enabled --num-workers="${NUM_WORKERS:-12}" --overwrite \
       --num-train-steps="$STEPS" --keep-period=1000 \
       --batch-size=64 --con1-lr-multiplier=2 \
       >>"$LOG" 2>&1
