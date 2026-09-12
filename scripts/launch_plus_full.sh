@@ -14,6 +14,9 @@ TASK_SUITE="${TASK_SUITE:-libero_10}"
 LOG_ROOT="${LOG_ROOT:-/workspace/ts_jepa/logs/plus_eval}"
 mkdir -p "$LOG_ROOT"
 
+EVAL_PYTHON="${EVAL_PYTHON:-/opt/venv-libero-plus/bin/python}"
+export EVAL_PYTHON
+
 RUN_ID="${SIDE}_plus_full"
 for ((shard = 0; shard < SHARDS; shard++)); do
   RUN_ID="$RUN_ID" \

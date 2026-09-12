@@ -23,9 +23,10 @@ CAND_STEP="${CAND_STEP:-$(ls "$CAND_DIR" 2>/dev/null | grep -E '^[0-9]+$' | sort
 log "candidate $CAND_CFG/$CAND_EXP step $CAND_STEP"
 
 start_server() {
-  local name="$1" port="$2" config="$3" directory="$4" online_latent="$5"
+  local name="$1" port="$2" config="$3" directory="$4" online_latent="$5" gpu="$6"
   log "starting $name policy server on :$port"
   PYTHONPATH="$REPO/src" HF_HUB_OFFLINE=1 OPENPI_CON1_ONLINE_LATENT="$online_latent" \
+  CUDA_VISIBLE_DEVICES="$gpu" \
   OPENPI_CON1_VJEPA_CHECKPOINT="$WORK/vjepa2/vjepa2_1_vitg_384.pt" \
   OPENPI_CON1_VJEPA_ROOT="$WORK/vjepa2_src" \
   OPENPI_CON1_VJEPA_DEVICE="cuda:0" \
@@ -45,8 +46,8 @@ wait_health() {
 }
 
 cd "$REPO"
-start_server baseline "$BASE_PORT" pi05_libero_vjepa_aux "$BASE_CKPT" 0
-start_server candidate "$CAND_PORT" "$CAND_CFG" "$CAND_DIR/$CAND_STEP" 1
+start_server baseline "$BASE_PORT" pi05_libero_vjepa_aux "$BASE_CKPT" 0 "${BASE_GPU:-2}"
+start_server candidate "$CAND_PORT" "$CAND_CFG" "$CAND_DIR/$CAND_STEP" 1 "${CAND_GPU:-3}"
 wait_health "$BASE_PORT"
 wait_health "$CAND_PORT"
 log "both policy servers healthy"
