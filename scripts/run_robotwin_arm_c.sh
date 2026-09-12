@@ -17,7 +17,10 @@ cd "$ROOT"
 # where the head-only run had already converged. Arm A and B carry a 12k
 # checkpoint, so the final probe compares every arm at that step.
 STEPS="${STEPS:-12000}"
-KEEP_PERIOD="${KEEP_PERIOD:-3000}"
+# One checkpoint is 6.7 GB and the disk has to hold four arms. 12000 is still a
+# multiple of 6000, so the shared probe step survives while each of C and D
+# stores three checkpoints instead of five.
+KEEP_PERIOD="${KEEP_PERIOD:-6000}"
 MIN_FREE_GB="${MIN_FREE_GB:-40}"
 LOG="${LOG:-/workspace/robotwin_arm_c.log}"
 
