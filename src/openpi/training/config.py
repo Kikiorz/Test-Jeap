@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.robotwin_policy as robotwin_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.shared.nnx_utils as nnx_utils
@@ -373,6 +374,61 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         model_transforms = ModelTransformFactory()(model_config)
 
         # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            vjepa_target_root=self.vjepa_target_root,
+            vjepa_mmap_cache_size=self.vjepa_mmap_cache_size,
+            vjepa_future_offset=self.vjepa_future_offset,
+            vjepa_image_key=self.vjepa_image_key,
+            con1_latent_root=self.con1_latent_root,
+            con1_latent_mmap_cache_size=self.con1_latent_mmap_cache_size,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotRoboTwinDataConfig(DataConfigFactory):
+    """RoboTwin 2.0 (lerobot/robotwin_unified) data config.
+
+    The dataset is LeRobot v3.0 with three cameras
+    (``observation.images.cam_high``, ``cam_left_wrist``, ``cam_right_wrist``)
+    and 14-dimensional bimanual actions/states.
+    """
+
+    extra_delta_transform: bool = False
+    vjepa_target_root: str | None = None
+    vjepa_mmap_cache_size: int = 16
+    vjepa_future_offset: int | None = None
+    vjepa_image_key: str | None = None
+    con1_latent_root: str | None = None
+    con1_latent_mmap_cache_size: int = 16
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_mapping = {
+            "observation/image": "observation.images.cam_high",
+            "observation/wrist_image": "observation.images.cam_left_wrist",
+            "observation/wrist_image_right": "observation.images.cam_right_wrist",
+            "observation/state": "observation.state",
+            "actions": "action",
+            "prompt": "task",
+        }
+        if self.vjepa_target_root is not None:
+            repack_mapping["vjepa_target"] = "vjepa_target"
+        if self.con1_latent_root is not None:
+            repack_mapping["con1_current_latent"] = "con1_current_latent"
+            repack_mapping["con1_future_latents"] = "con1_future_latents"
+            repack_mapping["con1_future_valid"] = "con1_future_valid"
+
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
+        data_transforms = _transforms.Group(
+            inputs=[robotwin_policy.RoboTwinInputs(model_type=model_config.model_type)],
+            outputs=[robotwin_policy.RoboTwinOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
@@ -1245,6 +1301,82 @@ _CONFIGS = [
         num_train_steps=12_000,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=100, peak_lr=1e-5, decay_steps=12_000, decay_lr=1e-5),
+        save_interval=1000,
+        keep_period=1000,
+        log_interval=10,
+        batch_size=128,
+        ema_decay=None,
+    ),
+    TrainConfig(
+        # The complete algorithm on RoboTwin 2.0: Con1 livecross + Con2 delta
+        # refinement + whole-prefix VLM context. The model code is identical to
+        # the LIBERO branch; only the data config, the latent cache and the base
+        # checkpoint differ. RoboTwin specifics: 14-dim bimanual actions,
+        # horizon 50, three cameras, 16 V-JEPA query tokens, 1408-dim target.
+        name="pi05_robotwin_con1con2_ctx_20k",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=False,
+            action_horizon=50,
+            use_vjepa_aux=True,
+            vjepa_num_queries=16,
+            vjepa_query_grid_size=4,
+            vjepa_target_grid_size=8,
+            vjepa_target_dim=1408,
+            use_con1=True,
+            use_con2=True,
+            con2_width=512,
+            con1_vlm_context_tokens=True,
+            con1_action_adapter=True,
+            con1_cross_attention_out_init=0.02,
+            con1_alpha_initial=0.3,
+            con1_residual_budget=0.05,
+            con1_latent_dim=4224,
+            con1_action_dims=14,
+            con1_train_action_layers_from=14,
+            con1_stage1_steps=2000,
+            con1_stage2_steps=5000,
+            con1_stage3_steps=5000,
+            con1_sgr_beta=0.5,
+            con1_delta_weight=0.2,
+            con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0,
+            con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotRoboTwinDataConfig(
+            repo_id="/workspace/artifacts/datasets/robotwin_clean_20",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robotwin/checkpoints/openpi/"
+                           "pi05_robotwin_clean_20_vjepa_aux/pi05_robotwin_vjepa_delta50_b128_fsdp4_gpu0123_seed42/19999/assets",
+                asset_id="local/robotwin_clean_20",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                con1_latent_root="/workspace/artifacts/con1/robotwin_clean20_19999_features_v1",
+            ),
+            extra_delta_transform=False,
+            vjepa_future_offset=50,
+            vjepa_image_key="observation.images.cam_high",
+            con1_latent_root="/workspace/artifacts/con1/robotwin_clean20_19999_features_v1",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_robotwin/checkpoints/openpi/"
+            "pi05_robotwin_clean_20_vjepa_aux/pi05_robotwin_vjepa_delta50_b128_fsdp4_gpu0123_seed42/19999/params",
+            missing_regex=".*con[12].*",
+        ),
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+                nnx_utils.PathRegex(".*con2.*"),
+            )),
+        ),
+        num_train_steps=20_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=20_000, decay_lr=1e-5),
         save_interval=1000,
         keep_period=1000,
         log_interval=10,

@@ -53,6 +53,11 @@ def parse():
     p.add_argument('--gpus', default='0,1,2,3')
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--worker', type=int)
+    p.add_argument('--base-config', default='pi05_libero_vjepa_aux')
+    p.add_argument('--num-queries', type=int, default=64)
+    p.add_argument('--latent-dim', type=int, default=2816)
+    p.add_argument('--horizon', type=int, default=10)
+    p.add_argument('--image-keys', nargs='+', default=['image', 'wrist_image'])
     return p.parse_args()
 
 
@@ -76,7 +81,7 @@ def paths(args, eid):
 def validate_sources(args):
     rows = episodes(args)
     m = json.loads((args.states/'manifest.json').read_text())
-    if (m['kind'] != 'con1_independent_vjepa_frame_states' or m['state_dim'] != 2816
+    if (m['kind'] != 'con1_independent_vjepa_frame_states' or m['state_dim'] != args.latent_dim
             or m['channel_projection'] != 'none'
             or m['temporal_input'] != '[o_k,o_k]; never [o_t,o_future]'
             or m['dataset_metadata_sha256'] != source_identity(args.dataset)
@@ -91,7 +96,7 @@ def validate_sources(args):
         record = json.loads(p.with_suffix('.json').read_text())
         z = np.load(p, mmap_mode='r', allow_pickle=False)
         if (record['event'] != 'complete' or record['episode'] != eid
-                or record['frames'] != e['length'] or z.shape != (e['length'],2816)
+                or record['frames'] != e['length'] or z.shape != (e['length'],args.latent_dim)
                 or z.dtype != np.float16 or not np.isfinite(z).all()):
             raise ValueError(f'Uncommitted/invalid raw teacher states: {eid}')
     return rows, m
@@ -110,7 +115,7 @@ def worker(args):
     contract = json.loads((args.output/'contract.json').read_text())
     rows = episodes(args)
     tasks = {e['task_index']:e['task'] for e in map(json.loads,(args.dataset/'meta/tasks.jsonl').read_text().splitlines())}
-    base = config.get_config('pi05_libero_vjepa_aux')
+    base = config.get_config(args.base_config)
     base = dataclasses.replace(base, model=dataclasses.replace(base.model, vjepa_target_grid_size=8))
     policy = policy_config.create_trained_policy(base, args.checkpoint)
     extract = nnx_utils.module_jit(policy._model.extract_predictive_tokens)
@@ -130,7 +135,7 @@ def worker(args):
             continue
         chunk = eid // int(json.loads((args.dataset/'meta/info.json').read_text()).get('chunks_size',1000))
         source = args.dataset/'data'/f'chunk-{chunk:03d}'/f'episode_{eid:06d}.parquet'
-        table = pq.read_table(source, columns=['image','wrist_image','state','frame_index','episode_index','task_index'])
+        table = pq.read_table(source, columns=[*args.image_keys,'state','frame_index','episode_index','task_index'])
         samples = table.to_pylist()
         if len(samples) != length or any(row['episode_index'] != eid or row['frame_index'] != i for i,row in enumerate(samples)):
             raise ValueError('Parquet frame ordering/episode mismatch')
@@ -141,8 +146,7 @@ def worker(args):
         for offset in range(0, length, args.batch_size):
             batch = samples[offset:offset+args.batch_size]
             transformed = [policy._input_transform({
-                'observation/image':np.asarray(decode_image(row['image'],args.dataset)),
-                'observation/wrist_image':np.asarray(decode_image(row['wrist_image'],args.dataset)),
+                **{f'observation/{key}':np.asarray(decode_image(row[key],args.dataset)) for key in args.image_keys},
                 'observation/state':np.asarray(row['state'],dtype=np.float32),
                 'prompt':tasks[row['task_index']],
             }) for row in batch]
@@ -153,7 +157,7 @@ def worker(args):
             # Explicitly strip optional targets: prefix inference is current-only.
             observation = dataclasses.replace(observation, vjepa_target=None)
             prediction = np.asarray(extract(observation))[:valid]
-            if prediction.shape[1:] != (64,2048) or not np.isfinite(prediction).all():
+            if prediction.shape[1:] != (args.num_queries,2048) or not np.isfinite(prediction).all():
                 raise ValueError(f'Bad R shape/values: {prediction.shape}')
             result.append(prediction.astype(np.float16))
             atomic_json(status_path, dict(state='extracting', pid=os.getpid(), completed=count,
@@ -162,7 +166,7 @@ def worker(args):
         r = np.concatenate(result)
         source_z = args.states/'states'/f'chunk-{eid//state_manifest["chunks_size"]:03d}'/f'episode_{eid:06d}.npy'
         z = np.load(source_z, allow_pickle=False)
-        if z.shape != (length,2816) or not np.isfinite(z).all():
+        if z.shape != (length,args.latent_dim) or not np.isfinite(z).all():
             raise ValueError('Teacher source changed')
         atomic_npy(rp,r)
         atomic_npy(zp,z)
@@ -202,20 +206,21 @@ def coordinator(args):
                 checkpoint_sha256=checkpoint_hashes, teacher_manifest=teacher,
                 teacher_manifest_sha256=digest(args.states/'manifest.json'),
                 dataset_metadata_sha256=source_identity(args.dataset),code_sha256=code_hashes,
-                r_definition='official frozen JEPA-WAM prefix last64, current images/prompt; no action suffix',
-                r_shape=[64,2048],r_dtype='float16',latent_dim=2816,
-                anchor_source='current_only_frozen_teacher',horizon=10,
+                r_definition=f'official frozen JEPA-WAM prefix last{args.num_queries}, current images/prompt; no action suffix',
+                r_shape=[args.num_queries,2048],r_dtype='float16',latent_dim=args.latent_dim,
+                anchor_source='current_only_frozen_teacher',horizon=args.horizon,
                 batch_size=args.batch_size,gpus=args.gpus,training_enabled=False,
                 teacher_sha256=digest(Path(teacher['checkpoint'])))
             existing=args.output/'contract.json'
             if existing.exists() and json.loads(existing.read_text())!=contract:
                 raise ValueError('Refusing to mix cache contracts')
             atomic_json(existing,contract)
-            required=sum(e['length'] for e in rows)*(64*2048+2816)*2
+            required=sum(e['length'] for e in rows)*(args.num_queries*2048+args.latent_dim)*2
             if shutil.disk_usage(args.output).free < required+10*1024**3:
                 raise ValueError('Insufficient free disk for full uncompressed cache')
             atomic_json(args.output/'manifest.json',dict(schema='con1-anchored-features-v1',complete=False,
-                anchor_source='current_only_frozen_teacher',r_shape=[64,2048],latent_dim=2816,episodes=[]))
+                anchor_source='current_only_frozen_teacher',r_shape=[args.num_queries,2048],
+                latent_dim=args.latent_dim,episodes=[]))
             for rank,gpu in enumerate(args.gpus.split(',')):
                 env=dict(os.environ,CUDA_VISIBLE_DEVICES=gpu,OMP_NUM_THREADS='2',
                     XLA_PYTHON_CLIENT_PREALLOCATE='false',PYTHONPATH=f'{REPO}/src:{REPO}/packages/openpi-client/src',
@@ -239,7 +244,8 @@ def coordinator(args):
                 if digest(args.output/r['r'])!=r['r_sha256'] or digest(args.output/r['z'])!=r['z_sha256']:
                     raise ValueError('Final cache checksum mismatch')
             atomic_json(args.output/'manifest.json',dict(schema='con1-anchored-features-v1',complete=True,
-                anchor_source='current_only_frozen_teacher',r_shape=[64,2048],latent_dim=2816,horizon=10,
+                anchor_source='current_only_frozen_teacher',r_shape=[args.num_queries,2048],
+                latent_dim=args.latent_dim,horizon=args.horizon,
                 contract_sha256=digest(existing),episodes=sorted(records,key=lambda e:e['id'])))
             atomic_json(status,dict(state='complete',completed=len(records),frames=sum(r['length'] for r in records),
                 unix_time=time.time(),training_enabled=False))
