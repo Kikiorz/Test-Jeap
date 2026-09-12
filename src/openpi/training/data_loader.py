@@ -25,6 +25,17 @@ def _skip_version_check_for_local_datasets(repo_id, version, codebase_version):
 
 _previous_version_check = lerobot_dataset.check_version_compatibility
 lerobot_dataset.check_version_compatibility = _skip_version_check_for_local_datasets
+
+
+def _local_safe_version(repo_id, revision):
+    """LeRobot resolves branch/tag versions through the Hub; local datasets have none."""
+    if str(repo_id).startswith("local/"):
+        return revision or "main"
+    return _previous_get_safe_version(repo_id, revision)
+
+
+_previous_get_safe_version = lerobot_dataset.get_safe_version
+lerobot_dataset.get_safe_version = _local_safe_version
 import numpy as np
 import torch
 
