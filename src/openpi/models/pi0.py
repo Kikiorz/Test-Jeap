@@ -361,12 +361,18 @@ class Pi0(_model.BaseModel):
             positions=jnp.cumsum(mask, axis=1) - 1)
         prefix = jax.lax.stop_gradient(prefix)
         cache = jax.tree.map(jax.lax.stop_gradient, cache)
-        queries = jax.lax.stop_gradient(prefix[:, -self.vjepa_num_queries:])
-        # Mask-weighted mean of every non-query prefix token (image patches,
-        # language, state). This is the full VLM output the Con2 head may use
-        # alongside the predictive queries.
-        context_tokens = jax.lax.stop_gradient(prefix[:, : -self.vjepa_num_queries])
-        context_mask = mask[:, : -self.vjepa_num_queries]
+        if self.use_vjepa_aux:
+            queries = jax.lax.stop_gradient(prefix[:, -self.vjepa_num_queries:])
+            context_tokens = jax.lax.stop_gradient(prefix[:, : -self.vjepa_num_queries])
+            context_mask = mask[:, : -self.vjepa_num_queries]
+        else:
+            # SimpENV branch: the checkpoint has no JEPA predictive-query tokens
+            # (pi0.5 was never trained with R_t on this data), so the delta head
+            # attends over the whole VLM prefix - language, every image patch and
+            # the state - instead of a dedicated R_t.
+            queries = jax.lax.stop_gradient(prefix)
+            context_tokens = jax.lax.stop_gradient(prefix)
+            context_mask = mask
         context_mask_f = context_mask.astype(jnp.float32)
         pooled = (context_tokens * context_mask_f[..., None]).sum(1)
         pooled = pooled / jnp.maximum(context_mask_f.sum(1, keepdims=True), 1.0)
@@ -534,6 +540,23 @@ class Pi0(_model.BaseModel):
                           con1_metric_align_loss=align_loss,
                           con1_alpha=aux["con1_alpha"], con1_residual_energy=aux["con1_residual_energy"],
                           sgr_beta=jnp.asarray(beta))
+
+    def extract_pooled_prefix(self, observation: _model.Observation):
+        """Frozen pooled VLM prefix - the Con1 latent for the SimpENV branch.
+
+        pi0.5 has no JEPA predictive-query tokens on this data, so the Con1
+        latent target is simply the mask-weighted mean of the whole VLM prefix
+        (language, every image patch, state). No suffix, action labels or future
+        images enter, and the result is stop-gradiented like the JEPA teacher.
+        """
+        observation = _model.preprocess_observation(None, observation, train=False)
+        tokens, mask, ar_mask = self.embed_prefix(observation)
+        (prefix, _), _ = self.PaliGemma.llm(
+            [tokens, None], mask=make_attn_mask(mask, ar_mask),
+            positions=jnp.cumsum(mask, axis=1) - 1)
+        weights = mask.astype(jnp.float32)[..., None]
+        pooled = (prefix * weights).sum(1) / jnp.maximum(weights.sum(1), 1.0)
+        return jax.lax.stop_gradient(pooled.astype(jnp.float32))
 
     def extract_predictive_tokens(self, observation: _model.Observation):
         """Frozen current-only R, exactly the prefix used by action sampling.
