@@ -11,6 +11,20 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 import jax
 import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+
+# LeRobot's version-compatibility check queries the Hub for the dataset's
+# branches. Local datasets (``repo_id`` starting with ``local/``) have no Hub
+# entry, so skip that lookup instead of failing with a 404 / offline error.
+def _skip_version_check_for_local_datasets(repo_id, version, codebase_version):
+    if str(repo_id).startswith("local/"):
+        if version != codebase_version:
+            logging.warning("Local dataset codebase %s != %s", version, codebase_version)
+        return
+    return _previous_version_check(repo_id, version, codebase_version)
+
+
+_previous_version_check = lerobot_dataset.check_version_compatibility
+lerobot_dataset.check_version_compatibility = _skip_version_check_for_local_datasets
 import numpy as np
 import torch
 
