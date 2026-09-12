@@ -52,14 +52,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("data/libero-eval"))
     parser.add_argument("--json", type=Path, default=None)
+    parser.add_argument("--side", default="adapter",
+                        help="Run-id prefix of the candidate model (default: adapter).")
+    parser.add_argument("--baseline", default="baseline",
+                        help="Run-id prefix of the reference model.")
     args = parser.parse_args()
 
     report = {}
     print(f"{'category':24s} {'paired':>6s} {'adapter':>9s} {'baseline':>9s} "
           f"{'A-only':>6s} {'B-only':>6s} {'both':>5s} {'neither':>7s} {'delta':>7s}")
     for category, slug in CATEGORIES:
-        adapter = load(args.root, "adapter", slug)
-        baseline = load(args.root, "baseline", slug)
+        adapter = load(args.root, args.side, slug)
+        baseline = load(args.root, args.baseline, slug)
         keys = sorted(set(adapter) & set(baseline))
         if not keys:
             print(f"{category:24s} {0:6d}   (no paired episodes yet)")
