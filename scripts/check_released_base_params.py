@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import dataclasses
 
+import flax.nnx as nnx
 import flax.traverse_util
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 import train
@@ -91,7 +93,23 @@ def main() -> None:
         raise SystemExit(1)
     if leaks:
         raise SystemExit(1)
-    print("OK: --base-weights restores the released checkpoint on every shared leaf")
+
+    # The probe hands this tree to nnx.merge and then to jitted code, so the merge
+    # and a first forward have to survive the mixed dtypes (released float32 over
+    # the arm's bfloat16 Con1 leaves).
+    model = nnx.merge(state.model_def, swapped)
+    model.eval()
+    r_tokens = jnp.zeros((1, config.model.vjepa_num_queries, 2048), jnp.float32)
+    current = jnp.zeros((1, config.model.con1_latent_dim), jnp.float32)
+    out = model.con1_delta_head(r_tokens, current)
+    delta = out["delta"]
+    print(f"merge+forward  : delta {tuple(delta.shape)} {delta.dtype}")
+    if not bool(jnp.isfinite(delta).all()):
+        raise SystemExit("head produced non-finite values")
+    if delta.shape != (1, config.model.action_horizon, config.model.con1_latent_dim):
+        raise SystemExit(f"unexpected head output shape {delta.shape}")
+    print("OK: --base-weights restores the released checkpoint on every shared leaf, "
+          "merges and runs")
 
 
 if __name__ == "__main__":
