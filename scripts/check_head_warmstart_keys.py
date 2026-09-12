@@ -13,6 +13,7 @@ import argparse
 from pathlib import Path
 
 import flax.nnx as nnx
+import flax.traverse_util
 import jax
 import numpy as np
 from flax import serialization
@@ -26,6 +27,9 @@ def parse() -> argparse.Namespace:
                    default=Path("/workspace/artifacts/con2/robotwin_head_warmstart.msgpack"))
     p.add_argument("--config", default="pi05_robotwin_con1_livecross_20k")
     p.add_argument("--prefix", default="con1_delta_head")
+    p.add_argument("--apply", action="store_true",
+                   help="Also run the probe's _graft_head against an eval-shape state, so the "
+                        "graft code itself is exercised and not just the key comparison.")
     return p.parse_args()
 
 
@@ -90,6 +94,23 @@ def main() -> None:
         print("OK: every head-only leaf maps onto a joint delta-head leaf by prefix alone")
     else:
         raise SystemExit(1)
+
+    if args.apply:
+        from probe_con1_budget_and_conditioning import _graft_head
+
+        state = nnx.state(model)
+        # _graft_head raises unless it rewrites every leaf it read, so a clean call
+        # is already the assertion; this counts the subtree afterwards as a second
+        # check that nothing was dropped. Key *formatting* changes once real arrays
+        # replace the eval-shape placeholders, so match on names, not on strings.
+        _graft_head(state, args.checkpoint)
+        after = flax.traverse_util.flatten_dict(state.to_pure_dict(), sep="/")
+        head_leaves = [k for k in after if any(name in k for name in ("anchor_in", "chunk_expand",
+                                                                      "delta_out", "cross_attention"))]
+        print(f"graft applied; {len(head_leaves)} head leaves present afterwards "
+              f"(expected {len(head_flat)})")
+        if len(head_leaves) != len(head_flat):
+            raise SystemExit("graft changed the number of head leaves")
 
 
 if __name__ == "__main__":
