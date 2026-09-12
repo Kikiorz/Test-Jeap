@@ -778,7 +778,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotLiberoPlusDataConfig(
             repo_id="local/libero_plus_lerobot",
-            assets=AssetsConfig(asset_id="libero_plus"),
+            assets=AssetsConfig(asset_id="local/libero_plus_lerobot"),
             base_config=DataConfig(prompt_from_task=True),
         ),
         batch_size=64,
