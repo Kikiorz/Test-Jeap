@@ -83,6 +83,22 @@ Implication for the next arm: warm the head up on the cache before joint
 training, the way the LIBERO recipe does, instead of asking the joint objective
 to train it from random init at the model's learning rate.
 
+## The pre-registered prediction for arm D
+
+Arm D is arm A plus a 5x multiplier on the head group only (effective 1e-4
+instead of 2e-5), i.e. the one change the head-only run says should move the
+head. That makes it a direct test of whether the latent head is the mediator
+between Con1 and the action, and the two outcomes mean different things:
+
+| outcome at 12k | reading |
+|---|---|
+| D's delta NMSE falls well below A's **and** its action flow loss beats A | the latent prediction causally drives the action, so Con2 (which refines that delta) has a real mechanism to build on |
+| D's delta NMSE falls but the action flow loss stays at A's level | the head is not the mediator; a better latent predictor does not buy actions, and Con2's premise needs revisiting regardless of how good the latent head gets |
+
+Both are publishable findings; they just point at different Con2 stories. The
+paired probe reports the flow loss and, separately, the training logs carry
+`con1_delta_nmse`, so the table can be filled in either way.
+
 ## Reproduce
 
 ```bash
