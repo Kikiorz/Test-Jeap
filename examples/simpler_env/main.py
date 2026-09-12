@@ -86,7 +86,7 @@ def to_env_action(action: np.ndarray, *, open_threshold: float, invert_gripper: 
 
 
 def rollout(env, policy, *, replan_steps: int, open_threshold: float, invert_gripper: bool = False,
-            max_steps: int = 120):
+            use_wrist_image: bool = False, max_steps: int = 120):
     obs, _ = env.reset()
     instruction = env.get_language_instruction()
     done = False
@@ -98,6 +98,9 @@ def rollout(env, policy, *, replan_steps: int, open_threshold: float, invert_gri
             "observation/state": bridge_state(obs),
             "prompt": instruction,
         }
+        if use_wrist_image:
+            request["observation/wrist_image"] = np.asarray(
+                obs["image"]["base_camera"]["rgb"], dtype=np.uint8)
         chunk = np.asarray(policy.infer(request)["actions"], dtype=np.float64)
         for k in range(min(replan_steps, chunk.shape[0])):
             action = to_env_action(chunk[k], open_threshold=open_threshold, invert_gripper=invert_gripper)
@@ -119,6 +122,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--replan-steps", type=int, default=8)
     parser.add_argument("--open-threshold", type=float, default=0.5)
+    parser.add_argument("--use-wrist-image", action="store_true",
+                        help="Also send SimplerEnv's wrist camera as observation/wrist_image.")
     parser.add_argument("--invert-gripper", action="store_true",
                         help="Treat the model's gripper channel as 'closedness' instead of 'openness'.")
     parser.add_argument("--seed", type=int, default=0)
@@ -138,7 +143,7 @@ def main() -> None:
             start = time.time()
             success, steps = rollout(
                 env, policy, replan_steps=args.replan_steps, open_threshold=args.open_threshold,
-                invert_gripper=args.invert_gripper,
+                invert_gripper=args.invert_gripper, use_wrist_image=args.use_wrist_image,
             )
             results.append(success)
             print(f"[{label}] trial {trial + 1}/{args.n_trajs} success={success} steps={steps} "
