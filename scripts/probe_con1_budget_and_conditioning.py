@@ -69,17 +69,27 @@ def _released_base_params(config, params):
     used at initialisation) and then silencing the correction yields a true
     released-base row that can be compared on the same batches.
     """
-    spec = jax.tree.map(lambda leaf: jax.ShapeDtypeStruct(leaf.shape, leaf.dtype), params)
+    # `state.params` is an `nnx.State`, and the weight loader flattens its input
+    # with `flax.traverse_util.flatten_dict`, which rejects anything that is not a
+    # (frozen)dict. Go through the pure-dict view and convert back afterwards.
+    pure = params.to_pure_dict()
+    spec = jax.tree.map(lambda leaf: jax.ShapeDtypeStruct(leaf.shape, leaf.dtype), pure)
     loaded = config.weight_loader.load(spec)
 
     def pick(path, base_leaf, trained_leaf):
-        names = _path_names(path)
-        if "con1" in names or "con2" in names:
+        # Element names look like "con1_cross_attention", not "con1", so match on
+        # the joined path rather than on exact elements.
+        joined = "/".join(_path_names(path))
+        if "con1" in joined or "con2" in joined:
             # Missing from the released checkpoint, and zeroed by the caller.
             return trained_leaf
         return base_leaf
 
-    return jax.tree_util.tree_map_with_path(pick, loaded, params)
+    merged = jax.tree_util.tree_map_with_path(pick, loaded, pure)
+    # nnx 0.10 replaces in place and returns None, so the caller gets the same
+    # State object back with the shared leaves swapped for the released weights.
+    params.replace_by_pure_dict(merged)
+    return params
 
 
 def main() -> None:
