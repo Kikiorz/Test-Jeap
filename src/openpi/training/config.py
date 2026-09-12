@@ -412,7 +412,9 @@ class LeRobotRoboTwinDataConfig(DataConfigFactory):
             "observation/wrist_image": "observation.images.cam_left_wrist",
             "observation/wrist_image_right": "observation.images.cam_right_wrist",
             "observation/state": "observation.state",
-            "actions": "action",
+            # The converted dataset uses openpi's column name (`actions`), as the
+            # LIBERO dataset does.
+            "actions": "actions",
             "prompt": "task",
         }
         if self.vjepa_target_root is not None:
