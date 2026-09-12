@@ -34,19 +34,20 @@ CAMERAS = [
 
 def scalar(value):
     """v3 stores statistics as length-1 lists; v2.1 wants plain numbers."""
-    if isinstance(value, (list, np.ndarray, tuple)):
-        value = value[0] if len(value) else 0.0
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
+    while isinstance(value, (list, tuple, np.ndarray)):
+        if len(value) == 0:
+            return 0.0
+        value = value[0]
+    return value.item() if isinstance(value, np.generic) else value
 
 
 def vector(value):
     if isinstance(value, np.ndarray):
         return value.tolist()
-    return list(value)
+    if isinstance(value, (list, tuple)):
+        return [scalar(item) if not isinstance(item, (list, tuple, np.ndarray)) else vector(item)
+                for item in value]
+    return value.item() if isinstance(value, np.generic) else value
 
 
 def main() -> None:
