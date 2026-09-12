@@ -1319,8 +1319,12 @@ _CONFIGS = [
             discrete_state_input=False,
             action_horizon=50,
             use_vjepa_aux=True,
-            vjepa_num_queries=16,
-            vjepa_query_grid_size=4,
+            # Shape-matched against the released RoboTwin JEPA-WAM checkpoint:
+            # vjepa_query_tokens is (64, 2048) and the alignment output is 1408,
+            # i.e. the same query layout as the LIBERO model (the "16 queries"
+            # note in docs_ROBOTWIN_CON1_TRAINING.md does not match the weights).
+            vjepa_num_queries=64,
+            vjepa_query_grid_size=8,
             vjepa_target_grid_size=8,
             vjepa_target_dim=1408,
             use_con1=True,
