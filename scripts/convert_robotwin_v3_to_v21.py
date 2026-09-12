@@ -125,7 +125,13 @@ def main() -> None:
             entry[camera] = {stat: vector(row[f"stats/{camera}/{stat}"]) if stat in ("mean", "std", "min", "max")
                              else int(scalar(row[f"stats/{camera}/{stat}"]))
                              for stat in ("min", "max", "mean", "std", "count")}
-        stats_lines.append({"episode_index": episode, "stats": {k: v for k, v in entry.items() if k != "episode_index"}})
+        stats_lines.append({
+            "episode_index": episode,
+            "stats": {
+                name: (value if isinstance(value, list) else [value])
+                for name, value in entry.items() if name != "episode_index"
+            },
+        })
         if episode % 250 == 0:
             print(json.dumps({"converted": episode + 1}), flush=True)
 
