@@ -106,8 +106,14 @@ def main() -> None:
                 patched["observation.state"] = variant_state
                 patched["actions"] = variant_actions
                 out = dataset._transform(patched)
-                item = {key: np.asarray(value)[None] for key, value in out.items()
-                        if key not in ("actions", "actions_is_pad")}
+                item = {}
+                for key, value in out.items():
+                    if key in ("actions", "actions_is_pad"):
+                        continue
+                    if isinstance(value, dict):
+                        item[key] = {name: np.asarray(entry)[None] for name, entry in value.items()}
+                    else:
+                        item[key] = np.asarray(value)[None]
                 observation = _model.Observation.from_dict(item)
                 actions = jnp.asarray(np.asarray(out["actions"], np.float32)[None])
                 result = model.compute_loss(jax.random.key(0), observation, actions, train=True)
