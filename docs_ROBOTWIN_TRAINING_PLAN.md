@@ -200,3 +200,34 @@ arm D 与那次实验有两处根本不同：
 **监测判据**：D 训练时如果 `con1_residual_energy` 开始**持续上升**（尤其每 ~10 步
 翻倍那样的斜率），那就是同一个失败模式重现，应当停机——注意训练器的非有限值守卫
 **不会**触发（当初所有值都是有限的，是人手动停的）。
+
+## 10. 与审阅计划的偏差：训练数据不是 Clean-20
+
+`docs_ROBOTWIN_CON1_TRAINING.md`（robotwin 分支，状态 "plan for review. No
+RoboTwin training is launched yet"）第 5 节要求：**"Extract only Clean
+demonstrations for the 20 tasks above"**。实际执行与它不一致：
+
+* 四个 arm 的 `repo_id` 都是 `/workspace/robotwin2/RoboTwin_v21_inline`，即**完整
+  release**（2500 episodes / 2410 条不同指令字符串）；
+* `/workspace/artifacts/datasets/robotwin_clean_20` **是指向完整 release 的符号链接**，
+  并不是 20 任务子集——这个名字被用于 norm_stats 的 asset id，而不是数据裁剪。
+
+按论文 20 个任务名生成的词表去匹配 2500 条指令：
+
+| | 条数 | 占比 |
+|---|---:|---:|
+| 命中 20 任务词表 | 1455 | 58.2% |
+| 其它任务（如"蓝色条纹钟按顶部按钮"） | 1045 | 41.8% |
+
+（匹配是关键词级的近似；例如 Alarmclock 的指令里说的是 "clock"。）
+
+所以 **约 42% 的训练轨迹不属于论文的 20 个任务**。影响：
+
+1. arm 之间的**内部对比依然成立**（所有 arm 看同一份数据、同一 seed、同一批配对
+   批次）；
+2. 但**数值不能直接与"只训 Clean-20"的复现对齐**，也可能冲淡基座在 Clean-20 上的
+   专精（基座就是在 Clean-20 上训的）；
+3. 归一化统计取的是基座 assets 里的 **`local/robotwin_clean_20`**，却作用在全集数据上。
+
+这是需要你确认的设计问题，不是可以在运行时自动修好的：改成只训 20 任务需要重建
+缓存与 checkpoint 目录，属于下一轮实验。
