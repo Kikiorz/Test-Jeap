@@ -444,6 +444,41 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotLiberoPlusDataConfig(DataConfigFactory):
+    """Fine-tuning on the official LIBERO-Plus training data.
+
+    ``Sylvest/libero_plus_lerobot`` is a LeRobot v2.1 release with 14,347
+    episodes / 2.24M frames over 40 tasks at 20 fps, with a front and a wrist
+    camera - the same embodiment as LIBERO with the perturbation families folded
+    in. Key names differ from the physical-intelligence LeRobot release
+    ("observation.images.front/wrist", singular "action"), hence the repack.
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_mapping = {
+            "observation/image": "observation.images.front",
+            "observation/wrist_image": "observation.images.wrist",
+            "observation/state": "observation.state",
+            "actions": "action",
+            "prompt": "prompt",
+        }
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.LiberoInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -733,6 +768,26 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
+    ),
+    TrainConfig(
+        # pi0.5 fine-tuned directly on the LIBERO-Plus training data (no Con1):
+        # the base that any coupling experiment has to beat. Upstream's pi0.5
+        # fine-tuning recipe, but over 40 tasks x perturbation families instead
+        # of the clean LIBERO-10 demonstrations.
+        name="pi05_libero_plus",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoPlusDataConfig(
+            repo_id="local/libero_plus_lerobot",
+            assets=AssetsConfig(asset_id="libero_plus"),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000, peak_lr=5e-5, decay_steps=60_000, decay_lr=5e-5),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
+        num_train_steps=60_000,
     ),
     TrainConfig(
         # pi0.5 fine-tuned for the SimplerEnv WidowX (Bridge) evaluation. Same
