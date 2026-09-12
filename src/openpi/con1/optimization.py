@@ -48,7 +48,9 @@ def scale_group_updates(tree, step, *, warmup=2000, fusion_multiplier=1., action
     """
     def scale(path, value):
         names = _names(path)
-        if "con1_delta_head" in names:
+        if "con1_delta_head" in names or "con2_refine" in names:
+            # The Con2 refiner is a small residual MLP on top of the head and
+            # shares the head's learning-rate factor.
             factor = 1.
         elif "con1_cross_attention" in names:
             factor = .1 if "alpha_logit" in names else fusion_multiplier * jnp.where(step < warmup, 1., .5)
