@@ -71,6 +71,18 @@ def main() -> None:
         data_path, video_path = episode_paths(args.dataset_root, args.image_key, episode)
         if not data_path.exists() or not video_path.exists():
             continue
+        z_path = out / "episodes" / f"{episode:06d}_z.npy"
+        if z_path.exists():
+            # Already cached (the view grows as more Bridge chunks land).
+            z = np.load(z_path, mmap_mode="r")
+            entries.append({
+                "id": episode,
+                "task_id": -1,
+                "length": int(len(z)),
+                "z": f"episodes/{episode:06d}_z.npy",
+                "r": f"episodes/{episode:06d}_r.npy",
+            })
+            continue
         table = pq.read_table(data_path, columns=["observation.state", "task_index"])
         states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
         frames = iio.imread(video_path, plugin="pyav")
