@@ -338,9 +338,10 @@ def restore_params(
             unwrap = True
         except TypeError:
             # Newer orbax returns a StepMetadata for a bare pyTree checkpoint;
-            # restore the tree as-is and keep it un-wrapped.
+            # restore without an item spec -- the stored tree still carries the
+            # top-level "params" key, so the un-wrapping below is unchanged.
             item = None
-            unwrap = False
+            unwrap = True
 
         restore_args = None
         if item is not None:
