@@ -148,8 +148,12 @@ def process_episode(args, info, episode, model, device):
         write_json(path.with_suffix(".json"), {"event": "complete", "episode": index, "frames": length,
                                              "diagnostics": state_diagnostics(existing)})
         return
-    table = pq.read_table(input_path(args.dataset_root, index),
-                          columns=[*args.image_keys, "frame_index", "episode_index", "index", "task_index"])
+    source_path = input_path(args.dataset_root, index)
+    schema_names = pq.read_schema(source_path).names
+    image_columns = [key for key in args.image_keys if key in schema_names]
+    table = pq.read_table(
+        source_path,
+        columns=[*image_columns, "frame_index", "episode_index", "index", "task_index"])
     if table.num_rows != length or not np.array_equal(table["frame_index"].to_numpy(), np.arange(length)):
         raise ValueError(f"Episode {index}: inconsistent frame indices")
     if not np.all(table["episode_index"].to_numpy() == index):
