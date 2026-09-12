@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Chained rebuild so the GPUs never idle between stages:
-#   wait for V-JEPA weights -> frame states -> anchored cache -> head -> arms
+#   wait for V-JEPA weights -> frame states -> anchored cache -> head(12k) -> arms(4500 each)
 # Budgets are trimmed for the current deadline; the head still sees 8k steps
 # and each arm 3k steps (which crosses the 2k stage-1 boundary, so the action
 # expert's last four blocks do get trained).
@@ -8,8 +8,8 @@ set -euo pipefail
 
 WORK="${WORK:-/workspace/ts_jepa}"
 REPO="${REPO:-$WORK/ts_JEPA_libero}"
-HEAD_STEPS="${HEAD_STEPS:-8000}"
-ARM_STEPS="${ARM_STEPS:-3000}"
+HEAD_STEPS="${HEAD_STEPS:-12000}"
+ARM_STEPS="${ARM_STEPS:-4500}"
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
@@ -27,7 +27,7 @@ log "V-JEPA weights ready"
 WORK="$WORK" REPO="$REPO" bash "$WORK/libero_rebuild.sh" cache
 
 # 3. head, then the two arms, with the trimmed budgets
-WORK="$WORK" REPO="$REPO" STEPS="$HEAD_STEPS" bash "$WORK/libero_rebuild.sh" head
+WORK="$WORK" REPO="$REPO" STEPS="$HEAD_STEPS" STEPS="$HEAD_STEPS" bash "$WORK/libero_rebuild.sh" head
 WORK="$WORK" REPO="$REPO" STEPS="$ARM_STEPS" bash "$WORK/libero_rebuild.sh" arms
 
 log "pipeline done"

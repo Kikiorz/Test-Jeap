@@ -51,11 +51,18 @@ def main() -> None:
         for camera in CAMERAS:
             directory = frames_root / camera / f"episode_{episode:06d}"
             files = sorted(directory.glob("*.jpg"))
-            if len(files) != int(entry["length"]):
-                raise ValueError(f"{directory}: {len(files)} frames, expected {entry['length']}")
+            expected = int(entry["length"])
+            if abs(len(files) - expected) > 1:
+                raise ValueError(f"{directory}: {len(files)} frames, expected {expected}")
+            payload = [{"bytes": path.read_bytes(), "path": None} for path in files]
+            if len(files) < expected:
+                # The release's metadata occasionally counts one frame more than
+                # the video actually holds; repeat the last frame rather than
+                # dropping the episode.
+                payload.append(dict(payload[-1]))
             table = table.append_column(
                 camera,
-                pa.array([{"bytes": path.read_bytes(), "path": None} for path in files], type=IMAGE_TYPE),
+                pa.array(payload, type=IMAGE_TYPE),
             )
         target.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(table, target)
