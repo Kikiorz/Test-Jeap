@@ -50,6 +50,19 @@ def vector(value):
     return value.item() if isinstance(value, np.generic) else value
 
 
+def jsonable(value):
+    """Recursively strip numpy types so any structure can be serialised."""
+    if isinstance(value, dict):
+        return {key: jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return jsonable(value.tolist())
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -100,7 +113,7 @@ def main() -> None:
         pq.write_table(table, output / "data" / "chunk-000" / f"episode_{episode:06d}.parquet")
         offset += length
 
-        episodes_lines.append({"episode_index": episode, "tasks": list(row["tasks"]), "length": length})
+        episodes_lines.append({"episode_index": episode, "tasks": [str(t) for t in row["tasks"]], "length": length})
         entry = {"episode_index": episode}
         for key in ("observation.state", "action"):
             entry[key] = {
@@ -118,10 +131,10 @@ def main() -> None:
 
     with (output / "meta" / "episodes.jsonl").open("w") as handle:
         for line in episodes_lines:
-            handle.write(json.dumps(line) + "\n")
+            handle.write(json.dumps(jsonable(line)) + "\n")
     with (output / "meta" / "episodes_stats.jsonl").open("w") as handle:
         for line in stats_lines:
-            handle.write(json.dumps(line) + "\n")
+            handle.write(json.dumps(jsonable(line)) + "\n")
 
     merged = json.loads((source / "meta" / "stats.json").read_text())
     (output / "meta" / "stats.json").write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
