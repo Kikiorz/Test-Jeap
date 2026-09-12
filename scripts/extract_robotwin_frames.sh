@@ -17,7 +17,7 @@ for camera in observation.images.cam_high observation.images.cam_left_wrist obse
       episode="$(basename "$file" .mp4)"
       target="'"$OUT"'/${camera}/${episode}"
       mkdir -p "$target"
-      ffmpeg -nostdin -loglevel error -y -fps_mode passthrough -i "$file" -vf scale=256:256 -q:v 3 "$target/%05d.jpg"
+      ffmpeg -nostdin -loglevel error -y -i "$file" -vsync 0 -vf scale=256:256 -q:v 3 "$target/%05d.jpg"
     '
   echo "done $camera"
 done
