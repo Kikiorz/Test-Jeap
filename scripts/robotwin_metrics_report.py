@@ -44,14 +44,17 @@ def main() -> int:
         if not rows:
             print(f"== {arm}: empty")
             continue
+        # openpi logs the counter as `completed_updates`; older runs used `step`.
+        step_key = "step" if "step" in rows[-1] else "completed_updates"
         present = [c for c in COLUMNS if c in rows[-1]]
         stride = max(1, len(rows) // args.rows)
-        print(f"== {arm}  ({len(rows)} records, steps {rows[0].get('step')}..{rows[-1].get('step')})")
-        header = f"{'step':>7} " + " ".join(f"{c:>12}" for c in present)
+        print(f"== {arm}  ({len(rows)} records, steps "
+              f"{rows[0].get(step_key)}..{rows[-1].get(step_key)})")
+        header = f"{step_key[:7]:>7} " + " ".join(f"{c:>12}" for c in present)
         print(header)
         for row in rows[::stride] + [rows[-1]]:
             values = " ".join(f"{row.get(c, float('nan')):>12.5f}" for c in present)
-            print(f"{row.get('step', -1):>7} {values}")
+            print(f"{row.get(step_key, -1):>7} {values}")
     return 0
 
 

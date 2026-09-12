@@ -108,6 +108,20 @@ targets the larger of the two gaps, and it avoids adding the readout's ~424M
 parameters before we know whether a better latent predictor buys any action
 accuracy at all.
 
+### The joint head does keep converging, just slowly
+
+Arm A's own training log refines the 4.5k comparison. `con1_delta_nmse` over the
+last 500 logged steps of the 15,000-step run: median **0.7849**, best **0.7371**,
+against 0.88 at 4,500 steps. So the joint objective does eventually reach the
+neighbourhood of the head-only fit (0.688) - it needs roughly 15,000 joint steps
+at an effective 2e-5 to do what a dedicated 1e-4 schedule did in 3,000 much
+cheaper steps.
+
+The gap is therefore real but smaller than the 4.5k snapshot suggested
+(~0.05-0.09 rather than ~0.15), which is a useful expectation to set before arm D
+reports: the honest prediction is a modest NMSE improvement, and the open
+question is whether even that moves the action flow loss.
+
 Implication for the next arm: warm the head up on the cache before joint
 training, the way the LIBERO recipe does, instead of asking the joint objective
 to train it from random init at the model's learning rate.
