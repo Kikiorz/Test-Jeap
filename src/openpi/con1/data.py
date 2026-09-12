@@ -27,7 +27,7 @@ def split_episodes(episodes, *, fraction=.1, seed=42):
         # per task: the RoboTwin release carries ~2,400 instruction strings for
         # ~2,500 episodes, so holding out "a task" would hold out everything.
         # Fall back to a seeded episode-level holdout, which is still disjoint.
-        rng = np.random.default_rng(np.random.SeedSequence([seed, "episode-level"]))
+        rng = np.random.default_rng(np.random.SeedSequence([seed, 1_000_003]))
         ids = np.asarray(sorted(e["id"] for e in episodes))
         heldout = set(rng.permutation(ids)[:max(1, round(len(ids) * fraction))].tolist())
         return ([e for e in episodes if e["id"] not in heldout],
