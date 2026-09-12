@@ -113,6 +113,11 @@ def main() -> None:
     conditioned = bool(config.model.con1_action_conditioning)
 
     def model_def_with_budget(budget):
+        if budget == config.model.con1_residual_budget:
+            # The requested budget is the one the checkpoint was trained with, so
+            # reuse the restored graph instead of building a second model: for the
+            # whole-prefix-context variant a second instance does not fit.
+            return state.model_def
         cfg = dataclasses.replace(config, model=dataclasses.replace(
             config.model, con1_residual_budget=budget))
         return nnx.graphdef(cfg.model.create(jax.random.key(0)))
