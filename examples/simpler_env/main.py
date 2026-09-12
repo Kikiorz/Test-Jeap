@@ -16,7 +16,7 @@ axis-angle, and the gripper binarised to +1 (open) / -1 (close).
 from __future__ import annotations
 
 import argparse
-import dataclasses
+
 import json
 import pathlib
 import time
@@ -119,7 +119,7 @@ def main() -> None:
         print(f"[{label}] {int(np.sum(results))}/{len(results)} = {rate:.1%}", flush=True)
 
     out = args.log_dir / f"simpler_env_{args.task}_{time.strftime('%Y%m%d-%H%M%S')}.json"
-    out.write_text(json.dumps({"args": {k: str(v) for k, v in dataclasses.asdict(args).items()},
+    out.write_text(json.dumps({"args": {k: str(v) for k, v in vars(args).items()},
                                "summary": summary}, indent=2) + "\n")
     print("WROTE", out)
 
