@@ -75,15 +75,18 @@ def bridge_state(obs: dict) -> np.ndarray:
     return np.concatenate([relative_position, [roll, pitch, yaw], [0.0], [openness]]).astype(np.float32)
 
 
-def to_env_action(action: np.ndarray, *, open_threshold: float) -> np.ndarray:
+def to_env_action(action: np.ndarray, *, open_threshold: float, invert_gripper: bool = False) -> np.ndarray:
     action = np.asarray(action, dtype=np.float64).reshape(-1)
     world = action[:3]
     rot_ax, rot_angle = euler2axangle(action[3], action[4], action[5])
     gripper = 2.0 * (action[6] > open_threshold) - 1.0
+    if invert_gripper:
+        gripper = -gripper
     return np.concatenate([world, rot_ax * rot_angle, [gripper]]).astype(np.float64)
 
 
-def rollout(env, policy, *, replan_steps: int, open_threshold: float, max_steps: int = 120):
+def rollout(env, policy, *, replan_steps: int, open_threshold: float, invert_gripper: bool = False,
+            max_steps: int = 120):
     obs, _ = env.reset()
     instruction = env.get_language_instruction()
     done = False
@@ -97,7 +100,7 @@ def rollout(env, policy, *, replan_steps: int, open_threshold: float, max_steps:
         }
         chunk = np.asarray(policy.infer(request)["actions"], dtype=np.float64)
         for k in range(min(replan_steps, chunk.shape[0])):
-            action = to_env_action(chunk[k], open_threshold=open_threshold)
+            action = to_env_action(chunk[k], open_threshold=open_threshold, invert_gripper=invert_gripper)
             obs, _reward, success, truncated, _info = env.step(action)
             steps += 1
             done = bool(truncated) or bool(success) or steps >= max_steps
@@ -116,6 +119,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--replan-steps", type=int, default=8)
     parser.add_argument("--open-threshold", type=float, default=0.5)
+    parser.add_argument("--invert-gripper", action="store_true",
+                        help="Treat the model's gripper channel as 'closedness' instead of 'openness'.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-dir", type=pathlib.Path, default=pathlib.Path("data/simpler_env_eval"))
     args = parser.parse_args()
@@ -132,7 +137,8 @@ def main() -> None:
         for trial in range(args.n_trajs):
             start = time.time()
             success, steps = rollout(
-                env, policy, replan_steps=args.replan_steps, open_threshold=args.open_threshold
+                env, policy, replan_steps=args.replan_steps, open_threshold=args.open_threshold,
+                invert_gripper=args.invert_gripper,
             )
             results.append(success)
             print(f"[{label}] trial {trial + 1}/{args.n_trajs} success={success} steps={steps} "
