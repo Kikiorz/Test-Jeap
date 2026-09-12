@@ -16,6 +16,19 @@ Two readings were possible:
 
 ## The measurement
 
+One structural fact about the release matters for reading every number below.
+RoboTwin 2.0 ships **2,500 episodes spread over 2,410 distinct tasks** (checked
+directly in `meta/tasks.jsonl` / `meta/episodes.jsonl`; the largest task has 6
+episodes, and the median is 1). LIBERO, where the same head reaches 0.47, has
+1,693 episodes over 40 tasks, i.e. ~42 episodes per task. So the RoboTwin head is
+being asked to predict the future for an almost entirely novel task on every
+sample: there is nothing to memorise, and the held-out split is effectively a
+held-out **task** split.
+
+That makes the absolute level (0.66-0.71) much less damning than it first looks,
+and it does not rescue the head-versus-linear comparison, because the linear
+probe faces exactly the same task distribution.
+
 `scripts/probe_robotwin_latent_ceiling.py` fits ridge regression on the cached
 features (same cache the training reads) and reports the same NMSE. Features:
 the current latent `z_t` (4224), the pooled 64 predictive tokens `r_t` (2048), or
