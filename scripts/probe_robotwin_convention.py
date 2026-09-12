@@ -111,9 +111,9 @@ def main() -> None:
                     if key in ("actions", "actions_is_pad"):
                         continue
                     if isinstance(value, dict):
-                        item[key] = {name: np.asarray(entry)[None] for name, entry in value.items()}
+                        item[key] = {name: jnp.asarray(np.asarray(entry))[None] for name, entry in value.items()}
                     else:
-                        item[key] = np.asarray(value)[None]
+                        item[key] = jnp.asarray(np.asarray(value))[None]
                 observation = _model.Observation.from_dict(item)
                 actions = jnp.asarray(np.asarray(out["actions"], np.float32)[None])
                 result = model.compute_loss(jax.random.key(0), observation, actions, train=True)
