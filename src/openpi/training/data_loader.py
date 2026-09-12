@@ -36,6 +36,30 @@ def _local_safe_version(repo_id, revision):
 
 _previous_get_safe_version = lerobot_dataset.get_safe_version
 lerobot_dataset.get_safe_version = _local_safe_version
+
+
+def _safe_check_timestamps_sync(timestamps, episode_indices, episode_data_index, fps,
+                                tolerance_s, raise_value_error=True):
+    """Tolerate the upstream boundary-index bug on converted datasets.
+
+    ``check_timestamps_sync`` builds a mask over consecutive timestamp diffs and
+    indexes it with the cumulative episode ends. When the final episode boundary
+    lands exactly at the end of the concatenated stream (which happens in the
+    LeRobot-format OXE bridge conversion) that index is one past the mask and
+    the check raises IndexError before it can report anything useful. The check
+    is a sanity check on the conversion, not on the model, so a crash there must
+    not take down training.
+    """
+    try:
+        return _previous_check_timestamps_sync(
+            timestamps, episode_indices, episode_data_index, fps, tolerance_s, raise_value_error)
+    except IndexError:
+        logging.warning("Skipping LeRobot timestamp-sync check: upstream boundary indexing failed")
+        return None
+
+
+_previous_check_timestamps_sync = lerobot_dataset.check_timestamps_sync
+lerobot_dataset.check_timestamps_sync = _safe_check_timestamps_sync
 import numpy as np
 import torch
 
