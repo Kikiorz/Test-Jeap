@@ -149,3 +149,30 @@ readout 时一致 `(B, 16, 4224)`，而可训练叶子从 19 个变成 21 个—
 见 `docs_ROBOTWIN_PROBE_CAVEATS.md`：探针跑在**训练分布**上（`con1_holdout_fraction=0.0`，
 不是 held-out）；`base` 与 `released base` 本来就应接近（实测权重漂移只有
 2.3e-2 / 7e-3，其余是 bf16 舍入）；384 个配对样本分辨不了低于约 2% 的效应。
+
+## 8. 运行注意：`pgrep -f` 匹配整条命令行（今晚踩了两次）
+
+等待循环里用 `pgrep -f <pattern>` 时，**它匹配的是整条命令行**，不是进程名。
+因此任何"命令行文本里恰好含有该字符串"的残留 shell 都会**永久匹配**，让循环
+永不退出——而且日志上只显示 "waiting"，不报错。
+
+今晚实际发生的两次：
+
+* 启动 post 监控时那条 `bash -c` 里写了 `pgrep -af "scripts/train.py"`，于是它自己
+  成了永久的"假训练进程"，会卡住 post 脚本的等待循环；
+* 启动 A/B runner 时那条 `bash -c` 里写了 `run_robotwin_arms_continue`，同理卡住。
+
+两个都已在 `23:05 UTC` 清除，并验证剩下的匹配只有真正的两个进程。
+
+**写法建议**：
+
+```bash
+# 不要这样：任何提到该字符串的命令行都会误匹配
+while pgrep -f "scripts/train.py" >/dev/null; do sleep 60; done
+
+# 改成锚定行首，只有真正的解释器/脚本进程能匹配
+while pgrep -f "^[^ ]*/python -u scripts/train\.py" >/dev/null; do sleep 60; done
+```
+
+另外：启动后台任务时**不要把调试用的 pgrep/ps 关键字写进同一条 `bash -c`**；
+要写就写进独立的一行命令里。
