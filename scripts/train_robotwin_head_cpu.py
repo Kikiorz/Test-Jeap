@@ -26,6 +26,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from flax import serialization
 
 from openpi.con1.data import FeatureDataset, batch
 from openpi.con1.modules import AnchoredDeltaHead, anchored_loss
@@ -46,7 +47,19 @@ def parse() -> argparse.Namespace:
     p.add_argument("--eval-frames", type=int, default=32)
     p.add_argument("--out", type=Path,
                    default=Path("/workspace/artifacts/con2/robotwin_head_only_cpu.json"))
+    # The point of a head-only run is usually to warm-start the joint model, so
+    # keep the weights and not just the metric history.
+    p.add_argument("--checkpoint-out", type=Path,
+                   default=Path("/workspace/artifacts/con2/robotwin_head_only_cpu.msgpack"))
+    p.add_argument("--checkpoint-every", type=int, default=2000)
     return p.parse_args()
+
+
+def save_checkpoint(path: Path, params, step: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(serialization.to_bytes({"params": params, "step": step}))
+    temporary.replace(path)
 
 
 def validation_indices(dataset: FeatureDataset, per_episode: int) -> np.ndarray:
@@ -129,6 +142,8 @@ def main() -> None:
             print(json.dumps({"step": entry["step"], "val_delta_nmse": round(record["delta_nmse"], 4),
                               "train_delta_nmse": round(entry["train_delta_nmse"], 4),
                               "s": entry["seconds"]}), flush=True)
+        if args.checkpoint_every > 0 and (step + 1) % args.checkpoint_every == 0:
+            save_checkpoint(args.checkpoint_out, params, step + 1)
 
     best = min(history, key=lambda row: row["delta_nmse"])
     summary = {"config": vars(args) | {"cache": str(args.cache), "out": str(args.out)},
@@ -139,7 +154,9 @@ def main() -> None:
                                   "best > ceiling => the head architecture cannot represent it")}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n")
+    save_checkpoint(args.checkpoint_out, params, args.steps)
     print(f"best delta_nmse {best['delta_nmse']:.4f} at step {best['step']}; wrote {args.out}")
+    print(f"wrote head checkpoint {args.checkpoint_out}")
 
 
 if __name__ == "__main__":
