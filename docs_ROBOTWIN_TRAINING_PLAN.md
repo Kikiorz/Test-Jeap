@@ -120,6 +120,12 @@ Con1 路径本身**，不含微调动作专家带来的收益。
 | `C` | A + delta head 动作条件化 |
 | `D` | A + head 单独 5× 学习率 |
 
+**已备好但未排队**：`F` = A + `con1_direct_readout=True`（配置
+`pi05_robotwin_con1_readout_20k`）。它在 CPU 上验证过：head 输出形状与不加
+readout 时一致 `(B, 16, 4224)`，而可训练叶子从 19 个变成 21 个——正好多出
+`direct_readout/kernel` 与 `direct_readout/bias` 两个。加 F 的依据是 head 在同一批
+输入上打不过线性映射（RoboTwin 0.71 vs 0.659；LIBERO 0.483 vs 0.414）。
+
 ### 加这三臂的原因（都有实测依据）
 
 1. **head 是欠训练的，不是架构不行**：`scripts/train_robotwin_head_cpu.py` 在 CPU 上
