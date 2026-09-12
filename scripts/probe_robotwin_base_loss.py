@@ -32,8 +32,14 @@ def main() -> None:
     args = parser.parse_args()
 
     base = configs.get_config(args.config)
+    # The probe measures the *base* policy, so it must not depend on the Con1
+    # latent cache (which is only needed to pick the Con1 episode split).
+    data = dataclasses.replace(
+        base.data,
+        con1_latent_root=None,
+        base_config=dataclasses.replace(base.data.base_config, con1_latent_root=None))
     config = dataclasses.replace(
-        base,
+        base, data=data,
         model=dataclasses.replace(base.model, use_con1=False, use_con2=False),
         batch_size=args.batch_size, num_workers=0, wandb_enabled=False,
         exp_name="base_loss_probe", resume=False)
