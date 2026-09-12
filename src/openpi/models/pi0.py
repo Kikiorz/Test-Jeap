@@ -482,7 +482,11 @@ class Pi0(_model.BaseModel):
             or (self.con1_metric and self.con1_metric_align_weight > 0))
         sensitivity = jax.lax.cond(
             jnp.asarray(need_sensitivity),
-            lambda _: jax.lax.stop_gradient(pullback(2 * error / action_count)[0]),
+            # The pullback is taken with respect to the action chunk, which the
+            # action expert produces in bf16, so the cotangent must match that
+            # dtype even though the loss itself is computed in fp32.
+            lambda _: jax.lax.stop_gradient(
+                pullback(jnp.asarray(2 * error / action_count, v_t.dtype))[0]),
             lambda _: jnp.zeros_like(delta), operand=None)
         if self.con1_metric:
             # Learned bounded metric on the same residual/target: identity at

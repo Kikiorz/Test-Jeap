@@ -770,6 +770,7 @@ _CONFIGS = [
             con1_alpha_initial=0.3, con1_residual_budget=0.05,
             con1_action_dims=7, con1_train_action_layers_from=0,
             con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
+            con1_sgr_beta=0.0,
             con1_delta_weight=1.0, con1_residual_weight=0.0,
             con1_flow_weight_initial=1.0, con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
@@ -806,6 +807,7 @@ _CONFIGS = [
             # No staging here: a new embodiment needs the action expert from
             # step 0, so the stage boundaries are set to their minimum (1).
             con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
+            con1_sgr_beta=0.0,
             con1_delta_weight=0.05, con1_residual_weight=1e-3,
             con1_flow_weight_initial=2.0, con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
@@ -839,6 +841,7 @@ _CONFIGS = [
             # No staging here: a new embodiment needs the action expert from
             # step 0, so the stage boundaries are set to their minimum (1).
             con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
+            con1_sgr_beta=0.0,
             con1_delta_weight=0.05, con1_residual_weight=1e-3,
             con1_flow_weight_initial=2.0, con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
