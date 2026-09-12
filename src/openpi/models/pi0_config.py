@@ -141,8 +141,13 @@ class Pi0Config(_model.BaseModelConfig):
             if self.vjepa_aux_weight < 0 or self.vjepa_aux_warmup_steps < 0:
                 raise ValueError("V-JEPA auxiliary weight and warmup steps must be non-negative")
         if self.use_con1:
-            if not self.pi05 or not self.use_vjepa_aux:
-                raise ValueError("Con1 requires Pi0.5 with predictive R tokens")
+            if not self.pi05:
+                raise ValueError("Con1 requires Pi0.5")
+            # Two supported regimes:
+            #  * use_vjepa_aux=True  - the JEPA-WAM checkpoint, where the head
+            #    consumes the 64 predictive R_t tokens (LIBERO / RoboTwin), and
+            #  * use_vjepa_aux=False - plain pi0.5 (SimpENV/Bridge), where there
+            #    is no R_t and the head attends over the whole live VLM prefix.
             if self.con1_latent_dim < 1 or self.con1_width < 8:
                 raise ValueError("Con1 dimensions must be positive")
             if not 0 < self.con1_alpha_initial < 1:
