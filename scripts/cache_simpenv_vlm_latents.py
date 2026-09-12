@@ -72,18 +72,22 @@ def main() -> None:
         if not data_path.exists() or not video_path.exists():
             continue
         z_path = out / "episodes" / f"{episode:06d}_z.npy"
+        # The task id lives in the parquet; read it in both branches so the
+        # train/validation split can group by task.
+        table = pq.read_table(data_path, columns=["task_index"])
+        task_id = int(table["task_index"][0].as_py())
         if z_path.exists():
             # Already cached (the view grows as more Bridge chunks land).
             z = np.load(z_path, mmap_mode="r")
             entries.append({
                 "id": episode,
-                "task_id": -1,
+                "task_id": task_id,
                 "length": int(len(z)),
                 "z": f"episodes/{episode:06d}_z.npy",
                 "r": f"episodes/{episode:06d}_r.npy",
             })
             continue
-        table = pq.read_table(data_path, columns=["observation.state", "task_index"])
+        table = pq.read_table(data_path, columns=["observation.state"])
         states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
         frames = iio.imread(video_path, plugin="pyav")
         length = min(len(states), len(frames))
