@@ -20,6 +20,13 @@ def anchored_example(r, states, frame, horizon):
 
 def split_episodes(episodes, *, fraction=.1, seed=42):
     if not 0 < fraction < 1 or len({e["id"] for e in episodes}) != len(episodes):
+        if fraction == 0.0:
+            # No holdout: train on every episode. A single episode is still
+            # reported as "validation" so code paths that build that split keep
+            # working; it is a subset of the training data by construction, which
+            # is fine because the official benchmark data is the real test set.
+            ordered = sorted(episodes, key=lambda e: e["id"])
+            return ordered, ordered[:1]
         raise ValueError("Invalid validation fraction or duplicate episode IDs")
     tasks = {e["task_id"] for e in episodes}
     if len(episodes) / max(len(tasks), 1) < 2:

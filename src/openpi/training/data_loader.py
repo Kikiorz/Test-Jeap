@@ -325,7 +325,8 @@ def create_torch_dataset(
     if data_config.con1_latent_root is not None:
         from openpi.con1.data import FeatureDataset
         split = FeatureDataset(data_config.con1_latent_root, horizon=action_horizon,
-                               split=data_config.con1_split, seed=42)
+                               split=data_config.con1_split, seed=42,
+                               fraction=data_config.con1_holdout_fraction)
         selected_episode_ids = [int(e["id"]) for e in split.episodes]
         logging.info("Con1 %s split: %d episodes; split seed=42", data_config.con1_split, len(selected_episode_ids))
     dataset = lerobot_dataset.LeRobotDataset(

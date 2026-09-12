@@ -108,6 +108,9 @@ class DataConfig:
     con1_latent_root: str | None = None
     con1_latent_mmap_cache_size: int = 16
     con1_split: Literal["train", "validation"] = "train"
+    # Fraction of episodes held out from Con1 training. 0.0 trains on every
+    # episode (used for RoboTwin, where the official benchmark is the test set).
+    con1_holdout_fraction: float = 0.1
 
 
 class GroupFactory(Protocol):
@@ -1353,6 +1356,7 @@ _CONFIGS = [
             base_config=DataConfig(
                 prompt_from_task=True,
                 con1_latent_root="/workspace/artifacts/con1/robotwin_clean20_19999_features_v1",
+                con1_holdout_fraction=0.0,
             ),
             extra_delta_transform=False,
             vjepa_future_offset=50,
@@ -1433,6 +1437,7 @@ _CONFIGS = [
             base_config=DataConfig(
                 prompt_from_task=True,
                 con1_latent_root="/workspace/artifacts/con1/robotwin_clean20_19999_features_v1",
+                con1_holdout_fraction=0.0,
             ),
             extra_delta_transform=False,
             vjepa_future_offset=50,
