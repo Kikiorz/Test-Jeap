@@ -331,6 +331,10 @@ def create_torch_dataset(
     dataset = lerobot_dataset.LeRobotDataset(
         repo_id,
         root=local_root,
+        # The converted v3 dataset stores many episodes inside one mp4 and we
+        # address frames by their global time, so allow a frame's worth of slack
+        # (15 fps -> 0.067 s) instead of LeRobot's 1e-4 default.
+        tolerance_s=0.1 if local_root is not None else 1e-4,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
