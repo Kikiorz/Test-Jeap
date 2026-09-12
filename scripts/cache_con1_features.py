@@ -53,6 +53,7 @@ def parse():
     p.add_argument('--gpus', default='0,1,2,3')
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--worker', type=int)
+    p.add_argument('--max-episodes', type=int)
     p.add_argument('--base-config', default='pi05_libero_vjepa_aux')
     p.add_argument('--num-queries', type=int, default=64)
     p.add_argument('--latent-dim', type=int, default=2816)
@@ -80,6 +81,8 @@ def paths(args, eid):
 
 def validate_sources(args):
     rows = episodes(args)
+    if args.max_episodes:
+        rows = rows[:args.max_episodes]
     m = json.loads((args.states/'manifest.json').read_text())
     if (m['kind'] != 'con1_independent_vjepa_frame_states' or m['state_dim'] != args.latent_dim
             or m['channel_projection'] != 'none'
