@@ -289,7 +289,13 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    # A local dataset directory is addressed by path; LeRobot needs the path as
+    # `root` together with a syntactically valid (local) repo id.
+    local_root = None
+    if repo_id.startswith("/") or repo_id.startswith("./"):
+        local_root = repo_id
+        repo_id = "local/" + Path(repo_id).name
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=local_root)
     selected_episode_ids = None
     if data_config.con1_latent_root is not None:
         from openpi.con1.data import FeatureDataset
@@ -298,7 +304,8 @@ def create_torch_dataset(
         selected_episode_ids = [int(e["id"]) for e in split.episodes]
         logging.info("Con1 %s split: %d episodes; split seed=42", data_config.con1_split, len(selected_episode_ids))
     dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
+        repo_id,
+        root=local_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
