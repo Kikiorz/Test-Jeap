@@ -34,7 +34,8 @@ def parse_args():
     parser.add_argument("--checkpoint", type=Path, default=Path("/workspace/models/pi05_base"))
     parser.add_argument("--dataset-root", type=Path, default=Path("/workspace/data/bridge_view0"))
     parser.add_argument("--output-root", type=Path, default=Path("/workspace/data/bridge_vlm_latents"))
-    parser.add_argument("--image-key", default="observation.images.image_0")
+    parser.add_argument("--image-key", default="observation.images.image_1")
+    parser.add_argument("--wrist-key", default="observation.images.image_0")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--shards", type=int, default=1)
@@ -42,11 +43,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def episode_paths(root: Path, image_key: str, episode: int):
+def episode_paths(root: Path, image_key: str, wrist_key: str, episode: int):
     chunk = episode // 1000
     data = root / "data" / f"chunk-{chunk:03d}" / f"episode_{episode:06d}.parquet"
     video = root / "videos" / f"chunk-{chunk:03d}" / image_key / f"episode_{episode:06d}.mp4"
-    return data, video
+    wrist = root / "videos" / f"chunk-{chunk:03d}" / wrist_key / f"episode_{episode:06d}.mp4"
+    return data, video, wrist
 
 
 def main() -> None:
@@ -68,8 +70,9 @@ def main() -> None:
     (out / "episodes").mkdir(parents=True, exist_ok=True)
     entries = []
     for episode in episodes:
-        data_path, video_path = episode_paths(args.dataset_root, args.image_key, episode)
-        if not data_path.exists() or not video_path.exists():
+        data_path, video_path, wrist_path = episode_paths(
+            args.dataset_root, args.image_key, args.wrist_key, episode)
+        if not data_path.exists() or not video_path.exists() or not wrist_path.exists():
             continue
         z_path = out / "episodes" / f"{episode:06d}_z.npy"
         # The task id lives in the parquet; read it in both branches so the
@@ -90,15 +93,18 @@ def main() -> None:
         table = pq.read_table(data_path, columns=["observation.state"])
         states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
         frames = iio.imread(video_path, plugin="pyav")
+        wrists = iio.imread(wrist_path, plugin="pyav")
         length = min(len(states), len(frames))
         features = []
         for start in range(0, length, args.batch_size):
             batch_frames = frames[start:start + args.batch_size]
+            batch_wrists = wrists[start:start + args.batch_size]
             batch_states = states[start:start + args.batch_size]
             observations = []
-            for image, state in zip(batch_frames, batch_states, strict=True):
+            for image, wrist, state in zip(batch_frames, batch_wrists, batch_states, strict=True):
                 observations.append(transform({
                     "observation/image": np.asarray(image[..., :3], dtype=np.uint8),
+                    "observation/wrist_image": np.asarray(wrist[..., :3], dtype=np.uint8),
                     "observation/state": state,
                     "prompt": "do the task",
                 }))

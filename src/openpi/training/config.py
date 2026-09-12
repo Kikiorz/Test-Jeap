@@ -399,10 +399,12 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
     is masked out.
     """
 
-    # Camera keys in the dataset. image_0 is the third-person view.
-    base_image_key: str = "observation.images.image_0"
-    wrist_image_key: str = "observation.images.image_1"
-    use_wrist_image: bool = False
+    # Camera keys in the dataset. Motion/contrast statistics match image_0 to the
+    # SimplerEnv wrist camera and image_1 to its third-person view, so image_1 is
+    # the base view and image_0 the wrist view.
+    base_image_key: str = "observation.images.image_1"
+    wrist_image_key: str = "observation.images.image_0"
+    use_wrist_image: bool = True
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -739,7 +741,7 @@ _CONFIGS = [
         name="pi05_bridge",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotBridgeDataConfig(
-            repo_id="local/bridge_view0",
+            repo_id="local/bridge_view01",
             assets=AssetsConfig(assets_dir="/workspace/ts_JEPA_simpenv/assets/pi05_bridge",
                                 asset_id="local/bridge_view0"),
             base_config=DataConfig(prompt_from_task=True),
@@ -776,11 +778,11 @@ _CONFIGS = [
             con1_flow_weight_decay_steps=15_000,
         ),
         data=LeRobotBridgeDataConfig(
-            repo_id="local/bridge_view0",
+            repo_id="local/bridge_view01",
             assets=AssetsConfig(assets_dir="/workspace/ts_JEPA_simpenv/assets/pi05_bridge",
                                 asset_id="local/bridge_view0"),
             base_config=DataConfig(prompt_from_task=True,
-                                   con1_latent_root="/workspace/data/bridge_vlm_latents"),
+                                   con1_latent_root="/workspace/data/bridge_vlm_latents01"),
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -813,11 +815,11 @@ _CONFIGS = [
             con1_flow_weight_decay_steps=15_000,
         ),
         data=LeRobotBridgeDataConfig(
-            repo_id="local/bridge_view0",
+            repo_id="local/bridge_view01",
             assets=AssetsConfig(assets_dir="/workspace/ts_JEPA_simpenv/assets/pi05_bridge",
                                 asset_id="local/bridge_view0"),
             base_config=DataConfig(prompt_from_task=True,
-                                   con1_latent_root="/workspace/data/bridge_vlm_latents"),
+                                   con1_latent_root="/workspace/data/bridge_vlm_latents01"),
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -856,11 +858,11 @@ _CONFIGS = [
             con1_flow_weight_decay_steps=15_000,
         ),
         data=LeRobotBridgeDataConfig(
-            repo_id="local/bridge_view0",
+            repo_id="local/bridge_view01",
             assets=AssetsConfig(assets_dir="/workspace/ts_JEPA_simpenv/assets/pi05_bridge",
                                 asset_id="local/bridge_view0"),
             base_config=DataConfig(prompt_from_task=True,
-                                   con1_latent_root="/workspace/data/bridge_vlm_latents"),
+                                   con1_latent_root="/workspace/data/bridge_vlm_latents01"),
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -891,11 +893,11 @@ _CONFIGS = [
             con1_flow_weight_decay_steps=15_000,
         ),
         data=LeRobotBridgeDataConfig(
-            repo_id="local/bridge_view0",
+            repo_id="local/bridge_view01",
             assets=AssetsConfig(assets_dir="/workspace/ts_JEPA_simpenv/assets/pi05_bridge",
                                 asset_id="local/bridge_view0"),
             base_config=DataConfig(prompt_from_task=True,
-                                   con1_latent_root="/workspace/data/bridge_vlm_latents"),
+                                   con1_latent_root="/workspace/data/bridge_vlm_latents01"),
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
