@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.simpler_env_policy as simpler_env_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.shared.nnx_utils as nnx_utils
@@ -388,6 +389,49 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotBridgeDataConfig(DataConfigFactory):
+    """Fine-tuning on the LeRobot-format OXE Bridge dataset (WidowX).
+
+    Bridge stores four 256x256 cameras plus an 8-dim end-effector state and a
+    7-dim delta action. The SimplerEnv WidowX benchmark scores a single
+    third-person view (that is what its RT-1/Octo reference policies consume),
+    so by default only ``observation.images.image_0`` is fed and the wrist slot
+    is masked out.
+    """
+
+    # Camera keys in the dataset. image_0 is the third-person view.
+    base_image_key: str = "observation.images.image_0"
+    wrist_image_key: str = "observation.images.image_1"
+    use_wrist_image: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_mapping = {
+            "observation/image": self.base_image_key,
+            "observation/state": "observation.state",
+            "actions": "action",
+            "prompt": "prompt",
+        }
+        if self.use_wrist_image:
+            repack_mapping["observation/wrist_image"] = self.wrist_image_key
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
+
+        data_transforms = _transforms.Group(
+            inputs=[simpler_env_policy.SimplerEnvInputs(
+                model_type=model_config.model_type, use_wrist_image=self.use_wrist_image)],
+            outputs=[simpler_env_policy.SimplerEnvOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -677,6 +721,29 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
+    ),
+    TrainConfig(
+        # pi0.5 fine-tuned for the SimplerEnv WidowX (Bridge) evaluation. Same
+        # recipe as upstream pi05_libero: initialise from the released pi0.5
+        # base, horizon 10, cosine LR 5e-5, EMA on.
+        name="pi05_bridge",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotBridgeDataConfig(
+            repo_id="/workspace/data/bridge_orig_lerobot",
+            assets=AssetsConfig(assets_dir="/workspace/assets", asset_id="bridge"),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000,
+            peak_lr=5e-5,
+            decay_steps=30_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
+        num_train_steps=20_000,
     ),
     #
     # Fine-tuning Libero configs.
