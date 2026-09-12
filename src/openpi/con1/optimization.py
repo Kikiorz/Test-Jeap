@@ -55,6 +55,10 @@ def scale_group_updates(tree, step, *, warmup=2000, fusion_multiplier=1., action
         elif "action_out_proj" in names or ("PaliGemma" in names and "llm" in names):
             factor = action_multiplier
         else:
-            raise ValueError(f"Unexpected trainable Con1 parameter: {names}")
+            # Groups outside the Con1 scaffolding (vision tower, action/time
+            # projections) are only trainable when a config opts into a full
+            # fine-tune - the SimpENV/Bridge arms do - so they keep the base
+            # learning rate instead of being an error.
+            factor = 1.
         return value * factor
     return jax.tree_util.tree_map_with_path(scale, tree)
