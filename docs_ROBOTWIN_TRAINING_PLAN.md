@@ -226,6 +226,14 @@ demonstrations for the 20 tasks above"**。实际执行与它不一致：
 * release 里**没有任何地方暴露任务身份**（`tasks.jsonl` 只有指令，原始 v3 布局
   没有按任务分目录）。
 
+这一条现在是**直接证据**而不是"没找到"：原始 parquet 的列只有
+`observation.state, action, timestamp, frame_index, episode_index, index,
+task_index`——没有任务名、没有场景、没有 Clean/Random 标记。`task_index` 索引的就是
+那 2410 条指令字符串。
+
+**结论：单靠这份 release 无法实现"只取 20 个任务的 Clean 演示"这个过滤。** 要实现
+它必须引入外部映射（RoboTwin 仿真器的任务清单，或 HF 上按任务分文件的原始版本）。
+
 所以 58.2% 只是**关键词命中率**，不是"58% 的轨迹属于 20 任务"。影响仍然存在：
 
 1. arm 之间的**内部对比依然成立**（所有 arm 看同一份数据、同一 seed、同一批配对
