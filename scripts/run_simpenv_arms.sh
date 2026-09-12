@@ -5,7 +5,8 @@ set -euo pipefail
 
 ROOT="${ROOT:-/workspace/ts_JEPA_simpenv}"
 cd "$ROOT"
-STEPS="${STEPS:-8000}"
+STEPS="${STEPS:-6000}"
+WARM_STEPS="${WARM_STEPS:-2000}"
 BATCH="${BATCH:-32}"
 
 export PYTHONPATH="$ROOT/src"
@@ -24,9 +25,11 @@ train() {
     --exp-name="$exp" \
     --checkpoint-base-dir=/workspace/checkpoints \
     --overwrite --no-wandb-enabled \
-    --num-train-steps="$STEPS" --batch-size="$BATCH" --fsdp-devices=4
+    --num-train-steps="${WARM_STEPS_OVERRIDE:-$STEPS}" --batch-size="$BATCH" --fsdp-devices=4
 }
 
+# Phase 0: warm up the Con1 delta head on its own (everything else frozen).
+WARM_STEPS_OVERRIDE="$WARM_STEPS" train pi05_bridge_con1_warm simpenv_head_warm
 train pi05_bridge_con1     simpenv_armA_con1
 train pi05_bridge_con1con2 simpenv_armB_con1con2
 printf '[%s] both arms done\n' "$(date -u +%H:%M:%S)"
