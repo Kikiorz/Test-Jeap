@@ -28,9 +28,16 @@ class AnchoredDeltaHead(nn.Module):
     use_direct_readout: bool = False
     vlm_context_dim: int = 0
     use_vlm_context: bool = False
+    # Feed the *whole* VLM prefix (language tokens, every image patch, state)
+    # into the head's retrieval instead of only the 64 predictive queries. The
+    # pooled-vector variant (`use_vlm_context`) collapses the prefix to a single
+    # vector, which throws away exactly the spatial structure a delta over
+    # image patches is made of.
+    use_vlm_context_tokens: bool = False
 
     @nn.compact
-    def __call__(self, r_tokens, current_latent, action_chunk=None, vlm_context=None):
+    def __call__(self, r_tokens, current_latent, action_chunk=None, vlm_context=None,
+                 vlm_context_tokens=None, vlm_context_mask=None):
         if r_tokens.ndim != 3 or current_latent.ndim != 2:
             raise ValueError("Expected R[B,N,E] and current latent[B,D]")
         if r_tokens.shape[0] != current_latent.shape[0] or current_latent.shape[-1] != self.latent_dim:
@@ -50,6 +57,14 @@ class AnchoredDeltaHead(nn.Module):
                 raise ValueError(
                     f"VLM context width {vlm_context.shape[-1]} != {self.vlm_context_dim}")
             vlm_context = jax.lax.stop_gradient(vlm_context.astype(jnp.float32))
+        if self.use_vlm_context_tokens:
+            if vlm_context_tokens is None or vlm_context_mask is None:
+                raise ValueError("VLM context tokens enabled but no tokens/mask were supplied")
+            if vlm_context_tokens.ndim != 3 or vlm_context_tokens.shape[-1] != self.vlm_context_dim:
+                raise ValueError("VLM context tokens must be [B,M,E] with E == vlm_context_dim")
+            if vlm_context_mask.shape != vlm_context_tokens.shape[:2]:
+                raise ValueError("VLM context mask must be [B,M]")
+            vlm_context_tokens = jax.lax.stop_gradient(vlm_context_tokens.astype(jnp.float32))
         r = jax.lax.stop_gradient(r_tokens.astype(jnp.float32))
         anchor = jax.lax.stop_gradient(current_latent.astype(jnp.float32))
         r = nn.LayerNorm(name="r_norm")(r)
@@ -67,8 +82,27 @@ class AnchoredDeltaHead(nn.Module):
         q = q.reshape(q.shape[0], q.shape[1], 4, self.width // 4)
         k = k.reshape(k.shape[0], k.shape[1], 4, self.width // 4)
         v = v.reshape(v.shape[0], v.shape[1], 4, self.width // 4)
-        attention = jax.nn.softmax(jnp.einsum("bmhd,bnhd->bhmn", q, k) / math.sqrt(self.width // 4), -1)
-        context = jnp.einsum("bhmn,bnhd->bmhd", attention, v).reshape(slots.shape)
+        logits = jnp.einsum("bmhd,bnhd->bhmn", q, k) / math.sqrt(self.width // 4)
+        values = v
+        if self.use_vlm_context_tokens:
+            ctx = nn.LayerNorm(name="vlm_ctx_norm")(vlm_context_tokens)
+            k_ctx = nn.Dense(self.width, use_bias=False, name="vlm_ctx_key")(ctx)
+            # Small non-zero init on purpose: with a zero value projection the
+            # key projection receives no gradient at all, which is the failure
+            # mode that kept the earlier latent branch inert for 1000 steps.
+            v_ctx = nn.Dense(self.width, use_bias=False, name="vlm_ctx_value",
+                             kernel_init=nn.initializers.normal(1e-2))(ctx)
+            k_ctx = k_ctx.reshape(k_ctx.shape[0], k_ctx.shape[1], 4, self.width // 4)
+            v_ctx = v_ctx.reshape(v_ctx.shape[0], v_ctx.shape[1], 4, self.width // 4)
+            logits_ctx = jnp.einsum("bmhd,bnhd->bhmn", q, k_ctx) / math.sqrt(self.width // 4)
+            key_mask = jnp.concatenate([
+                jnp.ones((k.shape[0], 1, 1, k.shape[1]), dtype=bool),
+                vlm_context_mask[:, None, None, :].astype(bool),
+            ], axis=-1)
+            logits = jnp.where(key_mask, jnp.concatenate([logits, logits_ctx], axis=-1), -1e30)
+            values = jnp.concatenate([v, v_ctx], axis=1)
+        attention = jax.nn.softmax(logits, -1)
+        context = jnp.einsum("bhmn,bnhd->bmhd", attention, values).reshape(slots.shape)
         hidden = slots + context
 
         if self.use_vlm_context:
@@ -130,6 +164,40 @@ class AnchoredDeltaHead(nn.Module):
         if direct is not None:
             delta = delta + direct
         return {"delta": delta, "future": anchor[:, None] + delta}
+
+
+class DeltaRefinement(nn.Module):
+    """Con2: a learned correction of the predicted latent delta.
+
+    Con1 predicts the future latent delta ``delta_pred`` from the current
+    observation. Con2 adds a function ``F`` that looks at ``delta_pred`` and the
+    current latent and emits a correction, so the delta that reaches the action
+    expert is ``delta_used = delta_pred + g``. ``g`` is zero-initialised, so
+    step zero reproduces Con1 (and therefore the base policy at alpha = 0)
+    exactly.
+
+    The correction is trained through *both* terms of the joint loss: the
+    latent-delta MSE against the true future latent (which is the
+    ``(delta_pred, delta_true)`` pair of the Con2 write-up) and the action flow
+    loss, so the refinement has to help the action, not just the latent.
+    """
+
+    latent_dim: int = 2816
+    width: int = 512
+
+    @nn.compact
+    def __call__(self, delta, current_latent):
+        if delta.ndim != 3 or current_latent.ndim != 2:
+            raise ValueError("Expected delta[B,H,D] and current latent[B,D]")
+        if delta.shape[0] != current_latent.shape[0] or delta.shape[-1] != self.latent_dim:
+            raise ValueError("Delta/latent dimensions disagree")
+        anchor = nn.Dense(self.width, name="anchor_in")(current_latent.astype(jnp.float32))
+        hidden = nn.Dense(self.width, name="delta_in")(delta.astype(jnp.float32))
+        hidden = nn.gelu(hidden + anchor[:, None, :])
+        hidden = nn.gelu(nn.Dense(self.width, name="hidden")(hidden))
+        correction = nn.Dense(self.latent_dim, name="out",
+                              kernel_init=nn.initializers.zeros_init())(hidden)
+        return {"delta": delta + correction.astype(delta.dtype), "correction": correction}
 
 
 class ActionDeltaCrossAttention(nn.Module):

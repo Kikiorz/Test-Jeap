@@ -204,6 +204,39 @@ def test_vlm_context_is_a_no_op_at_initialisation_but_still_gets_gradient():
     assert float(jnp.abs(flat["params/vlm_context_out/kernel"]).max()) > 0.0
 
 
+def test_vlm_context_tokens_attend_over_the_whole_prefix_and_respect_the_mask():
+    horizon, latent_dim, width, ctx_dim = 3, 6, 8, 11
+    head = AnchoredDeltaHead(horizon=horizon, latent_dim=latent_dim, width=width,
+                             vlm_context_dim=ctx_dim, use_vlm_context_tokens=True)
+    r = jax.random.normal(jax.random.key(41), (2, 5, ctx_dim))
+    z = jax.random.normal(jax.random.key(42), (2, latent_dim))
+    tokens = jax.random.normal(jax.random.key(43), (2, 4, ctx_dim))
+    mask = jnp.ones((2, 4), dtype=bool).at[0, 2:].set(False)
+    variables = head.init(jax.random.key(44), r, z, None, None, tokens, mask)
+    out = head.apply(variables, r, z, None, None, tokens, mask)["delta"]
+    assert out.shape == (2, horizon, latent_dim)
+
+    # A padded key must not influence the result at all: perturbing the masked
+    # tokens has to leave the output bit-identical.
+    padded = tokens.at[0, 2:].set(1e3)
+    out_padded = head.apply(variables, r, z, None, None, padded, mask)["delta"]
+    np.testing.assert_allclose(np.asarray(out_padded[0]), np.asarray(out[0]), rtol=0, atol=0)
+
+    # Unmasked tokens must matter, and both new projections must receive
+    # gradient (the zero-init value projection would stall the key projection).
+    other = tokens.at[0, 0].set(5.0)
+    out_other = head.apply(variables, r, z, None, None, other, mask)["delta"]
+    assert float(jnp.abs(out_other[0] - out[0]).max()) > 0.0
+
+    def loss(vars):
+        return jnp.mean(jnp.square(head.apply(vars, r, z, None, None, tokens, mask)["delta"]))
+
+    import flax.traverse_util as traverse_util
+    grads = traverse_util.flatten_dict(jax.grad(loss)(variables), sep="/")
+    for name in ("params/vlm_ctx_key/kernel", "params/vlm_ctx_value/kernel"):
+        assert float(jnp.abs(grads[name]).max()) > 0.0, name
+
+
 def test_two_terms_are_not_claimed_independent():
     z = jnp.zeros((1, 2)); target = jnp.ones((1, 1, 2)); d = jnp.zeros_like(target)
     valid = jnp.ones((1, 1), dtype=bool)

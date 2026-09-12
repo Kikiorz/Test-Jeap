@@ -29,6 +29,27 @@ def test_actual_pi0_con1_gradient_trace():
     assert len(grad.con1_delta_head.flat_state()) > 0
 
 
+def test_vlm_context_tokens_trace_through_the_production_loss():
+    """VLM-context tokens: the production prefix feeds the head end to end."""
+    config = pi0_config.Pi0Config(pi05=True, use_vjepa_aux=True, use_con1=True,
+        paligemma_variant="dummy", action_expert_variant="dummy", con1_train_action_layers_from=0,
+        con1_width=8, con1_latent_dim=6, action_horizon=10, max_token_len=8,
+        con1_vlm_context_tokens=True)
+
+    def trace(rng):
+        model = config.create(rng)
+        obs = dataclasses.replace(config.fake_obs(batch_size=1),
+            con1_current_latent=jnp.ones((1, 6)), con1_future_latents=jnp.ones((1, 10, 6)),
+            con1_future_valid=jnp.ones((1, 10), bool))
+        actions = config.fake_act(batch_size=1)
+        loss = lambda m: m.compute_con1_loss(rng, obs, actions, beta=.5)[0]
+        return nnx.value_and_grad(loss)(model)
+
+    loss, grad = nnx.eval_shape(trace, jax.random.key(0))
+    assert loss.shape == ()
+    assert len(grad.con1_delta_head.flat_state()) > 0
+
+
 def test_metric_con1_gradient_trace_reaches_the_metric_parameters():
     """The metric path must run end to end inside the production loss.
 

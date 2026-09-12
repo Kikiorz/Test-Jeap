@@ -62,6 +62,18 @@ class Pi0Config(_model.BaseModelConfig):
     # Feed the action chunk into the delta head so it predicts the consequence
     # of the planned actions instead of a marginal future.
     con1_action_conditioning: bool = False
+    # Con2: a learned, zero-initialised refinement of the predicted latent delta
+    # that is trained through the action objective as well as the latent
+    # objective (see openpi.con1.modules.DeltaRefinement).
+    use_con2: bool = False
+    con2_width: int = 512
+    # Feed the whole VLM prefix (language + every image patch + state) into the
+    # delta head's retrieval, not just the 64 predictive queries.
+    con1_vlm_context_tokens: bool = False
+    # Fraction of training batches whose camera images are perturbed with a
+    # photometric/noise augmentation, so the fine-tune also covers the LIBERO-
+    # Plus categories the base policy is weakest on (light, sensor noise).
+    con1_image_augmentation: float = 0.0
     # What the delta head is conditioned on:
     #   "demonstration" - the demonstrated action chunk (what training has always
     #                     used; at sampling the head instead sees a one-step

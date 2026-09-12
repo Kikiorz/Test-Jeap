@@ -91,7 +91,11 @@ class BaseAndCon1HeadWeightLoader(WeightLoader):
     readout_init_path: str | None = None
 
     def load(self, params: at.Params) -> at.Params:
-        merged = CheckpointWeightLoader(self.base_params_path, missing_regex=".*con1.*").load(params)
+        # Con1 and Con2 modules are not part of the released base checkpoint and
+        # keep their fresh initialisation (the Con2 refinement is zero-init, so
+        # this is still an exact extension of the base policy at step zero).
+        merged = CheckpointWeightLoader(
+            self.base_params_path, missing_regex=".*con[12].*").load(params)
         payload = serialization.msgpack_restore(open(self.head_checkpoint_path, "rb").read())
         head = payload.get("params", payload)
         if "con1_delta_head" not in merged:

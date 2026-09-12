@@ -199,6 +199,31 @@ def train_step(
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
+    # Photometric/noise augmentation, used to cover the LIBERO-Plus categories
+    # the base policy is weakest on (light conditions, sensor noise). The gain,
+    # bias and noise ranges are deliberately mild; the clip bounds are taken
+    # from the batch itself so the transform is agnostic to whether images reach
+    # the model in [0, 1] or [-1, 1].
+    augment_probability = float(getattr(config.model, "con1_image_augmentation", 0.0))
+    if augment_probability > 0:
+        aug_rng = jax.random.fold_in(rng, 0x5EED)
+        use_aug = jax.random.uniform(aug_rng) < augment_probability
+        gains = jax.random.uniform(aug_rng, (observation.images[next(iter(observation.images))].shape[0], 1, 1, 1),
+                                   minval=0.75, maxval=1.25)
+        biases = jax.random.uniform(aug_rng, gains.shape, minval=-0.08, maxval=0.08)
+        noises = jax.random.normal(aug_rng, observation.images[next(iter(observation.images))].shape)
+        sigma = jax.random.uniform(aug_rng, gains.shape, minval=0.0, maxval=0.04)
+
+        def perturb(image):
+            low = jnp.min(image)
+            high = jnp.max(image)
+            value = image * gains + biases + noises[: image.shape[0]] * sigma
+            return jnp.clip(value, low, high)
+
+        images = {key: jax.lax.cond(use_aug, perturb, lambda x: x, value)
+                  for key, value in observation.images.items()}
+        observation = dataclasses.replace(observation, images=images)
+
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
     if getattr(config.model, "use_vjepa_aux", False):

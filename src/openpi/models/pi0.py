@@ -16,6 +16,7 @@ from openpi.con1.modules import (
     AnchoredDeltaHead,
     ActionDeltaCrossAttention,
     DeltaMetric,
+    DeltaRefinement,
     balanced_latent_weight,
     control_weighted_delta_loss,
     direction_alignment_loss,
@@ -96,6 +97,7 @@ class Pi0(_model.BaseModel):
             raise ValueError("con1_action_conditioning_source must be 'demonstration' or 'estimate'")
         self.con1_train_action_layers_from = config.con1_train_action_layers_from
         self.con1_metric = config.con1_metric
+        self.use_con2 = config.use_con2
         self.con1_metric_align_weight = config.con1_metric_align_weight
         self.con1_balance_strength = config.con1_balance_strength
         paligemma_config = _gemma.get_config(config.paligemma_variant)
@@ -144,7 +146,8 @@ class Pi0(_model.BaseModel):
                                   use_action_conditioning=config.con1_action_conditioning,
                                   use_direct_readout=config.con1_direct_readout,
                                   vlm_context_dim=paligemma_config.width,
-                                  use_vlm_context=config.con1_vlm_context)
+                                  use_vlm_context=config.con1_vlm_context,
+                                  use_vlm_context_tokens=config.con1_vlm_context_tokens)
             )
             self.con1_delta_head.lazy_init(
                 jnp.zeros((1, self.vjepa_num_queries, paligemma_config.width), dtype=jnp.float32),
@@ -153,6 +156,10 @@ class Pi0(_model.BaseModel):
                  if config.con1_action_conditioning else None),
                 (jnp.zeros((1, paligemma_config.width), dtype=jnp.float32)
                  if config.con1_vlm_context else None),
+                (jnp.zeros((1, 256, paligemma_config.width), dtype=jnp.float32)
+                 if config.con1_vlm_context_tokens else None),
+                (jnp.zeros((1, 256), dtype=jnp.bool_)
+                 if config.con1_vlm_context_tokens else None),
                 rngs=rngs,
             )
             self.con1_cross_attention = nnx_bridge.ToNNX(ActionDeltaCrossAttention(
@@ -173,6 +180,16 @@ class Pi0(_model.BaseModel):
                                 max_scale=config.con1_metric_max_scale))
                 self.con1_delta_metric.lazy_init(
                     jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32),
+                    rngs=rngs)
+            if config.use_con2:
+                # Con2: learned refinement of the predicted latent delta, trained
+                # through the action objective as well as the latent objective.
+                self.con2_refine = nnx_bridge.ToNNX(
+                    DeltaRefinement(latent_dim=config.con1_latent_dim,
+                                    width=config.con2_width))
+                self.con2_refine.lazy_init(
+                    jnp.zeros((1, config.action_horizon, config.con1_latent_dim), dtype=jnp.float32),
+                    jnp.zeros((1, config.con1_latent_dim), dtype=jnp.float32),
                     rngs=rngs)
 
         if self.use_vjepa_aux:
@@ -348,14 +365,35 @@ class Pi0(_model.BaseModel):
         # Mask-weighted mean of every non-query prefix token (image patches,
         # language, state). This is the full VLM output the Con2 head may use
         # alongside the predictive queries.
-        context_tokens = prefix[:, : -self.vjepa_num_queries]
-        context_mask = mask[:, : -self.vjepa_num_queries].astype(jnp.float32)
-        pooled = (context_tokens * context_mask[..., None]).sum(1)
-        pooled = pooled / jnp.maximum(context_mask.sum(1, keepdims=True), 1.0)
-        return (mask, cache), queries, jax.lax.stop_gradient(pooled)
+        context_tokens = jax.lax.stop_gradient(prefix[:, : -self.vjepa_num_queries])
+        context_mask = mask[:, : -self.vjepa_num_queries]
+        context_mask_f = context_mask.astype(jnp.float32)
+        pooled = (context_tokens * context_mask_f[..., None]).sum(1)
+        pooled = pooled / jnp.maximum(context_mask_f.sum(1, keepdims=True), 1.0)
+        # `pooled` is the collapsed variant; `tokens`/`mask` let the delta head
+        # attend over the whole VLM prefix (language, every image patch, state)
+        # instead of seeing a single averaged vector.
+        return (mask, cache), queries, {
+            "pooled": jax.lax.stop_gradient(pooled),
+            "tokens": context_tokens,
+            "mask": context_mask,
+        }
 
     def _con1_delta(self, r_tokens, current_latent, action_chunk=None, vlm_context=None):
-        return self.con1_delta_head(r_tokens, current_latent, action_chunk, vlm_context)["delta"]
+        pooled = tokens = context_mask = None
+        if vlm_context is not None:
+            pooled = vlm_context.get("pooled")
+            tokens = vlm_context.get("tokens")
+            context_mask = vlm_context.get("mask")
+        delta = self.con1_delta_head(
+            r_tokens, current_latent, action_chunk, pooled, tokens, context_mask)["delta"]
+        if self.use_con2:
+            # Con2 refinement: the correction is zero at init, so this is a
+            # strict extension of Con1. Both the latent term and the action flow
+            # term are computed on the refined delta, which is what makes the
+            # refinement action-supervised rather than latent-supervised only.
+            delta = self.con2_refine(delta, current_latent)["delta"]
+        return delta
 
     def _con1_context(self, observation, action_chunk=None):
         context, r_tokens, vlm_context = self._con1_prefix(observation)
