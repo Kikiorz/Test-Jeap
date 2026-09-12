@@ -74,7 +74,7 @@ def main() -> None:
     raw_samples = [raw_dataset[i] for i in range(args.samples)]
     print(json.dumps({"samples": len(raw_samples), "horizon": horizon}), flush=True)
 
-    def variant_actions(name, actions, states):
+    def build_variant_actions(name, actions, states):
         if name == "abs":
             return actions
         if name == "delta_now":
@@ -101,10 +101,10 @@ def main() -> None:
                 # are the current state followed by the chunk's own targets.
                 chunk_states = np.concatenate([raw_state[None], raw_actions[:-1]], axis=0)
                 variant_state = transform_state(raw_state, flip, gripper)
-                variant_actions = variant_actions(action_name, raw_actions, chunk_states)
+                candidate_actions = build_variant_actions(action_name, raw_actions, chunk_states)
                 patched = dict(sample)
                 patched["observation.state"] = variant_state
-                patched["actions"] = variant_actions
+                patched["actions"] = candidate_actions
                 out = dataset._transform(patched)
                 item = {}
                 for key, value in out.items():
