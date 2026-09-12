@@ -25,10 +25,13 @@ LABELS = {
     "c": "arm C (Con1+action-cond)",
     "d": "arm D (Con1+head x5 LR)",
     "a_graft": "arm A + offline head (diagnostic)",
+    "a_only_residual": "arm A, only the delta path",
+    "a_only_adapter": "arm A, only the delta-free adapter",
 }
-ORDER = ("basetrue", "base", "a", "a_graft", "b", "c", "d")
+ORDER = ("basetrue", "base", "a", "a_graft", "a_only_residual", "a_only_adapter", "b", "c", "d")
 COMPARISONS = (("a", "base"), ("b", "base"), ("b", "a"), ("c", "base"), ("c", "a"),
                ("d", "base"), ("d", "a"), ("a_graft", "a"), ("a_graft", "base"),
+               ("a_only_residual", "a"), ("a_only_adapter", "a"),
                ("a", "basetrue"), ("base", "basetrue"))
 
 

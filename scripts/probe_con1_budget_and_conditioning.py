@@ -129,6 +129,33 @@ def _graft_head(params, checkpoint: Path) -> None:
     params.replace_by_pure_dict(flax.traverse_util.unflatten_dict(flat, sep="/"))
 
 
+def _zero_correction_part(params, keep: str):
+    """Silence one of the two additive parts of the correction.
+
+    ``correction = sigmoid(alpha) * residual(delta, hidden) + adapter_scale * adapter(hidden)``
+    and only ``residual`` ever reads the predicted delta - ``adapter`` is a
+    delta-free side channel that sees the action expert's own hidden state. Both
+    are summed *before* the residual budget is applied, so a large adapter also
+    throttles the delta path through the shared shrink factor.
+
+    Splitting them turns "does Con1 help because of the latent?" into two
+    measurements: keep only ``residual``, or keep only ``adapter``.
+    """
+    drop = {"residual": "adapter_out", "adapter": "out"}.get(keep)
+    if drop is None:
+        raise ValueError(f"keep must be 'residual' or 'adapter', got {keep!r}")
+
+    def zero(path, leaf):
+        names = _path_names(path)
+        if ("con1_cross_attention" in names and len(names) >= 3
+                and names[-1] == "value" and names[-3] == drop):
+            print("ZEROED", "/".join(names), getattr(leaf, "shape", None), flush=True)
+            return jnp.zeros_like(leaf)
+        return leaf
+
+    return jax.tree_util.tree_map_with_path(zero, params)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
@@ -149,6 +176,10 @@ def main() -> None:
                         help="Graft an offline-trained AnchoredDeltaHead over this checkpoint's "
                              "head. Diagnostic: measures whether a better latent predictor moves "
                              "the action loss, holding everything else at the checkpoint's values.")
+    parser.add_argument("--keep-correction-part", choices=["both", "residual", "adapter"],
+                        default="both",
+                        help="Keep only the delta-dependent part of the correction, or only the "
+                             "delta-free adapter, to see which one carries Con1's benefit.")
     parser.add_argument("--dump-param-paths", action="store_true",
                         help="Print the Con1 parameter paths and exit (naming check).")
     parser.add_argument("--seed", type=int, default=20260913)
@@ -190,6 +221,8 @@ def main() -> None:
         params = _zero_correction(params)
     if args.head_weights is not None:
         _graft_head(params, args.head_weights)
+    if args.keep_correction_part != "both":
+        params = _zero_correction_part(params, args.keep_correction_part)
     # Note: the deployed adapter config leaves the *head* unconditioned; the
     # action-conditioning variants (zero/shuffled chunk) only apply when
     # con1_action_conditioning is set, so they are skipped otherwise.

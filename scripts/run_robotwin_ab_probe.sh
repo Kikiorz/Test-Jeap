@@ -77,11 +77,23 @@ else
   echo "[$(date -u +%H:%M:%S)] no offline head at $HEAD_CKPT; skipping the grafted-head row"
 fi
 
-# Last, and in a subshell so PROBE_BUDGETS stays local: does relaxing Con1's 5%
-# residual cap buy accuracy? The probe's own notes say the cap - not the gate -
-# is what limits the correction, which is a different explanation for Con2's
-# weakness than "the predicted delta is uninformative". Running it at the very
-# end means an OOM here costs only this row.
+# Split the correction into its two additive parts. `residual` is the only path
+# that reads the predicted delta; `adapter` never sees it. If the adapter alone
+# reproduces Con1's gain, then no improvement to the latent head can ever show up
+# in the action loss - which is one candidate explanation for arm B being inert
+# despite its better latent head. These run before the multi-budget row because
+# they are the more informative of the three and cost nothing extra.
+probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_a_only_residual.json" \
+  --keep-correction-part residual \
+  || echo "[$(date -u +%H:%M:%S)] residual-only part failed; continuing"
+probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_a_only_adapter.json" \
+  --keep-correction-part adapter \
+  || echo "[$(date -u +%H:%M:%S)] adapter-only part failed; continuing"
+
+# Very last, and in a subshell so PROBE_BUDGETS stays local: does relaxing
+# Con1's 5% residual cap buy accuracy? The probe's own notes say the cap - not
+# the gate - is what limits the correction. This row builds a second model
+# instance (the only OOM risk in the list), so it goes after everything else.
 (
   export PROBE_BUDGETS="0.05 0.2"
   probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_a_budgets.json"
