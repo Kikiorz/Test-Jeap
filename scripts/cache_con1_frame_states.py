@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 
 from precompute_vjepa_pair_targets import (
     decode_image,
-    decode_video,
+    decode_video_torchcodec,
     ensure_contract,
     input_path,
     load_target_encoder,
@@ -176,7 +176,7 @@ def process_episode(args, info, episode, model, device):
                 # of inline images (our converted RoboTwin dataset does).
                 video_path = (args.dataset_root / "videos" / f"chunk-{index // 1000:03d}" / key
                               / f"episode_{index:06d}.mp4")
-                images = decode_video(video_path, length)
+                images = decode_video_torchcodec(video_path, length, float(info.get('fps', 15.0)))
                 rows = None
             for start in range(0, length, args.batch_size):
                 end = min(start + args.batch_size, length)

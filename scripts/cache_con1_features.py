@@ -141,11 +141,11 @@ def worker(args):
             # Frames live in one mp4 per episode (LeRobot v2.1 video layout), so
             # only the tabular columns come from the parquet.
             table = pq.read_table(source, columns=['state','frame_index','episode_index','task_index'])
-            from precompute_vjepa_pair_targets import decode_video
+            from precompute_vjepa_pair_targets import decode_video_torchcodec
             decoded = {}
             for key in args.image_keys:
                 video_path = (args.dataset/'videos'/f'chunk-{chunk:03d}'/key/f'episode_{eid:06d}.mp4')
-                decoded[key] = decode_video(video_path, length)
+                decoded[key] = decode_video_torchcodec(video_path, length, 15.0)
         else:
             table = pq.read_table(source, columns=[*args.image_keys,'state','frame_index','episode_index','task_index'])
         samples = table.to_pylist()

@@ -186,6 +186,23 @@ def decode_image(value: dict[str, Any], dataset_root: Path) -> Image.Image:
         return image.convert("RGB").copy()
 
 
+def decode_video_torchcodec(path: Path, expected_frames: int, fps: float) -> list[Image.Image]:
+    """Decode every frame with LeRobot's decoder (handles AV1, unlike OpenCV).
+
+    The released RoboTwin mp4s are AV1, which the OpenCV build in this image
+    cannot read, so the cache scripts use the same torchcodec path the training
+    data loader already uses.
+    """
+    from lerobot.common.datasets.video_utils import decode_video_frames
+
+    timestamps = [index / fps for index in range(expected_frames)]
+    tensor = decode_video_frames(Path(path), timestamps, tolerance_s=0.1)
+    array = (tensor.permute(0, 2, 3, 1).cpu().numpy() * 255.0).round().astype(np.uint8)
+    if len(array) != expected_frames:
+        raise ValueError(f"Video frame count mismatch for {path}: expected={expected_frames}, decoded={len(array)}")
+    return [Image.fromarray(frame) for frame in array]
+
+
 def decode_video(path: Path, expected_frames: int) -> list[Image.Image]:
     import cv2
 
