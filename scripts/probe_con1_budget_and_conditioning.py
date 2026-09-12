@@ -268,6 +268,19 @@ def main() -> None:
         values = np.asarray([r[key] for r in records], dtype=float)
         return float(values.mean()), float(values.std(ddof=1) / max(np.sqrt(len(values)), 1e-9))
 
+    # Self-check: a silenced correction must measure exactly zero. The 4.5k run
+    # reported 0.028 here because adapter_out's bias survived the zeroing, and the
+    # row silently stopped being a true no-correction baseline. Fail loudly instead.
+    silenced = args.zero_correction or args.base_weights
+    silence_key = f"correction_rms_b{args.budgets[0]}"
+    if silenced and silence_key in records[0]:
+        worst = max(abs(r[silence_key]) for r in records)
+        if worst > 1e-6:
+            raise ValueError(
+                f"The correction was supposed to be silenced but measures RMS {worst:.3e}. "
+                "Zeroing missed a parameter (check for a bias next to the zeroed kernel).")
+        print(f"SELFCHECK correction silence confirmed (max RMS {worst:.3e})", flush=True)
+
     summary = {"config": args.config, "exp_name": args.exp_name, "restored_step": int(state.step),
                "samples": args.batches * args.batch_size, "budgets": args.budgets,
                "flow": {}, "correction_rms": {}, "deltas": {}, "records": records}

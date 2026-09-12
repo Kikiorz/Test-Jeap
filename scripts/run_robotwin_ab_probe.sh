@@ -36,7 +36,12 @@ B_CFG=pi05_robotwin_con1con2_ctx_20k
 C_CFG=pi05_robotwin_con1_actcond_20k
 D_CFG=pi05_robotwin_con1_headlr_20k
 
-probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_base.json" --zero-correction
+# The probe self-checks that a silenced correction measures exactly zero and
+# raises if it does not. That row is guarded so a broken control shows up as a
+# missing row instead of silently becoming a wrong baseline, without costing the
+# arms that follow.
+probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_base.json" --zero-correction \
+  || echo "[$(date -u +%H:%M:%S)] ZERO-CORRECTION CONTROL FAILED its self-check; no base row"
 # True released base: the config's own weight loader restores the released
 # checkpoint into every non-Con1/Con2 parameter and the correction is silenced,
 # so this row is the released policy rather than "arm A minus its correction".
