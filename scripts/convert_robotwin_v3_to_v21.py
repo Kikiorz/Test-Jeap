@@ -125,12 +125,16 @@ def main() -> None:
             entry[camera] = {stat: vector(row[f"stats/{camera}/{stat}"]) if stat in ("mean", "std", "min", "max")
                              else int(scalar(row[f"stats/{camera}/{stat}"]))
                              for stat in ("min", "max", "mean", "std", "count")}
+        # LeRobot wants every *leaf* statistic to be at least one-dimensional,
+        # while the per-feature dicts stay dicts.
+        def wrap(value):
+            if isinstance(value, dict):
+                return {name: wrap(item) for name, item in value.items()}
+            return value if isinstance(value, list) else [value]
+
         stats_lines.append({
             "episode_index": episode,
-            "stats": {
-                name: (value if isinstance(value, list) else [value])
-                for name, value in entry.items() if name != "episode_index"
-            },
+            "stats": {name: wrap(value) for name, value in entry.items() if name != "episode_index"},
         })
         if episode % 250 == 0:
             print(json.dumps({"converted": episode + 1}), flush=True)
