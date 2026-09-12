@@ -15,9 +15,12 @@ FEATURES="${FEATURES:-/workspace/artifacts/con1/robotwin_clean20_19999_features_
 LOG="${LOG:-/workspace/robotwin_cache_build.log}"
 IMAGES=(observation.images.cam_high observation.images.cam_left_wrist observation.images.cam_right_wrist)
 
-echo "[$(date -u +%H:%M:%S)] stage 1: V-JEPA frame states" | tee -a "$LOG"
-for rank in 0 1 2 3; do
-  CUDA_VISIBLE_DEVICES="$rank" PYTHONPATH="$ROOT/src" \
+WORKERS="${WORKERS:-8}"
+
+echo "[$(date -u +%H:%M:%S)] stage 1: V-JEPA frame states ($WORKERS workers)" | tee -a "$LOG"
+for ((rank = 0; rank < WORKERS; rank++)); do
+  gpu=$((rank % 4))
+  CUDA_VISIBLE_DEVICES="$gpu" PYTHONPATH="$ROOT/src" \
     nohup .venv/bin/python -u scripts/cache_con1_frame_states.py \
       --dataset-root "$DATASET" \
       --checkpoint "$VJEPA_CKPT" \
@@ -25,7 +28,7 @@ for rank in 0 1 2 3; do
       --output-root "$STATES" \
       --image-keys "${IMAGES[@]}" \
       --device cuda:0 --batch-size 16 \
-      --worker-rank "$rank" --world-size 4 \
+      --worker-rank "$rank" --world-size "$WORKERS" \
       >>"$LOG.rank$rank" 2>&1 &
 done
 wait
