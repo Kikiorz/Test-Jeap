@@ -4,6 +4,10 @@
 # consumes it and Con2 refines it.
 set -euo pipefail
 
+# XLA spawns ptxas/nvcc subprocesses and the image ships a 1024 fd soft limit,
+# which makes the GEMM autotuner fail with "Too many open files".
+ulimit -n 65535 2>/dev/null || true
+
 ROOT="${ROOT:-/dev/shm/ts_jepa}"
 REPO="${REPO:-$ROOT/ts_JEPA_libero}"
 PY="${PY:-/opt/venv-jepa/bin/python}"
@@ -20,7 +24,6 @@ mkdir -p "$OUTPUT"
 cd "$REPO"
 PYTHONPATH="$REPO/src" \
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
-LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libnccl.so.2 \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
 NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
   nohup "$PY" -u -m openpi.con1.train_head \

@@ -75,6 +75,7 @@ def main() -> None:
     print(json.dumps({"samples": len(raw_samples), "horizon": horizon}), flush=True)
 
     def build_variant_actions(name, actions, states):
+        """`states` is [H, 14]: the joint positions at t..t+H-1."""
         if name == "abs":
             return actions
         if name == "delta_now":
@@ -85,9 +86,21 @@ def main() -> None:
             return actions - states[-1:]
         if name == "delta_mean":
             return actions - states.mean(axis=0, keepdims=True)
+        if name.startswith("scale"):
+            factor = float(name[len("scale"):])
+            return (actions - states) * factor
+        if name.startswith("window"):
+            step = int(name[len("window"):])
+            future = actions[step - 1:]
+            past = states[: len(states) - step + 1]
+            delta = future - past
+            pad = np.repeat(delta[-1:], step - 1, axis=0)
+            return np.concatenate([delta, pad], axis=0)
         raise ValueError(name)
 
-    action_variants = ["abs", "delta_now", "delta_step", "delta_end", "delta_mean"]
+    action_variants = ["abs", "delta_now", "delta_step", "delta_end", "delta_mean",
+                       "scale2", "scale3", "scale5", "scale6",
+                       "window2", "window4", "window5", "window8"]
     state_variants = {"raw": (False, False), "flip": (True, False), "flip+grip": (True, True)}
 
     report = {}
