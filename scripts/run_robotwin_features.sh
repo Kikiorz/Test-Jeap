@@ -22,6 +22,7 @@ PYTHONPATH="$ROOT/src" HF_HOME=/workspace/.hf_home HF_HUB_OFFLINE=1 \
     --output "$OUTPUT" \
     --gpus 0,0,1,1,2,2,3,3 \
     --base-config pi05_robotwin_con1con2_ctx_20k \
+    --batch-size "${BATCH_SIZE:-32}" \
     --num-queries 64 --latent-dim 4224 --horizon 16 \
     --image-keys observation.images.cam_high observation.images.cam_left_wrist observation.images.cam_right_wrist \
     >>"$LOG" 2>&1
