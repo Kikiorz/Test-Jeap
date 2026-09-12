@@ -35,11 +35,30 @@ So "only the delta path" zeroes `adapter_out`, and "only the adapter" zeroes
 |---|---|---|
 | close to A | close to base | both parts are needed; the gain is shared |
 | close to A | close to A | either part alone reproduces the gain (redundant paths) |
-| close to base | close to A | **the gain is delta-free** - Con1 helps through a side channel that never reads the latent, so no improvement to the latent head can transfer, and arms C/D/F are aimed at the wrong thing |
+| close to base | close to A | the gain is delta-free on RoboTwin - a *departure* from LIBERO (see below), and a reason to look at the architecture |
 | close to A | close to base | the delta path carries the gain - improving the latent head is the right lever |
 
-The third row is the one worth acting on, and it is a concrete, cheap change to
-the architecture (make the adapter delta-conditioned, or drop it).
+### The LIBERO prior for this table
+
+This decomposition has already been run on LIBERO, closed-loop, 705 paired L5
+episodes (`docs_CON1_LIVECROSS_L5.md`):
+
+| variant | pooled delta |
+|---|---|
+| action adapter only (latent-free) | +0.99pp (47/40) |
+| adapter + live latent | **+1.70pp (54/42)** |
+
+So on LIBERO the latent-free adapter carries roughly 58% of the gain **and the
+latent branch adds a further +0.71pp on top**, with the largest single-category
+effect in the appearance-shift category where the latent branch was expected to
+help (Background Textures +3.2 -> +7.4pp). The delta-free adapter is a documented
+part of the design (`docs_CON1_METHOD.md` labels it LATENT-FREE), not a defect.
+
+Which means the third row of the table above is **not** the expected outcome: if
+RoboTwin shows adapter-only reproducing the whole gain, that is a departure from
+the LIBERO result rather than a confirmation, and it would point at something
+RoboTwin-specific (e.g. the 2,410-task distribution making the predicted delta
+too weak to contribute) rather than at a broken side channel.
 
 ## Pre-registered thresholds
 
