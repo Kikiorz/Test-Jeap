@@ -51,8 +51,14 @@ def _zero_correction(params):
     def zero(path, leaf):
         names = _path_names(path)
         # Bridged Linen parameters appear as "<layer>/kernel/value".
+        # `adapter_out` also carries a bias, and leaving it behind does NOT leave
+        # the correction silent: with the kernel at zero the adapter collapses to
+        # that bias, i.e. a constant offset added to every action token. The 4.5k
+        # base row reported correction_rms 0.028 instead of 0 for exactly this
+        # reason, which made the control slightly better than a true
+        # no-correction baseline and the Con1 gain a slight underestimate.
         if ("con1_cross_attention" in names and len(names) >= 3
-                and names[-1] == "value" and names[-2] == "kernel"
+                and names[-1] == "value" and names[-2] in ("kernel", "bias")
                 and names[-3] in ("out", "adapter_out")):
             print("ZEROED", "/".join(names), getattr(leaf, "shape", None), flush=True)
             return jnp.zeros_like(leaf)

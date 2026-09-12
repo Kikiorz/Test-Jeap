@@ -74,3 +74,24 @@ Checked in the code rather than assumed:
 So every row walks the same shuffled sequence and batch `i` is the same batch for
 all rows. If a future arm ever changes `seed`, batch size or batch count, the
 paired statistics must be recomputed rather than reused.
+
+## 7. The zero-correction control used to leak a bias (fixed)
+
+`--zero-correction` zeroes the correction at its output projections so the row
+measures the policy with Con1 silenced. It zeroed `out/kernel` and
+`adapter_out/kernel`, but `adapter_out` also carries a **bias**, and the Dense
+layer is then `adapter = hidden @ 0 + bias = bias` - a constant offset added to
+every action token, scaled by `sigmoid(alpha)`.
+
+The evidence was already in the 4.5k numbers: the base row reported
+`correction_rms = 0.028` where a silenced correction must report exactly 0.
+
+Checked against a real checkpoint on CPU: the parameter tree contains
+`con1_cross_attention/adapter_out/bias/value` (1024,), which the old rule left
+alone, and the fixed rule zeroes three leaves -
+`adapter_out/bias`, `adapter_out/kernel`, `out/kernel` - while leaving the other
+ten Con1 parameters untouched.
+
+Consequence for the 4.5k result: the control was slightly *better* than a true
+no-correction baseline, so the reported -11.77% is a slight **underestimate** of
+the Con1 gain. The 12k table uses the fixed control.
