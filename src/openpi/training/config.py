@@ -1350,7 +1350,10 @@ _CONFIGS = [
             con1_flow_weight_decay_steps=15_000,
         ),
         data=LeRobotRoboTwinDataConfig(
-            repo_id="/workspace/artifacts/datasets/robotwin_clean_20",
+            # Training reads the inline-image copy: the video dataset needs three AV1
+            # decodes per sample and LeRobot does not cache frames (measured ~6-7 s/step
+            # at batch 8). The Con1 cache still hashes the video dataset.
+            repo_id="/workspace/robotwin2/RoboTwin_v21_inline",
             assets=AssetsConfig(
                 assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robotwin/checkpoints/openpi/"
                            "pi05_robotwin_clean_20_vjepa_aux/pi05_robotwin_vjepa_delta50_b128_fsdp4_gpu0123_seed42/19999/assets",
@@ -1434,7 +1437,10 @@ _CONFIGS = [
             con1_flow_weight_decay_steps=15_000,
         ),
         data=LeRobotRoboTwinDataConfig(
-            repo_id="/workspace/artifacts/datasets/robotwin_clean_20",
+            # Training reads the inline-image copy: the video dataset needs three AV1
+            # decodes per sample and LeRobot does not cache frames (measured ~6-7 s/step
+            # at batch 8). The Con1 cache still hashes the video dataset.
+            repo_id="/workspace/robotwin2/RoboTwin_v21_inline",
             assets=AssetsConfig(
                 assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robotwin/checkpoints/openpi/"
                            "pi05_robotwin_clean_20_vjepa_aux/pi05_robotwin_vjepa_delta50_b128_fsdp4_gpu0123_seed42/19999/assets",
