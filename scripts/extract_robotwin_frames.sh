@@ -7,6 +7,7 @@ set -euo pipefail
 DATASET="${DATASET:-/workspace/robotwin2/RoboTwin_v21}"
 OUT="${OUT:-/workspace/robotwin2/frames_tmp}"
 JOBS="${JOBS:-24}"
+SIZE="${SIZE:-384}"
 
 mkdir -p "$OUT"
 for camera in observation.images.cam_high observation.images.cam_left_wrist observation.images.cam_right_wrist; do
@@ -17,7 +18,7 @@ for camera in observation.images.cam_high observation.images.cam_left_wrist obse
       episode="$(basename "$file" .mp4)"
       target="'"$OUT"'/${camera}/${episode}"
       mkdir -p "$target"
-      ffmpeg -nostdin -loglevel error -y -i "$file" -vsync 0 -vf scale=256:256 -q:v 3 "$target/%05d.jpg"
+      ffmpeg -nostdin -loglevel error -y -i "$file" -vsync 0 -vf scale=${SIZE}:${SIZE} -q:v 3 "$target/%05d.jpg"
     '
   echo "done $camera"
 done
