@@ -35,7 +35,16 @@ def load(root: Path, side: str, suite: str) -> dict:
                     continue
                 if record.get("record_type") != "episode":
                     continue
-                records[(record["task_id"], record.get("episode_idx"))] = record
+                key = (record["task_id"], record.get("episode_idx"))
+                previous = records.get(key)
+                # Infrastructure failures (policy server restarts, timeouts)
+                # must not overwrite a genuine evaluation of the same episode.
+                if previous is not None and previous.get("error") and not record.get("error"):
+                    records[key] = record
+                elif previous is not None and not previous.get("error") and record.get("error"):
+                    continue
+                else:
+                    records[key] = record
     return records
 
 
@@ -77,6 +86,8 @@ def main() -> None:
 
     cand = load(args.root, args.candidate, args.suite)
     ref = load(args.root, args.reference, args.suite)
+    cand = {k: v for k, v in cand.items() if not v.get("error")}
+    ref = {k: v for k, v in ref.items() if not v.get("error")}
     keys = sorted(set(cand) & set(ref))
     if not keys:
         print("no paired episodes yet")

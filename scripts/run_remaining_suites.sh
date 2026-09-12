@@ -7,8 +7,8 @@ ulimit -n 65535 2>/dev/null || true
 REPO="${REPO:-/workspace/ts_jepa/ts_JEPA_libero}"
 LOG_ROOT="${LOG_ROOT:-/workspace/ts_jepa/logs/plus_eval}"
 EVAL_PYTHON="${EVAL_PYTHON:-/opt/venv-libero-plus/bin/python}"
-SHARDS="${SHARDS:-32}"
-PORTS=(8002 8004 8005 8006 8007 8008 8009 8010 8011 8012 8013 8014)
+SHARDS="${SHARDS:-64}"
+PORTS=(8002 8004 8005 8006 8007 8008 8009 8010)
 SUITES=(libero_spatial libero_object libero_goal)
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
@@ -19,7 +19,7 @@ for suite in "${SUITES[@]}"; do
   log "launching $suite"
   i=0
   for port in "${PORTS[@]}"; do
-    for k in 0 1 2; do
+    for k in 0 1 2 3 4 5 6 7; do
       RUN_ID=con1con2_plus_full \
       PORT="$port" \
       TASK_SUITE="$suite" \
