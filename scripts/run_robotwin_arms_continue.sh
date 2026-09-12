@@ -10,9 +10,25 @@ ROOT="${ROOT:-/workspace/ts_JEPA_robotwin}"
 cd "$ROOT"
 STEPS="${STEPS:-15000}"
 LOG="${LOG:-/workspace/robotwin_arms_continue.log}"
+# A single published checkpoint is ~6.7 GB on this box. Two arms at 15k steps with
+# keep-period 1000 needs ~150 GB on top of what is already stored, which does not
+# fit in the 62 GB that were free, so keep every third save instead.
+KEEP_PERIOD="${KEEP_PERIOD:-3000}"
+MIN_FREE_GB="${MIN_FREE_GB:-60}"
+
+check_disk() {
+  local free_gb
+  free_gb=$(df -BG --output=avail /workspace | tail -1 | tr -dc '0-9')
+  if (( free_gb < MIN_FREE_GB )); then
+    echo "[$(date -u +%H:%M:%S)] refusing to start: only ${free_gb}G free, need ${MIN_FREE_GB}G" | tee -a "$LOG"
+    return 1
+  fi
+  echo "[$(date -u +%H:%M:%S)] disk free ${free_gb}G (>= ${MIN_FREE_GB}G)" | tee -a "$LOG"
+}
 
 continue_train() {
   local config="$1" exp="$2"
+  check_disk
   echo "[$(date -u +%H:%M:%S)] continuing $exp to $STEPS steps" | tee -a "$LOG"
   PYTHONPATH="$ROOT/src" \
   CUDA_VISIBLE_DEVICES=0,1,2,3 \
@@ -24,7 +40,7 @@ continue_train() {
       --exp-name="$exp" \
       --checkpoint-base-dir=/workspace/artifacts/checkpoints \
       --no-wandb-enabled --num-workers=12 --resume \
-      --num-train-steps="$STEPS" --keep-period=1000 \
+      --num-train-steps="$STEPS" --keep-period="$KEEP_PERIOD" \
       --batch-size=64 --con1-lr-multiplier=2 \
       >>"$LOG" 2>&1
   echo "[$(date -u +%H:%M:%S)] finished $exp" | tee -a "$LOG"
