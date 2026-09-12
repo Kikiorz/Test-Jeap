@@ -234,6 +234,21 @@ task_index`——没有任务名、没有场景、没有 Clean/Random 标记。`
 **结论：单靠这份 release 无法实现"只取 20 个任务的 Clean 演示"这个过滤。** 要实现
 它必须引入外部映射（RoboTwin 仿真器的任务清单，或 HF 上按任务分文件的原始版本）。
 
+### 附：三个新臂的模型构建核对（CPU，`nnx.eval_shape`）
+
+用"预测叶子数再核对"的方式确认每个 flag 只改它该改的东西：
+
+| config | head 叶子 | 预期 | cross | action_cond | readout | head_lr |
+|---|---:|---:|---:|---|---|---:|
+| A 基线 | 19 | — | 13 | False | False | 1.0 |
+| C 动作条件化 | **26** | 19+7 | 13 | True | False | 1.0 |
+| D head 5x LR | **19** | 19（LR 不是参数） | 13 | False | False | 5.0 |
+| F direct readout | **21** | 19+2 | 13 | False | True | 1.0 |
+
+C 的 +7 正好是动作条件化块定义的 `action_in/{kernel,bias}`、`action_norm/{bias,scale}`、
+`action_query/kernel`、`action_key/kernel`、`action_value/kernel`；D 保持 19 说明学习率
+倍率**没有**意外改动模型结构；F 的 +2 是 `direct_readout/{kernel,bias}`。
+
 所以 58.2% 只是**关键词命中率**，不是"58% 的轨迹属于 20 任务"。影响仍然存在：
 
 1. arm 之间的**内部对比依然成立**（所有 arm 看同一份数据、同一 seed、同一批配对
