@@ -18,6 +18,7 @@ class EnvMode(enum.Enum):
     ALOHA_SIM = "aloha_sim"
     DROID = "droid"
     LIBERO = "libero"
+    SIMPLER_ENV = "simpler_env"
 
 
 @dataclasses.dataclass
@@ -72,6 +73,13 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     EnvMode.LIBERO: Checkpoint(
         config="pi05_libero",
         dir="gs://openpi-assets/checkpoints/pi05_libero",
+    ),
+    # SimplerEnv WidowX. pi0.5 base ships no Bridge normalisation statistics, so
+    # this must point at a checkpoint fine-tuned on the Bridge dataset (config
+    # "pi05_bridge"); override with --policy.dir as usual.
+    EnvMode.SIMPLER_ENV: Checkpoint(
+        config="pi05_bridge",
+        dir="checkpoints/pi05_bridge",
     ),
 }
 
