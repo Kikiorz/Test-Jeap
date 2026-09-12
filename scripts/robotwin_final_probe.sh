@@ -29,7 +29,9 @@ common_step() {
   local dir arm_steps
   for dir in "$@"; do
     [[ -d "$dir" ]] || continue
-    arm_steps=$(ls -1 "$dir" 2>/dev/null | grep -E '^[0-9]+$' | sort -n)
+    # `comm` needs lexicographic order, not `sort -n`; only the final pick is
+    # numeric. Using `sort -n` here silently produced wrong intersections.
+    arm_steps=$(ls -1 "$dir" 2>/dev/null | grep -E '^[0-9]+$' | sort)
     [[ -n "$arm_steps" ]] || continue
     if [[ -z "$shared" ]]; then
       shared="$arm_steps"
@@ -38,6 +40,22 @@ common_step() {
     fi
   done
   printf '%s\n' "$shared" | grep -E '^[0-9]+$' | sort -n | tail -1
+}
+
+# Fallback when the arms share no save step at all: compare at the earliest of
+# their last steps, so a short arm degrades the comparison instead of skipping it.
+fallback_step() {
+  local dir step
+  local best=""
+  for dir in "$@"; do
+    [[ -d "$dir" ]] || continue
+    step=$(latest_step "$dir")
+    [[ -n "$step" ]] || continue
+    if [[ -z "$best" || "$step" -lt "$best" ]]; then
+      best="$step"
+    fi
+  done
+  printf '%s\n' "$best"
 }
 
 wait_for_finish() {
@@ -63,6 +81,10 @@ echo "[$(date -u +%H:%M:%S)] training stopped; final steps A=$A_STEP B=$B_STEP "
      "C=${C_STEP:-none} D=${D_STEP:-none}" | tee -a "$LOG"
 
 STEP=$(common_step "$A_DIR" "$B_DIR" "$C_DIR" "$D_DIR")
+if [[ -z "$STEP" ]]; then
+  STEP=$(fallback_step "$A_DIR" "$B_DIR" "$C_DIR" "$D_DIR")
+  echo "[$(date -u +%H:%M:%S)] arms share no save step; falling back to $STEP" | tee -a "$LOG"
+fi
 echo "[$(date -u +%H:%M:%S)] probing every arm at the shared step $STEP" | tee -a "$LOG"
 if [[ -z "$STEP" ]]; then
   echo "[$(date -u +%H:%M:%S)] no checkpoints found; skipping probe" | tee -a "$LOG"
