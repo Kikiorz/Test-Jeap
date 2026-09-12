@@ -414,6 +414,12 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
         }
         if self.use_wrist_image:
             repack_mapping["observation/wrist_image"] = self.wrist_image_key
+        # Repack keeps only the listed keys, so the Con1/Con2 side channels must
+        # be listed when a latent cache is in use.
+        if self.base_config is not None and self.base_config.con1_latent_root is not None:
+            repack_mapping["con1_current_latent"] = "con1_current_latent"
+            repack_mapping["con1_future_latents"] = "con1_future_latents"
+            repack_mapping["con1_future_valid"] = "con1_future_valid"
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
 
         data_transforms = _transforms.Group(
