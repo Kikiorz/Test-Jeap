@@ -807,7 +807,6 @@ _CONFIGS = [
             # step 0, so the stage boundaries are set to their minimum (1).
             con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
             con1_delta_weight=0.2, con1_residual_weight=1e-3,
-            con1_balance_strength=1.0,
             con1_flow_weight_initial=2.0, con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
         ),
@@ -841,7 +840,6 @@ _CONFIGS = [
             # step 0, so the stage boundaries are set to their minimum (1).
             con1_stage1_steps=1, con1_stage2_steps=1, con1_stage3_steps=1,
             con1_delta_weight=0.2, con1_residual_weight=1e-3,
-            con1_balance_strength=1.0,
             con1_flow_weight_initial=2.0, con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
         ),
@@ -1007,7 +1005,6 @@ _CONFIGS = [
             con1_flow_weight_initial=2.0,
             con1_flow_weight_final=1.0,
             con1_flow_weight_decay_steps=15_000,
-            con1_balance_strength=1.0,
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="/workspace/artifacts/datasets/lerobot_libero",
@@ -1140,7 +1137,6 @@ _CONFIGS = [
             con1_metric=True,
             con1_metric_max_scale=0.5,
             con1_metric_align_weight=0.1,
-            con1_balance_strength=1.0,
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="/workspace/artifacts/datasets/lerobot_libero",
