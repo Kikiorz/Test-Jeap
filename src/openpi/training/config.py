@@ -1483,6 +1483,85 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        # Arm C: arm A's livecross coupling plus action conditioning of the
+        # anchored-delta head. The 4.5k A/B pair moved the action flow loss by
+        # -11.8% while the latent delta NMSE stayed at 0.78-0.88, i.e. the head
+        # barely predicts the future latent at all, so Con2 has almost nothing
+        # to refine. Conditioning the head on the demonstrated action chunk
+        # turns the target from "what happens next on average" into "what this
+        # chunk causes", which is the cheapest signal available for that head.
+        # Exactly one variable changes relative to arm A.
+        name="pi05_robotwin_con1_actcond_20k",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=False,
+            action_horizon=16,
+            use_vjepa_aux=True,
+            vjepa_num_queries=64,
+            vjepa_query_grid_size=8,
+            vjepa_target_grid_size=8,
+            vjepa_target_dim=1408,
+            use_con1=True,
+            con1_action_adapter=True,
+            con1_action_conditioning=True,
+            con1_action_conditioning_source="demonstration",
+            con1_cross_attention_out_init=0.02,
+            con1_alpha_initial=0.3,
+            con1_residual_budget=0.05,
+            con1_latent_dim=4224,
+            con1_action_dims=14,
+            con1_train_action_layers_from=14,
+            con1_stage1_steps=2000,
+            con1_stage2_steps=5000,
+            con1_stage3_steps=5000,
+            con1_sgr_beta=0.5,
+            con1_delta_weight=0.2,
+            con1_residual_weight=1e-3,
+            con1_flow_weight_initial=2.0,
+            con1_flow_weight_final=1.0,
+            con1_flow_weight_decay_steps=15_000,
+        ),
+        data=LeRobotRoboTwinDataConfig(
+            repo_id="/workspace/robotwin2/RoboTwin_v21_inline",
+            assets=AssetsConfig(
+                assets_dir="/workspace/artifacts/models/jepa_wam_pi05_robotwin/checkpoints/openpi/"
+                           "pi05_robotwin_clean_20_vjepa_aux/pi05_robotwin_vjepa_delta50_b128_fsdp4_gpu0123_seed42/19999/assets",
+                asset_id="local/robotwin_clean_20",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                con1_latent_root="/workspace/artifacts/con1/robotwin_clean20_19999_features_v1",
+                con1_holdout_fraction=0.0,
+            ),
+            extra_delta_transform=False,
+            vjepa_future_offset=50,
+            vjepa_image_key="observation.images.cam_high",
+            con1_latent_root="/workspace/artifacts/con1/robotwin_clean20_19999_features_v1",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/artifacts/models/jepa_wam_pi05_robotwin_publish/"
+            "pi05_robotwin_clean_20_vjepa_aux/19999/params",
+            missing_regex=".*con[12].*",
+        ),
+        freeze_filter=nnx.All(
+            nnx.Param,
+            nnx.Not(nnx.Any(
+                nnx_utils.PathRegex(".*PaliGemma/llm/layers/.*_1.*"),
+                nnx_utils.PathRegex("action_out_proj/.*"),
+                nnx_utils.PathRegex(".*con1.*"),
+                nnx_utils.PathRegex(".*con2.*"),
+            )),
+        ),
+        num_train_steps=20_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=20_000, decay_lr=1e-5),
+        save_interval=1000,
+        keep_period=1000,
+        log_interval=10,
+        batch_size=128,
+        ema_decay=None,
+    ),
+    TrainConfig(
         # The complete algorithm at the LIBERO/RoboTwin branch point: livecross
         # Con1 coupling + Con2 delta refinement + the whole VLM prefix fed to the
         # delta head (language + every image patch + state, not just the 64

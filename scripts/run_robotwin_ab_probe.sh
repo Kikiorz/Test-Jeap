@@ -3,6 +3,8 @@
 #   base      = arm A's checkpoint with the Con1 correction silenced
 #   arm A     = Con1 livecross
 #   arm B     = Con1 livecross + Con2 refinement + whole-prefix VLM context
+#   arm C     = arm A + action conditioning of the anchored-delta head
+#               (probed only when that arm has a checkpoint at $STEP)
 # All three use the same data loader (same dataset, same seed, shuffled) so the
 # batches are identical and the comparison is paired.
 set -euo pipefail
@@ -13,6 +15,7 @@ STEP="${STEP:-4499}"
 BATCHES="${BATCHES:-48}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 OUT_DIR="${OUT_DIR:-/workspace/artifacts/con2}"
+CKPT_BASE="${CKPT_BASE:-/workspace/artifacts/checkpoints}"
 
 probe() {
   local config="$1" exp="$2" out="$3"; shift 3
@@ -29,8 +32,16 @@ probe() {
 
 A_CFG=pi05_robotwin_con1_livecross_20k
 B_CFG=pi05_robotwin_con1con2_ctx_20k
+C_CFG=pi05_robotwin_con1_actcond_20k
 
 probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_base.json" --zero-correction
 probe "$A_CFG" robotwin_a_con1 "$OUT_DIR/robotwin_ab_a.json"
 probe "$B_CFG" robotwin_b_full "$OUT_DIR/robotwin_ab_b.json"
+
+C_DIR="$CKPT_BASE/pi05_robotwin_con1_actcond_20k/robotwin_c_actcond"
+if [[ -d "$C_DIR/$STEP" ]]; then
+  probe "$C_CFG" robotwin_c_actcond "$OUT_DIR/robotwin_ab_c.json"
+else
+  echo "[$(date -u +%H:%M:%S)] no arm C checkpoint at step $STEP in $C_DIR; skipping arm C"
+fi
 echo "[$(date -u +%H:%M:%S)] probes done"
