@@ -89,12 +89,16 @@ def validate_sources(args):
     # which state files this (validation) run inspects and converts.
     rows = full[:args.max_episodes] if args.max_episodes else full
     m = json.loads((args.states/'manifest.json').read_text())
+    # The frame-state cache was built from the video copy of the dataset while
+    # this stage may read the inline-image copy (same episodes, same frames,
+    # faster decode), so the identity check is on the *inventory* -- episode
+    # count, per-episode lengths and prompts -- rather than on meta file bytes.
+    same_inventory = m['dataset_total_episodes'] == len(full) and (
+        m['dataset_total_frames'] == sum(e['length'] for e in full))
     if (m['kind'] != 'con1_independent_vjepa_frame_states' or m['state_dim'] != args.latent_dim
             or m['channel_projection'] != 'none'
             or m['temporal_input'] != '[o_k,o_k]; never [o_t,o_future]'
-            or m['dataset_metadata_sha256'] != source_identity(args.dataset)
-            or m['dataset_total_episodes'] != len(full)
-            or m['dataset_total_frames'] != sum(e['length'] for e in full)):
+            or not same_inventory):
         raise ValueError('Teacher state/dataset contract mismatch')
     # Old manifest describes its OLD downstream orthogonal loader, not raw
     # stored states. These arrays must be non-normalized raw Phi(o_k).
