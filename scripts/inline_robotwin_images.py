@@ -70,6 +70,9 @@ def main() -> None:
         length = int(entry["length"])
         chunk = episode // 1000
         path = source / "data" / f"chunk-{chunk:03d}" / f"episode_{episode:06d}.parquet"
+        target = output / "data" / f"chunk-{chunk:03d}" / f"episode_{episode:06d}.parquet"
+        if target.exists() and target.stat().st_size > 0:
+            return episode  # resumable: already materialised
         table = pq.read_table(path)
         columns = {}
         for camera in CAMERAS:
@@ -81,7 +84,7 @@ def main() -> None:
                 type=pa.struct([("bytes", pa.binary()), ("path", pa.string())]))
         for camera, column in columns.items():
             table = table.append_column(camera, column)
-        pq.write_table(table, output / "data" / f"chunk-{chunk:03d}" / f"episode_{episode:06d}.parquet")
+        pq.write_table(table, target)
         return episode
 
     done = 0
