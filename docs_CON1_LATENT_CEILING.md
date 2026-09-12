@@ -115,6 +115,17 @@ Both are publishable findings; they just point at different Con2 stories. The
 paired probe reports the flow loss and, separately, the training logs carry
 `con1_delta_nmse`, so the table can be filled in either way.
 
+To keep that honest, the thresholds are fixed now rather than after seeing the
+numbers:
+
+* "the head moved": arm D's mean `con1_delta_nmse` is at least 0.05 below arm A's
+  (the head-only runs suggest 0.82 -> ~0.71 is available, so a smaller drop means
+  the joint objective is actively fighting the head);
+* "it bought action accuracy": arm D's paired flow loss beats arm A by at least
+  2% with |t| >= 3 over the 48 shared batches (the 4.5k pair resolved an 11.8%
+  effect at t = 7, so a 2% effect is near this probe's sensitivity floor);
+* anything in between is reported as "inconclusive at this budget", not as a win.
+
 ## Reproduce
 
 ```bash
