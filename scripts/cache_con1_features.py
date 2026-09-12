@@ -80,16 +80,17 @@ def paths(args, eid):
 
 
 def validate_sources(args):
-    rows = episodes(args)
-    if args.max_episodes:
-        rows = rows[:args.max_episodes]
+    full = episodes(args)
+    # The contract always describes the whole dataset; --max-episodes only limits
+    # which state files this (validation) run inspects and converts.
+    rows = full[:args.max_episodes] if args.max_episodes else full
     m = json.loads((args.states/'manifest.json').read_text())
     if (m['kind'] != 'con1_independent_vjepa_frame_states' or m['state_dim'] != args.latent_dim
             or m['channel_projection'] != 'none'
             or m['temporal_input'] != '[o_k,o_k]; never [o_t,o_future]'
             or m['dataset_metadata_sha256'] != source_identity(args.dataset)
-            or m['dataset_total_episodes'] != len(rows)
-            or m['dataset_total_frames'] != sum(e['length'] for e in rows)):
+            or m['dataset_total_episodes'] != len(full)
+            or m['dataset_total_frames'] != sum(e['length'] for e in full)):
         raise ValueError('Teacher state/dataset contract mismatch')
     # Old manifest describes its OLD downstream orthogonal loader, not raw
     # stored states. These arrays must be non-normalized raw Phi(o_k).
