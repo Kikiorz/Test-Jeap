@@ -127,7 +127,9 @@ def main() -> None:
         # openpi's LeRobot config uses the column name "actions" (as the LIBERO
         # dataset does); the v3 release calls it "action".
         table = table.rename_columns(["actions" if name == "action" else name for name in table.column_names])
-        pq.write_table(table, output / "data" / "chunk-000" / f"episode_{episode:06d}.parquet")
+        data_dir = output / "data" / f"chunk-{episode // 1000:03d}"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(table, data_dir / f"episode_{episode:06d}.parquet")
         offset += length
 
         episodes_lines.append({"episode_index": episode, "tasks": [str(t) for t in row["tasks"]], "length": length})
