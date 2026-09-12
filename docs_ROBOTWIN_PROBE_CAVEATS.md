@@ -55,3 +55,22 @@ result there is not evidence against mediation on its own.
 48 batches x 8 = 384 paired samples. The 4.5k pair resolved an 11.8% effect at
 t = 7 and a 0.10% effect at t = 0.16, so effects below ~2% are not resolvable
 with this budget.
+
+## 6. Why the rows are paired even though each row runs a different config
+
+This is worth stating because it is the assumption the whole table rests on and
+it is not obvious: arm A, B, C and D each run their *own* training config, so the
+loader could in principle shuffle them differently and the paired t statistics
+would be meaningless.
+
+Checked in the code rather than assumed:
+
+* `TrainConfig.seed` defaults to 42 and none of the four RoboTwin configs
+  overrides it (`grep` over the config blocks: no `seed=` overrides);
+* `create_data_loader` forwards `seed=config.seed` to `create_torch_data_loader`,
+  which passes it to `TorchDataLoader`, i.e. the shuffle generator;
+* the probe fixes `--batch-size` and `--batches` for every row.
+
+So every row walks the same shuffled sequence and batch `i` is the same batch for
+all rows. If a future arm ever changes `seed`, batch size or batch count, the
+paired statistics must be recomputed rather than reused.
