@@ -19,11 +19,16 @@ export EVAL_PYTHON
 
 RUN_ID="${SIDE}_plus_full"
 for ((shard = 0; shard < SHARDS; shard++)); do
+  # Spread MuJoCo's EGL rendering across all four GPUs; with every client on
+  # device 0 the simulation wall-clock dominates (observed 3x slowdown).
+  gpu=$((shard % 4))
   RUN_ID="$RUN_ID" \
   PORT="$PORT" \
   TASK_SUITE="$TASK_SUITE" \
   NUM_TASK_SHARDS="$SHARDS" \
   TASK_SHARD_ID="$shard" \
+  EVAL_GPU="$gpu" \
+  MUJOCO_EGL_DEVICE_ID="$gpu" \
   nohup bash scripts/run_libero_evaluation.sh plus \
     >"$LOG_ROOT/${RUN_ID}.shard-$(printf '%02d' "$shard").log" 2>&1 &
 done

@@ -20,12 +20,15 @@ if pgrep -f "scripts/train.py" >/dev/null 2>&1; then
   echo "[$(date -u +%H:%M:%S)] training restarted while waiting; giving up" | tee -a "$LOG"
   exit 1
 fi
-echo "[$(date -u +%H:%M:%S)] A/B finished; starting arm C" | tee -a "$LOG"
+echo "[$(date -u +%H:%M:%S)] A/B finished; starting arms C and D" | tee -a "$LOG"
 
 # The probe is still worth running for A and B even if arm C cannot start, so
 # failures here are reported rather than fatal.
 STEPS="$STEPS" bash "$ROOT/scripts/run_robotwin_arm_c.sh" \
   || echo "[$(date -u +%H:%M:%S)] arm C failed; probing A and B only" | tee -a "$LOG"
+
+STEPS="$STEPS" bash "$ROOT/scripts/run_robotwin_arm_d.sh" \
+  || echo "[$(date -u +%H:%M:%S)] arm D failed; probing the arms that exist" | tee -a "$LOG"
 
 LOG="$LOG" bash "$ROOT/scripts/robotwin_final_probe.sh" \
   || echo "[$(date -u +%H:%M:%S)] final probe failed" | tee -a "$LOG"

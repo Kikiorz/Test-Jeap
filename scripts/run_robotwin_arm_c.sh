@@ -13,8 +13,11 @@ set -euo pipefail
 
 ROOT="${ROOT:-/workspace/ts_JEPA_robotwin}"
 cd "$ROOT"
-STEPS="${STEPS:-15000}"
-KEEP_PERIOD="${KEEP_PERIOD:-5000}"
+# 12k keeps every arm inside the disk budget while staying well past the point
+# where the head-only run had already converged. Arm A and B carry a 12k
+# checkpoint, so the final probe compares every arm at that step.
+STEPS="${STEPS:-12000}"
+KEEP_PERIOD="${KEEP_PERIOD:-3000}"
 MIN_FREE_GB="${MIN_FREE_GB:-40}"
 LOG="${LOG:-/workspace/robotwin_arm_c.log}"
 

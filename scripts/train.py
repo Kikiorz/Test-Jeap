@@ -93,6 +93,8 @@ def init_train_state(
         if config.con1_lr_multiplier <= 0:
             raise ValueError("Con1 LR multiplier must be positive")
         lr_schedule = _optimizer.ScaledSchedule(lr_schedule, config.con1_lr_multiplier)
+    if config.con1_head_lr_multiplier <= 0:
+        raise ValueError("Con1 head LR multiplier must be positive")
     tx = _optimizer.create_optimizer(config.optimizer, lr_schedule, weight_decay_mask=None)
 
     def init(rng: at.KeyArrayLike, partial_params: at.Params | None = None) -> training_utils.TrainState:
@@ -244,6 +246,7 @@ def train_step(
             updates, state.step, warmup=config.model.con1_stage1_steps,
             fusion_multiplier=config.con1_cross_attention_lr_multiplier,
             action_multiplier=config.con1_action_lr_multiplier,
+            head_multiplier=config.con1_head_lr_multiplier,
         )
         updates = mask_action_updates(
             updates,

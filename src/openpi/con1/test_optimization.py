@@ -113,3 +113,34 @@ def test_config_selects_only_intended_names():
             assert "layers" in path and any(str(x).endswith("_1") for x in path)
         else:
             assert path[0] in ("action_out_proj", "con1_delta_head", "con1_cross_attention")
+
+
+def test_head_lr_multiplier_touches_only_the_head_and_refiner():
+    updates = {
+        "con1_delta_head": {"delta_out": {"kernel": jnp.ones(2)}},
+        "con2_refine": {"hidden": {"kernel": jnp.ones(2)}},
+        "con1_cross_attention": {"out": jnp.ones(2), "alpha_logit": jnp.array(1.)},
+        "action_out_proj": {"kernel": jnp.ones(2)},
+    }
+    normal = jax.jit(lambda u: scale_group_updates(u, 2500))(updates)
+    raised = jax.jit(lambda u: scale_group_updates(u, 2500, head_multiplier=5.))(updates)
+    # The head is undertrained relative to a standalone fit, so this knob must
+    # raise the head and the Con2 refiner that rides on it...
+    np.testing.assert_allclose(raised["con1_delta_head"]["delta_out"]["kernel"],
+                               5 * normal["con1_delta_head"]["delta_out"]["kernel"])
+    np.testing.assert_allclose(raised["con2_refine"]["hidden"]["kernel"],
+                               5 * normal["con2_refine"]["hidden"]["kernel"])
+    # ...and nothing else, so the base policy and the fusion gate stay put.
+    for key in ("out", "alpha_logit"):
+        np.testing.assert_array_equal(raised["con1_cross_attention"][key],
+                                      normal["con1_cross_attention"][key])
+    np.testing.assert_array_equal(raised["action_out_proj"]["kernel"],
+                                  normal["action_out_proj"]["kernel"])
+
+
+def test_head_lr_multiplier_defaults_to_one():
+    updates = {"con1_delta_head": {"delta_out": {"kernel": jnp.ones(2)}}}
+    default = jax.jit(lambda u: scale_group_updates(u, 2500))(updates)
+    explicit = jax.jit(lambda u: scale_group_updates(u, 2500, head_multiplier=1.))(updates)
+    np.testing.assert_array_equal(default["con1_delta_head"]["delta_out"]["kernel"],
+                                  explicit["con1_delta_head"]["delta_out"]["kernel"])

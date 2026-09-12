@@ -16,9 +16,28 @@ BATCH_SIZE="${BATCH_SIZE:-8}"
 A_DIR="$CKPT_BASE/pi05_robotwin_con1_livecross_20k/robotwin_a_con1"
 B_DIR="$CKPT_BASE/pi05_robotwin_con1con2_ctx_20k/robotwin_b_full"
 C_DIR="$CKPT_BASE/pi05_robotwin_con1_actcond_20k/robotwin_c_actcond"
+D_DIR="$CKPT_BASE/pi05_robotwin_con1_headlr_20k/robotwin_d_headlr"
 
 latest_step() {
   ls -1 "$1" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1
+}
+
+# Every arm that produced a checkpoint contributes to the comparison, so probe
+# the largest step that all of them share rather than each arm's own last step.
+common_step() {
+  local shared=""
+  local dir arm_steps
+  for dir in "$@"; do
+    [[ -d "$dir" ]] || continue
+    arm_steps=$(ls -1 "$dir" 2>/dev/null | grep -E '^[0-9]+$' | sort -n)
+    [[ -n "$arm_steps" ]] || continue
+    if [[ -z "$shared" ]]; then
+      shared="$arm_steps"
+    else
+      shared=$(comm -12 <(printf '%s\n' "$shared") <(printf '%s\n' "$arm_steps"))
+    fi
+  done
+  printf '%s\n' "$shared" | grep -E '^[0-9]+$' | sort -n | tail -1
 }
 
 wait_for_finish() {
@@ -39,18 +58,12 @@ wait_for_finish
 A_STEP=$(latest_step "$A_DIR")
 B_STEP=$(latest_step "$B_DIR")
 C_STEP=$(latest_step "$C_DIR")
-echo "[$(date -u +%H:%M:%S)] training stopped; final steps A=$A_STEP B=$B_STEP C=${C_STEP:-none}" | tee -a "$LOG"
+D_STEP=$(latest_step "$D_DIR")
+echo "[$(date -u +%H:%M:%S)] training stopped; final steps A=$A_STEP B=$B_STEP " \
+     "C=${C_STEP:-none} D=${D_STEP:-none}" | tee -a "$LOG"
 
-# The arms must be compared at the same step, otherwise the probe is not paired.
-# Arm C is skipped by the probe when it has no checkpoint at that step.
-STEP="$A_STEP"
-if [[ "$A_STEP" != "$B_STEP" ]]; then
-  STEP=$(printf '%s\n%s\n' "$A_STEP" "$B_STEP" | sort -n | head -1)
-  echo "[$(date -u +%H:%M:%S)] step mismatch; probing the common step $STEP" | tee -a "$LOG"
-fi
-if [[ -n "$C_STEP" && -n "$STEP" && "$C_STEP" != "$STEP" ]]; then
-  echo "[$(date -u +%H:%M:%S)] arm C finished at $C_STEP, not $STEP; it will be skipped" | tee -a "$LOG"
-fi
+STEP=$(common_step "$A_DIR" "$B_DIR" "$C_DIR" "$D_DIR")
+echo "[$(date -u +%H:%M:%S)] probing every arm at the shared step $STEP" | tee -a "$LOG"
 if [[ -z "$STEP" ]]; then
   echo "[$(date -u +%H:%M:%S)] no checkpoints found; skipping probe" | tee -a "$LOG"
   exit 1
@@ -67,7 +80,7 @@ from pathlib import Path
 
 out = Path(sys.argv[1])
 entries = {}
-for name in ("basetrue", "base", "a", "b", "c"):
+for name in ("basetrue", "base", "a", "b", "c", "d"):
     path = out / f"robotwin_ab_{name}.json"
     entries[name] = json.loads(path.read_text()) if path.exists() else None
 
@@ -89,10 +102,11 @@ label = {
     "a": "arm A (Con1)",
     "b": "arm B (Con1+Con2+ctx)",
     "c": "arm C (Con1+action-cond)",
+    "d": "arm D (Con1+head 5x LR)",
 }
 flows = {}
 print("=" * 68)
-for name in ("basetrue", "base", "a", "b", "c"):
+for name in ("basetrue", "base", "a", "b", "c", "d"):
     mean, std = series(entries[name], "flow")
     rms, _ = series(entries[name], "correction_rms")
     if mean is None:
@@ -114,6 +128,10 @@ if "base" in flows and "c" in flows:
     print(f"arm C vs base        : {(flows['c'] / flows['base'] - 1) * 100:+.2f}%")
 if "a" in flows and "c" in flows:
     print(f"arm C vs arm A       : {(flows['c'] / flows['a'] - 1) * 100:+.2f}%")
+if "base" in flows and "d" in flows:
+    print(f"arm D vs base        : {(flows['d'] / flows['base'] - 1) * 100:+.2f}%")
+if "a" in flows and "d" in flows:
+    print(f"arm D vs arm A       : {(flows['d'] / flows['a'] - 1) * 100:+.2f}%")
 
 # Paired t statistic over the shared per-batch records, which is what decides
 # whether the difference is real at this budget. Each record carries one entry
@@ -130,7 +148,7 @@ def per_batch(entry):
     return [record.get(key) for record in records]
 
 for left, right in (("a", "base"), ("b", "base"), ("b", "a"), ("c", "base"), ("c", "a"),
-                    ("a", "basetrue"), ("base", "basetrue")):
+                    ("d", "base"), ("d", "a"), ("a", "basetrue"), ("base", "basetrue")):
     lv, rv = per_batch(entries[left]), per_batch(entries[right])
     if not lv or not rv or len(lv) != len(rv):
         continue

@@ -42,21 +42,28 @@ def mask_action_updates(tree, *, freeze_before=14, depth=18, freeze_all=False):
     return jax.tree_util.tree_map_with_path(mask, tree)
 
 
-def scale_group_updates(tree, step, *, warmup=2000, fusion_multiplier=1., action_multiplier=.1):
+def scale_group_updates(tree, step, *, warmup=2000, fusion_multiplier=1., action_multiplier=.1,
+                        head_multiplier=1.):
     """Relative to Adam's 1e-5 LR: head 1e-5, fusion 1e-5/5e-6,
     alpha 1e-6, upper action blocks and output at `action_multiplier`.
+
+    `head_multiplier` raises the anchored-delta head above the global schedule.
+    Head-only training on the cached features reaches a held-out delta NMSE of
+    0.737 in 3,000 steps at lr 1e-4, while the jointly trained head sits at 0.82
+    after ~8,000 steps at the model's effective 2e-5: the head is undertrained,
+    and this is the knob that fixes it without touching the base policy.
     """
     def scale(path, value):
         names = _names(path)
         if "con1_delta_head" in names or "con2_refine" in names:
             # The Con2 refiner is a small residual MLP on top of the head and
             # shares the head's learning-rate factor.
-            factor = 1.
+            factor = head_multiplier
         elif "con1_cross_attention" in names:
             factor = .1 if "alpha_logit" in names else fusion_multiplier * jnp.where(step < warmup, 1., .5)
         elif "con2_refine" in names:
             # Con2 delta refinement trains at the same rate as the Con1 head.
-            factor = 1.
+            factor = head_multiplier
         elif "action_out_proj" in names or ("PaliGemma" in names and "llm" in names):
             factor = action_multiplier
         else:

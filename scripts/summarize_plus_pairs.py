@@ -87,12 +87,13 @@ def main() -> None:
     print("-" * len(header))
     report = {"candidate": args.candidate, "reference": args.reference,
               "paired": len(keys), "categories": {}, "difficulties": {}}
-    for label, field in (("category", "category"), ("difficulty", "difficulty_level")):
+    for label, field, key in (("category", "category", "categories"),
+                              ("difficulty", "difficulty_level", "difficulties")):
         for name, bucket in sorted(group(keys, cand, ref, field).items(), key=lambda kv: str(kv[0])):
             text = line(f"{label}: {name}", bucket, cand, ref)
             if text:
                 print(text)
-                report[f"{label}s"][str(name)] = {
+                report[key][str(name)] = {
                     "n": len(bucket),
                     "candidate": sum(bool(cand[k].get("success")) for k in bucket),
                     "reference": sum(bool(ref[k].get("success")) for k in bucket),
