@@ -16,18 +16,29 @@ Two readings were possible:
 
 ## The measurement
 
-One structural fact about the release matters for reading every number below.
-RoboTwin 2.0 ships **2,500 episodes spread over 2,410 distinct tasks** (checked
-directly in `meta/tasks.jsonl` / `meta/episodes.jsonl`; the largest task has 6
-episodes, and the median is 1). LIBERO, where the same head reaches 0.47, has
-1,693 episodes over 40 tasks, i.e. ~42 episodes per task. So the RoboTwin head is
-being asked to predict the future for an almost entirely novel task on every
-sample: there is nothing to memorise, and the held-out split is effectively a
-held-out **task** split.
+**Correction (2026-09-12).** An earlier version of this section claimed the
+release has "2,410 distinct tasks, median 1 episode each, so the split is
+effectively a held-out task split". That was wrong. `info.json`'s
+`total_tasks: 2410` counts **distinct instruction strings**, and the strings are
+paraphrases of the same task:
 
-That makes the absolute level (0.66-0.71) much less damning than it first looks,
-and it does not rescue the head-versus-linear comparison, because the linear
-probe faces exactly the same task distribution.
+```
+Pick the bottle with ridges near base head-up using the left arm
+Raise the plastic drink bottle from the table using the correct arm, the left arm.
+Use the left arm to pick the hand-sized soda bottle up and keep it head-up.
+```
+
+Three phrasings of one behaviour. So there is no evidence for "one episode per
+task", none for the held-out split being a task split, and none for the 42x
+per-task data gap against LIBERO that the claim implied. The release does not
+expose a task identity anywhere - `meta/tasks.jsonl` and `meta/episodes.jsonl`
+carry only instructions, and the raw v3 layout has no per-task directories - so
+the true task count is **not pinned** from what is on disk. The JEPA-WAM paper
+uses 20 RoboTwin tasks; the release covers more.
+
+What survives: the head-versus-linear comparison, because both are measured on
+exactly the same data. What does not survive is any claim that the absolute NMSE
+is explained by task-level novelty.
 
 `scripts/probe_robotwin_latent_ceiling.py` fits ridge regression on the cached
 features (same cache the training reads) and reports the same NMSE. Features:
