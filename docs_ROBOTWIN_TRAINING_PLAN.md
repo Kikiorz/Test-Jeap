@@ -176,3 +176,27 @@ while pgrep -f "^[^ ]*/python -u scripts/train\.py" >/dev/null; do sleep 60; don
 
 另外：启动后台任务时**不要把调试用的 pgrep/ps 关键字写进同一条 `bash -c`**；
 要写就写进独立的一行命令里。
+
+## 9. 为什么 arm D 的学习率放大是安全的（对照历史失败）
+
+`docs_CON1_3STAGE_TRAINING.md` 记录过一次失败：把所有组统一放大 10 倍后，
+`con1_b128_lr10x_floww_17k_from1k` **在第 91 次更新被手动停止**——residual 分支无界
+增长（`con1_residual_energy` 从 5.7e-5 到 4.9e-3，约每 10 步翻一倍），当时的
+fusion LR 是 **3e-4**，而 `con1_residual_weight=1e-3` 太弱，**没有任何东西约束修正量**。
+文档的结论是"统一放大一个数量级对当前 residual 参数化过于激进"。
+
+arm D 与那次实验有两处根本不同：
+
+| | 10x 失败实验（LIBERO） | arm D（RoboTwin） |
+|---|---|---|
+| fusion LR | 3e-4 | **2e-5 / 1e-5**（未改动） |
+| head LR | 1e-4 | 1e-4 |
+| 修正量约束 | 无（residual_weight 太弱） | **`con1_residual_budget=0.05` 硬上限** |
+
+而且这个上限是**实测有效**的：arm A 跑满 15000 步，`con1_residual_energy` 稳定在
+0.237–0.28，从未发散。所以 arm D 是一次"定向放大"，恰好避开了当初杀死 10x 实验的
+机制。
+
+**监测判据**：D 训练时如果 `con1_residual_energy` 开始**持续上升**（尤其每 ~10 步
+翻倍那样的斜率），那就是同一个失败模式重现，应当停机——注意训练器的非有限值守卫
+**不会**触发（当初所有值都是有限的，是人手动停的）。
