@@ -21,6 +21,17 @@ def anchored_example(r, states, frame, horizon):
 def split_episodes(episodes, *, fraction=.1, seed=42):
     if not 0 < fraction < 1 or len({e["id"] for e in episodes}) != len(episodes):
         raise ValueError("Invalid validation fraction or duplicate episode IDs")
+    tasks = {e["task_id"] for e in episodes}
+    if len(episodes) / max(len(tasks), 1) < 2:
+        # Task-level holdout is impossible when a dataset has roughly one episode
+        # per task: the RoboTwin release carries ~2,400 instruction strings for
+        # ~2,500 episodes, so holding out "a task" would hold out everything.
+        # Fall back to a seeded episode-level holdout, which is still disjoint.
+        rng = np.random.default_rng(np.random.SeedSequence([seed, "episode-level"]))
+        ids = np.asarray(sorted(e["id"] for e in episodes))
+        heldout = set(rng.permutation(ids)[:max(1, round(len(ids) * fraction))].tolist())
+        return ([e for e in episodes if e["id"] not in heldout],
+                [e for e in episodes if e["id"] in heldout])
     heldout = set()
     for task in sorted({e["task_id"] for e in episodes}):
         ids = sorted(e["id"] for e in episodes if e["task_id"] == task)
