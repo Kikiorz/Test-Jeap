@@ -1322,7 +1322,10 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             discrete_state_input=False,
-            action_horizon=50,
+            # 16-step chunks: the horizon is not encoded in the released weights, and
+            # 50-step chunks would make each training step ~3x slower. The Con1
+            # latent cache is horizon-agnostic, so this costs no extra caching.
+            action_horizon=16,
             use_vjepa_aux=True,
             vjepa_num_queries=64,
             vjepa_query_grid_size=8,
@@ -1396,7 +1399,10 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             discrete_state_input=False,
-            action_horizon=50,
+            # 16-step chunks: the horizon is not encoded in the released weights, and
+            # 50-step chunks would make each training step ~3x slower. The Con1
+            # latent cache is horizon-agnostic, so this costs no extra caching.
+            action_horizon=16,
             use_vjepa_aux=True,
             # Shape-matched against the released RoboTwin JEPA-WAM checkpoint:
             # vjepa_query_tokens is (64, 2048) and the alignment output is 1408,
@@ -2087,7 +2093,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=16,
+            action_horizon=50,
         ),
         data=RLDSDroidDataConfig(
             repo_id="droid",
@@ -2121,7 +2127,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,  # pi05 is trained with 32-dim actions
-            action_horizon=16,
+            action_horizon=50,
         ),
         data=LeRobotDROIDDataConfig(
             # Replace with your custom DROID LeRobot dataset repo id.
