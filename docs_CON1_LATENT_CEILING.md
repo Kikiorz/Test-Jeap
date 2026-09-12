@@ -68,6 +68,7 @@ with its own schedule (CPU only, so the running arms keep the GPUs):
 | jointly trained head, arm A @ ~8k steps | 0.820 (train batches) |
 | head-only, random init, step 0 | 1.000 |
 | head-only, 3,000 steps @ lr 1e-4 | **0.737** (held-out episodes) |
+| head-only, 4,000 steps @ lr 1e-4 | 0.714 (still falling slowly) |
 | linear ridge ceiling | 0.659 |
 
 So a head with an identical architecture but a schedule of its own drops from
@@ -78,6 +79,21 @@ receives its signal only through a weighted sum with the action flow term.
 
 Longer head-only runs (12k steps @ 1e-4 and 6k @ 3e-4) are queued to find out
 whether it closes the remaining gap to the 0.659 linear ceiling.
+
+Early answer from those runs: at 4,000 steps both schedules sit at ~0.71 and are
+falling by only ~0.01 per 1,000 steps, so the head appears to plateau **above**
+the linear ceiling. That splits the diagnosis in two:
+
+* the head really is undertrained in the joint run (0.82 -> 0.71 is available
+  almost for free), and
+* even with its own schedule the attention head is no better than a linear map
+  on `[z_t, pooled r_t]`, which is exactly the case `con1_direct_readout` exists
+  for.
+
+Arm D (the learning-rate fix) is still the right first step: it is one line, it
+targets the larger of the two gaps, and it avoids adding the readout's ~424M
+parameters before we know whether a better latent predictor buys any action
+accuracy at all.
 
 Implication for the next arm: warm the head up on the cache before joint
 training, the way the LIBERO recipe does, instead of asking the joint objective
