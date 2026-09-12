@@ -6,7 +6,14 @@ set -euo pipefail
 ROOT="${ROOT:-/workspace/ts_JEPA_robotwin}"
 cd "$ROOT"
 
-DATASET="${DATASET:-/workspace/robotwin2/RoboTwin_v21}"
+# Both stages read the inline-image copy. The video dataset needs a torchcodec
+# AV1 decode per camera per episode, which measured ~8 episodes/min against ~29
+# for the inline JPEGs, and RoboTwin v2.1 stores one video per episode rather
+# than the per-chunk layout the loader expects. Set DATASET to
+# /workspace/robotwin2/RoboTwin_v21 only if the inline copy is unavailable; the
+# states cache identity follows DATASET, so a rebuild against a different copy
+# must go to a fresh STATES directory.
+DATASET="${DATASET:-/workspace/robotwin2/RoboTwin_v21_inline}"
 POLICY_CKPT="${POLICY_CKPT:-/workspace/artifacts/models/jepa_wam_pi05_robotwin_publish/pi05_robotwin_clean_20_vjepa_aux/19999}"
 VJEPA_ROOT="${VJEPA_ROOT:-/workspace/vjepa2}"
 VJEPA_CKPT="${VJEPA_CKPT:-$VJEPA_ROOT/vjepa2_1_vitg_384.pt}"
