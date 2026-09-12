@@ -729,7 +729,7 @@ _CONFIGS = [
         name="pi05_bridge",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotBridgeDataConfig(
-            repo_id="/workspace/data/bridge_orig_lerobot",
+            repo_id="local/bridge_orig_lerobot",
             assets=AssetsConfig(assets_dir="/workspace/assets", asset_id="bridge"),
             base_config=DataConfig(prompt_from_task=True),
         ),
