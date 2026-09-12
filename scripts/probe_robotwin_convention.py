@@ -88,8 +88,18 @@ def main() -> None:
     def fit(raw_values, norm_values):
         x = raw_values.reshape(-1, physical)
         y = norm_values.reshape(-1, physical)
-        scale = np.array([np.polyfit(x[:, d], y[:, d], 1)[0] for d in range(physical)], np.float32)
-        shift = np.array([np.polyfit(x[:, d], y[:, d], 1)[1] for d in range(physical)], np.float32)
+        keep = np.isfinite(x).all(axis=1) & np.isfinite(y).all(axis=1)
+        x, y = x[keep], y[keep]
+        if len(x) < 2:
+            raise ValueError("not enough finite samples to fit the normalisation map")
+        scale = np.ones(physical, np.float32)
+        shift = np.zeros(physical, np.float32)
+        for d in range(physical):
+            if np.ptp(x[:, d]) < 1e-9:
+                continue
+            design = np.stack([x[:, d], np.ones(len(x))], axis=1)
+            solution, *_ = np.linalg.lstsq(design, y[:, d], rcond=None)
+            scale[d], shift[d] = solution
         residual = float(np.abs((x * scale + shift) - y).max())
         return scale, shift, residual
 
