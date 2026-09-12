@@ -20,6 +20,7 @@ import pyarrow.parquet as pq
 
 from precompute_vjepa_pair_targets import (
     decode_image,
+    decode_video,
     ensure_contract,
     input_path,
     load_target_encoder,
@@ -163,10 +164,23 @@ def process_episode(args, info, episode, model, device):
     states = np.empty((length, dim), dtype=np.float16)
     with torch.inference_mode():
         for view, key in enumerate(args.image_keys):
-            rows = table[key].to_pylist()
+            if key in table.column_names:
+                rows = table[key].to_pylist()
+                images = None
+            else:
+                # LeRobot v2.1 may store frames as one video per episode instead
+                # of inline images (our converted RoboTwin dataset does).
+                video_path = (args.dataset_root / "videos" / f"chunk-{index // 1000:03d}" / key
+                              / f"episode_{index:06d}.mp4")
+                images = decode_video(video_path, length)
+                rows = None
             for start in range(0, length, args.batch_size):
                 end = min(start + args.batch_size, length)
-                frames = np.stack([preprocess_image(decode_image(row, args.dataset_root)) for row in rows[start:end]])
+                if images is not None:
+                    frames = np.stack([preprocess_image(image) for image in images[start:end]])
+                else:
+                    frames = np.stack([preprocess_image(decode_image(row, args.dataset_root))
+                                       for row in rows[start:end]])
                 video = torch.from_numpy(np.stack((frames, frames), axis=2)).to(device, dtype=torch.bfloat16)
                 output = model(video)
                 if isinstance(output, list):
@@ -228,4 +242,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

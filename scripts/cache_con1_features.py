@@ -135,7 +135,19 @@ def worker(args):
             continue
         chunk = eid // int(json.loads((args.dataset/'meta/info.json').read_text()).get('chunks_size',1000))
         source = args.dataset/'data'/f'chunk-{chunk:03d}'/f'episode_{eid:06d}.parquet'
-        table = pq.read_table(source, columns=[*args.image_keys,'state','frame_index','episode_index','task_index'])
+        schema_names = pq.read_schema(source).names
+        video_layout = any(key not in schema_names for key in args.image_keys)
+        if video_layout:
+            # Frames live in one mp4 per episode (LeRobot v2.1 video layout), so
+            # only the tabular columns come from the parquet.
+            table = pq.read_table(source, columns=['state','frame_index','episode_index','task_index'])
+            from precompute_vjepa_pair_targets import decode_video
+            decoded = {}
+            for key in args.image_keys:
+                video_path = (args.dataset/'videos'/f'chunk-{chunk:03d}'/key/f'episode_{eid:06d}.mp4')
+                decoded[key] = decode_video(video_path, length)
+        else:
+            table = pq.read_table(source, columns=[*args.image_keys,'state','frame_index','episode_index','task_index'])
         samples = table.to_pylist()
         if len(samples) != length or any(row['episode_index'] != eid or row['frame_index'] != i for i,row in enumerate(samples)):
             raise ValueError('Parquet frame ordering/episode mismatch')
@@ -146,10 +158,12 @@ def worker(args):
         for offset in range(0, length, args.batch_size):
             batch = samples[offset:offset+args.batch_size]
             transformed = [policy._input_transform({
-                **{f'observation/{key}':np.asarray(decode_image(row[key],args.dataset)) for key in args.image_keys},
+                **{f'observation/{key}':(np.asarray(decoded[key][offset+index])
+                                         if video_layout else np.asarray(decode_image(row[key],args.dataset)))
+                   for key in args.image_keys},
                 'observation/state':np.asarray(row['state'],dtype=np.float32),
                 'prompt':tasks[row['task_index']],
-            }) for row in batch]
+            }) for index, row in enumerate(batch)]
             valid = len(transformed)
             transformed += [transformed[-1]] * (args.batch_size-valid)
             values = jax.tree.map(lambda *xs:jnp.asarray(np.stack(xs)), *transformed)
