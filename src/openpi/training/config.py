@@ -783,11 +783,11 @@ _CONFIGS = [
         ),
         batch_size=64,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1000, peak_lr=5e-5, decay_steps=60_000, decay_lr=5e-5),
+            warmup_steps=1000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-5),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
-        num_train_steps=60_000,
+        num_train_steps=30_000,
     ),
     TrainConfig(
         # pi0.5 fine-tuned for the SimplerEnv WidowX (Bridge) evaluation. Same
@@ -908,7 +908,7 @@ _CONFIGS = [
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1000, peak_lr=5e-5, decay_steps=60_000, decay_lr=5e-5),
+            warmup_steps=1000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-5),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
