@@ -74,6 +74,10 @@ def source_identity(root):
     return h.hexdigest()
 
 
+POLICY_IMAGE_KEYS = ["observation/image", "observation/wrist_image",
+                    "observation/wrist_image_right"]
+
+
 def paths(args, eid):
     root = args.output/'episodes'
     return root/f'{eid:06d}_r.npy', root/f'{eid:06d}_z.npy', root/f'{eid:06d}.json'
@@ -166,9 +170,9 @@ def worker(args):
         for offset in range(0, length, args.batch_size):
             batch = samples[offset:offset+args.batch_size]
             transformed = [policy._input_transform({
-                **{f'observation/{key}':(np.asarray(decoded[key][offset+index])
-                                         if video_layout else np.asarray(decode_image(row[key],args.dataset)))
-                   for key in args.image_keys},
+                **{policy_key:(np.asarray(decoded[key][offset+index])
+                               if video_layout else np.asarray(decode_image(row[key],args.dataset)))
+                   for policy_key, key in zip(POLICY_IMAGE_KEYS, args.image_keys)},
                 'observation/state':np.asarray(row[state_key],dtype=np.float32),
                 'prompt':tasks[row['task_index']],
             }) for index, row in enumerate(batch)]
