@@ -20,7 +20,9 @@ BATCH="${BATCH:-64}"
 
 printf '[%s] waiting for videos (%s needed)\n' "$(date -u +%H:%M:%S)" "$VIDEOS_TOTAL"
 while :; do
-  v=$(ls /workspace/data/libero_plus_lerobot/videos/*/observation.images.*/*.mp4 2>/dev/null | wc -l)
+  # `find` rather than a shell glob: once the dataset holds ~23k videos the
+  # expanded argument list exceeds ARG_MAX and `ls` silently returns nothing.
+  v=$(find /workspace/data/libero_plus_lerobot/videos -name '*.mp4' 2>/dev/null | wc -l)
   printf '[%s] videos %s/%s\n' "$(date -u +%H:%M:%S)" "$v" "$VIDEOS_TOTAL"
   [ "$v" -ge "$VIDEOS_TOTAL" ] && break
   sleep 300
