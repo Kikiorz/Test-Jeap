@@ -77,6 +77,29 @@ paired statistics must be recomputed rather than reused.
 
 ## 7. The zero-correction control used to leak a bias (fixed)
 
+## 8. The two "only one path" rows are capped, not clean ablations
+
+Measured on the 15k probe: `a_graft`, `a_only_residual` and `a_only_adapter` all
+report an **identical** `correction_rms` per batch (min 0.461277, max 0.588527,
+mean 0.523766) while their flow losses differ (0.002961 / 0.002967 / 0.002963).
+
+Identical magnitude with different direction is the signature of the
+`residual_budget` cap: once the raw correction exceeds `0.05 x base_rms`, the
+shrink factor pins its RMS to that bound, so only the direction survives. Three
+different parameter manipulations cannot otherwise produce the same RMS to six
+decimals.
+
+Arm A itself sits at **0.4785**, *below* that bound, so its correction is not
+capped. Since each path alone is capped while their sum is not, the two parts
+must partially cancel inside arm A - which is also why removing either one makes
+the flow significantly worse (+5.6% / +5.5%, t = 2.9 / 2.6): you are not removing
+a redundant path, you are unpinning a counterweight.
+
+Consequence for reporting: describe those two rows as "that path pinned at the
+budget cap", not as "only that path active". The primary flow numbers are
+unaffected - they are the same forward pass - but the interpretation of the
+diagnostic rows has to carry this.
+
 `--zero-correction` zeroes the correction at its output projections so the row
 measures the policy with Con1 silenced. It zeroed `out/kernel` and
 `adapter_out/kernel`, but `adapter_out` also carries a **bias**, and the Dense
