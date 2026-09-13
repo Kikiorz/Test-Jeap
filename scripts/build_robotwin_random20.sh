@@ -50,6 +50,11 @@ for task in "${TASKS[@]}"; do
   archive="aloha-agilex_randomized_500.zip"
   local_zip="${CACHE}/${task}/${archive}"
 
+  if grep -q "\"source_task\": \"${task}\"" "${OUT}/meta/episodes.jsonl" 2>/dev/null; then
+    echo "[build] ${task} already in the dataset; skipping before download"
+    continue
+  fi
+
   if [[ ! -f "${local_zip}" ]]; then
     free_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
     if (( free_gb < 8 )); then
