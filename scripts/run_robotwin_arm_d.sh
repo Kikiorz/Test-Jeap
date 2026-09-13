@@ -13,7 +13,7 @@ set -euo pipefail
 
 ROOT="${ROOT:-/workspace/ts_JEPA_robotwin}"
 cd "$ROOT"
-STEPS="${STEPS:-9000}"
+STEPS="${STEPS:-9001}"
 # Keep the same policy as arm C: 12000 is a multiple of 6000, so the shared
 # probe step is preserved while three checkpoints are stored instead of five.
 KEEP_PERIOD="${KEEP_PERIOD:-3000}"

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="${ROOT:-/workspace/ts_JEPA_robotwin}"
-STEPS="${STEPS:-9000}"
+STEPS="${STEPS:-9001}"
 LOG="${LOG:-/workspace/robotwin_cd.log}"
 
 cd "$ROOT"
