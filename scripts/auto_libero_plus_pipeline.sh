@@ -17,20 +17,25 @@ VIDEOS_TOTAL="${VIDEOS_TOTAL:-28694}"
 EXP_NAME="${EXP_NAME:-libero_plus_30k}"
 STEPS="${STEPS:-30000}"
 BATCH="${BATCH:-64}"
+DATASET_ROOT="${DATASET_ROOT:-/workspace/libero_plus_lerobot}"
 
-printf '[%s] waiting for videos (%s needed)\n' "$(date -u +%H:%M:%S)" "$VIDEOS_TOTAL"
+printf '[%s] syncing dataset at %s (%s videos expected)\n' \
+  "$(date -u +%H:%M:%S)" "$DATASET_ROOT" "$VIDEOS_TOTAL"
 while :; do
+  .venv/bin/python -u scripts/fetch_libero_plus_dataset.py \
+    --root "$DATASET_ROOT" --workers 16 >/workspace/dl_pipeline_sync.log 2>&1
   # `find` rather than a shell glob: once the dataset holds ~23k videos the
   # expanded argument list exceeds ARG_MAX and `ls` silently returns nothing.
-  v=$(find /workspace/data/libero_plus_lerobot/videos -name '*.mp4' 2>/dev/null | wc -l)
-  printf '[%s] videos %s/%s\n' "$(date -u +%H:%M:%S)" "$v" "$VIDEOS_TOTAL"
-  [ "$v" -ge "$VIDEOS_TOTAL" ] && break
-  sleep 300
+  v=$(find "$DATASET_ROOT/videos" -name '*.mp4' 2>/dev/null | wc -l)
+  p=$(find "$DATASET_ROOT/data" -name '*.parquet' 2>/dev/null | wc -l)
+  printf '[%s] videos %s/%s parquet %s/14347\n' "$(date -u +%H:%M:%S)" "$v" "$VIDEOS_TOTAL" "$p"
+  [ "$v" -ge "$VIDEOS_TOTAL" ] && [ "$p" -ge 14347 ] && break
+  sleep 120
 done
 
 printf '[%s] computing norm stats\n' "$(date -u +%H:%M:%S)"
 norm_ok=0
-for frames in 200000 100000 50000 20000; do
+for frames in 100000 50000 20000; do
   printf '[%s] norm stats attempt max-frames=%s\n' "$(date -u +%H:%M:%S)" "$frames"
   if CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/compute_norm_stats.py \
       --config-name pi05_libero_plus --max-frames "$frames" \

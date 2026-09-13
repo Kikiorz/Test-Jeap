@@ -20,6 +20,10 @@ import subprocess
 import time
 
 RESOLVE_URL = "https://huggingface.co/datasets/{repo}/resolve/main/{path}"
+# The release declares 14,347 episodes of 1,000 per chunk (LeRobot v2.1), which
+# lets the fallback below regenerate the file list even from an empty directory.
+DEFAULT_EPISODES = 14_347
+DEFAULT_CHUNK_SIZE = 1_000
 
 
 def list_files(repo: str) -> list[str]:
@@ -31,12 +35,18 @@ def list_files(repo: str) -> list[str]:
 def fallback_list(root: pathlib.Path) -> list[str]:
     """Enumerate from local parquet shards when the API is unreachable."""
     files = ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]
-    for chunk_dir in sorted((root / "data").glob("chunk-*")):
-        for parquet in sorted(chunk_dir.glob("episode_*.parquet")):
-            episode = parquet.stem
-            files.append(f"data/{chunk_dir.name}/{episode}.parquet")
-            for view in ("observation.images.front", "observation.images.wrist"):
-                files.append(f"videos/{chunk_dir.name}/{view}/{episode}.mp4")
+    episodes = sorted((root / "data").glob("chunk-*/episode_*.parquet"))
+    if episodes:
+        pairs = [(parquet.parent.name, parquet.stem) for parquet in episodes]
+    else:
+        pairs = [
+            (f"chunk-{index // DEFAULT_CHUNK_SIZE:03d}", f"episode_{index:06d}")
+            for index in range(DEFAULT_EPISODES)
+        ]
+    for chunk, episode in pairs:
+        files.append(f"data/{chunk}/{episode}.parquet")
+        for view in ("observation.images.front", "observation.images.wrist"):
+            files.append(f"videos/{chunk}/{view}/{episode}.mp4")
     return files
 
 
