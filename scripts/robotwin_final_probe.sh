@@ -19,7 +19,12 @@ C_DIR="$CKPT_BASE/pi05_robotwin_con1_actcond_20k/robotwin_c_actcond"
 D_DIR="$CKPT_BASE/pi05_robotwin_con1_headlr_20k/robotwin_d_headlr"
 
 latest_step() {
-  ls -1 "$1" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1
+  # Must not fail on a missing/empty directory: this script runs under
+  # `set -euo pipefail`, and arms C and D legitimately have no checkpoint yet
+  # when the early A/B probe runs. `ls` on a missing path exits 2, which used to
+  # abort the whole probe silently before it printed a single line.
+  [[ -d "$1" ]] || { printf '\n'; return 0; }
+  { ls -1 "$1" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1; } || true
 }
 
 # Every arm that produced a checkpoint contributes to the comparison, so probe
@@ -39,7 +44,9 @@ common_step() {
       shared=$(comm -12 <(printf '%s\n' "$shared") <(printf '%s\n' "$arm_steps"))
     fi
   done
-  printf '%s\n' "$shared" | grep -E '^[0-9]+$' | sort -n | tail -1
+  # `grep` exits 1 when the intersection is empty, which would abort under
+  # `set -e`; the caller handles an empty result via fallback_step.
+  { printf '%s\n' "$shared" | grep -E '^[0-9]+$' | sort -n | tail -1; } || true
 }
 
 # Fallback when the arms share no save step at all: compare at the earliest of
