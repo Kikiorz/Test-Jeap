@@ -119,13 +119,19 @@ in latent quality and not at all in the action:
 | arm | `con1_delta_nmse` @4.5k | flow @4.5k |
 |---|---:|---:|
 | A | ~0.88 | 0.003667 |
-| B | 0.773 (0.7065 by 9k) | 0.003664 (B vs A t = 0.16) |
+| B | 0.773 (0.7065 @9k, **0.6803 @11k**) | 0.003664 (B vs A t = 0.16) |
 
 B has a materially better latent head at equal steps and its action is identical.
 That is the same shape of result arm D would produce if the head is not the
 mediator. Caveat: B changes two things at once (the Con2 refiner *and* the
 whole-prefix context), so it is suggestive rather than a clean single-variable
 test - which is precisely what arm D is for.
+
+By 11k B's head reaches **0.6803**, better than the head trained offline in
+isolation (0.688) and within 0.02 of the linear ceiling (0.659). So if B's 12k
+flow row still matches arm A, "a better latent predictor does not buy action
+accuracy" will rest on a head that is the best latent model produced in this
+project.
 
 It also sharpens what the RoboTwin Con1 gain can and cannot be: the -11.8% flow
 improvement is real, but per (1) it cannot be reaching the action *through latent
