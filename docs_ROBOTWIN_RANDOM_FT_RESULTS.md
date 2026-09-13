@@ -44,6 +44,20 @@ _待填：`summary_robotwin_random20_ft_<step>.tsv` 落地后粘贴。_
 
 ## 5. 怎么读
 
+## 4b. 并行度：渲染是瓶颈，不是越多越好（2026-09-13 夜）
+
+第一次起评测用了 `WORKERS=12`，结果**卡死**：客户端日志 15 分钟只打了 1 条
+`step:`，被 `svulkan2 OIDN Error: invalid handle` 刷屏，`ENV_GPU` 显存涨到
+**96.8 GB / 97.9 GB**——12 个渲染器把一张卡塞满，仿真几乎不前进。同一台机器上
+LIBERO sweep 的 32 个 shard 还在争 GPU 2。
+
+改成 `WORKERS=8` + 把渲染挪到**空闲的 GPU 3**（`POLICY_GPU=1`、`ENV_GPU=3`）后：
+`adjust_bottle/demo_randomized` **25 个 episode 9 分钟跑完**，显存 66 GB。
+
+结论：这套仿真里 SAPIEN 的光追渲染是硬瓶颈，并行度得按**显存**算（每个渲染器
+约 8 GB），不是按 CPU 核数算。另外 suite 是可续跑的（已完成配置按
+`<task>_<cfg>_<step>.txt` 跳过），所以中途换参数重启不会丢已完成的行。
+
 * **Clean 列**：模型在它训练分布内的任务上有没有退化。
 * **Random 列**：这才是这个实验要动的量。
 * 每格 25 个 episode，单任务噪声约 ±10pp，20 个任务合起来每个条件 500 个
