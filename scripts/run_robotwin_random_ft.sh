@@ -10,15 +10,17 @@
 set -euo pipefail
 
 ROOT="${ROOT:-/workspace/robotwin_ws}"
-STEPS="${STEPS:-20000}"
+STEPS="${STEPS:-10000}"
 BATCH="${BATCH:-128}"
 FSDP="${FSDP:-4}"
-NUM_WORKERS="${NUM_WORKERS:-24}"
+NUM_WORKERS="${NUM_WORKERS:-48}"
 EXP="${EXP:-robotwin_random20_ft}"
 LOG="${LOG:-/workspace/robotwin_random_ft.log}"
 CKPT_DIR="${CKPT_DIR:-/workspace/artifacts/checkpoints_robotwin_random}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-2000}"
-KEEP_PERIOD="${KEEP_PERIOD:-10000}"
+# A checkpoint is 31 GB (12 GB params + 19 GB optimizer state) and the box has
+# ~35 GB spare, so nothing is retained beyond the newest one.
+KEEP_PERIOD="${KEEP_PERIOD:-100000}"
 
 cd "$ROOT"
 mkdir -p "$CKPT_DIR"
