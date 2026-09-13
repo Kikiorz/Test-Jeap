@@ -63,6 +63,27 @@ MOTOR_NAMES = [
 
 IMAGE_STRUCT = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
 
+# ``load_dataset("parquet", ...)`` infers features from the arrow schema, and a
+# plain ``struct<bytes, path>`` column would come back as a struct rather than a
+# PIL image. HuggingFace records the declared feature types in this schema
+# metadata key, so the inline frames decode exactly like the LIBERO dataset's.
+HF_FEATURES_METADATA = json.dumps({
+    "info": {
+        "features": {
+            "observation.state": {"_type": "Sequence", "length": 14,
+                                  "feature": {"_type": "Value", "dtype": "float32"}},
+            "action": {"_type": "Sequence", "length": 14,
+                       "feature": {"_type": "Value", "dtype": "float32"}},
+            **{target: {"_type": "Image"} for _, target in CAMERAS},
+            "timestamp": {"_type": "Value", "dtype": "float32"},
+            "frame_index": {"_type": "Value", "dtype": "int64"},
+            "episode_index": {"_type": "Value", "dtype": "int64"},
+            "index": {"_type": "Value", "dtype": "int64"},
+            "task_index": {"_type": "Value", "dtype": "int64"},
+        }
+    }
+})
+
 _ZIP: zipfile.ZipFile | None = None
 
 
@@ -271,6 +292,7 @@ def main() -> None:
                         pa.array([{"bytes": blob, "path": None} for blob in result["images"][target]],
                                  type=IMAGE_STRUCT),
                     )
+                table = table.replace_schema_metadata({"huggingface": HF_FEATURES_METADATA})
 
                 chunk = gid // CHUNK_SIZE
                 (output / "data" / f"chunk-{chunk:03d}").mkdir(parents=True, exist_ok=True)
