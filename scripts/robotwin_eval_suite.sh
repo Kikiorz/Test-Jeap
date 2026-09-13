@@ -43,6 +43,12 @@ if [[ -z "${STEP:-}" ]]; then
 fi
 TRIALS=${TRIALS:-25}
 WORKERS=${WORKERS:-4}
+# A client run can livelock: observed on `adjust_bottle / demo_randomized`, where
+# the sim workers spun at ~30% CPU with every GPU at 0% and the client log froze
+# mid-episode. Without a bound, one hung config stalls the whole 40-config sweep.
+# A healthy random config takes ~15-25 min at 8-12 workers, so 45 min is a
+# generous ceiling; a killed config is recorded as FAILED and retried.
+CLIENT_TIMEOUT=${CLIENT_TIMEOUT:-2700}
 POLICY_GPU=${POLICY_GPU:-0}
 ENV_GPU=${ENV_GPU:-1}
 TRAIN_CONFIG=${TRAIN_CONFIG:-pi05_robotwin_random20_ft}
@@ -104,6 +110,7 @@ for task in "${TASKS[@]}"; do
     fi
     echo "[suite] ${task} / ${cfg} (instruction=${instruction}) trials=${TRIALS} workers=${WORKERS}"
     ( cd "$BENCH" && PYTHONPATH="$BENCH" CUDA_VISIBLE_DEVICES="$ENV_GPU" \
+      timeout --signal=TERM --kill-after=120 "$CLIENT_TIMEOUT" \
       "$EVAL_PY" scripts/eval_policy_xpolicylab.py \
         --bench_name RoboTwin \
         --task_name "$task" \
