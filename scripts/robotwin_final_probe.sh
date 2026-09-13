@@ -104,7 +104,7 @@ if [[ -z "$STEP" ]]; then
   exit 1
 fi
 
-STEPS="$STEP" BATCHES="$BATCHES" BATCH_SIZE="$BATCH_SIZE" OUT_DIR="$OUT_DIR" \
+STEP="$STEP" BATCHES="$BATCHES" BATCH_SIZE="$BATCH_SIZE" OUT_DIR="$OUT_DIR" \
   bash "$ROOT/scripts/run_robotwin_ab_probe.sh" 2>&1 | tee -a "$LOG"
 
 python3 "$ROOT/scripts/summarise_robotwin_ab.py" --dir "$OUT_DIR" \
