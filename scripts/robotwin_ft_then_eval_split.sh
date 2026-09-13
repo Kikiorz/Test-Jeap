@@ -30,7 +30,11 @@ REMOTE_LOG_DIR=${REMOTE_LOG_DIR:-/dev/shm/rt_eval_logs}
 REMOTE_RESULTS_DIR=${REMOTE_RESULTS_DIR:-/dev/shm/rt_eval_results}
 
 TRIALS=${TRIALS:-25}
-WORKERS=${WORKERS:-8}
+# Measured on the preview run: a clean episode is ~1.4 min, a randomized one
+# ~6 min (the randomized scenes run the 400-step budget much more often), so 40
+# configs x 25 episodes is ~8.5 h at 8 sims. The box has 192 cores and only the
+# LIBERO sweep (32 shards) is co-resident, so 12 is a safe step up.
+WORKERS=${WORKERS:-12}
 POLICY_GPU=${POLICY_GPU:-1}
 ENV_GPU=${ENV_GPU:-2}
 EXPECT_MIN_STEP=${EXPECT_MIN_STEP:-9999}
