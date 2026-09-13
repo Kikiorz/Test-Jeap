@@ -29,6 +29,31 @@ pre-registered comparisons at alpha = 0.05 (`scripts/robustness_report.py`).
 
 ## Still open
 
+## Outlier robustness of the paired statistics
+
+`scripts/robustness_trim.py` recomputes each comparison after dropping the 5% of
+batches with the highest baseline flow - the hardest episodes, a bias-free trim.
+
+| comparison | full t | after trimming the hardest 5% |
+|---|---:|---:|
+| a_only_residual vs a | +2.84 | **+5.04** |
+| d vs base | -2.66 | -2.95 |
+| b vs base | -2.99 | -2.49 |
+| a vs base | -0.94 | -0.38 |
+| a_grafted vs a | +1.33 | +2.24 |
+
+Two readings that matter:
+
+* The **one mechanism statement that survives Holm correction gets stronger**
+  under trimming (+2.84 -> +5.04), so it is not carried by a few pathological
+  episodes - the hard batches were masking it.
+* **Arm A's null is robust too** (-0.38 on the easier 95%), so it is not an
+  artefact of hard episodes either.
+
+The script also reports a trim by |paired difference|; that column is a
+winner's-curse filter that inflates |t| by construction and must not be quoted as
+evidence of robustness. The docstring and the printed output both say so.
+
 | question | what it needs |
 |---|---|
 | Does any of this hold closed-loop? | the RoboTwin simulator. Everything here is flow loss on the training distribution |
