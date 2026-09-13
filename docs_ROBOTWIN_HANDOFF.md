@@ -50,12 +50,21 @@ evidence that the arms beat the released policy by 98%.
 |---|---|
 | arm A (Con1 livecross, 15k) | **finished** 22:54, best `con1_delta_nmse` 0.737 |
 | arm B (Con1+Con2+ctx, 15k) | running, ~step 6.0k, ETA 01:00-01:30 |
-| arm C (action-conditioned head, 9k) | queued, ~02:50 |
-| arm D (head 5x LR, 9k) | queued, ~04:40 |
-| 10-row paired probe | queued, ~05:35 |
+| arm C (action-conditioned head, 9001) | running, ETA ~03:35 |
+| arm D (head 5x LR, 9001) | queued, ETA ~05:25 |
+| 10-row paired probe | queued, ETA ~06:05 |
 
-Supervisor: `run_robotwin_post.sh` (PID 42017) chains C -> D -> probe. Disk
-122 GB free; four GPUs at ~17.2 GB each.
+Supervisor: `run_robotwin_cd_and_probe.sh` chains C -> D -> probe. Disk 102 GB
+free; four GPUs at ~17.4 GB each.
+
+Two low-level details that cost real time tonight, both worth remembering:
+
+* **9001, not 9000.** `train.py:378` saves on `(step % 1000 == 0)` or
+  `(step == num_train_steps - 1)`. A run of exactly 9000 stops at step 8999, so it
+  produces 3000/6000/8999 and **never 9000**, which would collapse the shared
+  probe step to 6000 and waste the last 3,000 steps of both arms.
+* **The early probe is already collected** in `artifacts/con2/step15k/`; the C/D
+  runner deliberately skips re-running it.
 
 ## 2. Decisions waiting on you
 
