@@ -250,10 +250,23 @@ def main() -> None:
         # The adapter reports mean(correction^2), so this is the correction RMS
         # the budget is actually capping.
         correction_rms = jnp.sqrt(aux["con1_residual_energy"])
-        return jnp.square(error).sum() / count, correction_rms, delta
+        # Per-batch latent NMSE, defined exactly as the training loop defines
+        # con1_delta_nmse (mse / mse of predicting zero). Recorded so the
+        # per-batch action benefit can be correlated with how accurately that
+        # batch's latent was predicted: if accuracy mediates the correction, the
+        # batches it helps most should be the ones it predicts best.
+        anchor = obs.con1_current_latent
+        truth = obs.con1_future_latents - anchor[:, None, :]
+        mask = obs.con1_future_valid[..., None]
+        residual = jnp.where(mask, delta.astype(jnp.float32) - truth, 0.0)
+        zero = jnp.where(mask, truth, 0.0)
+        per_batch = (residual ** 2).sum(axis=(1, 2)) / jnp.maximum(
+            (zero ** 2).sum(axis=(1, 2)), 1e-12)
+        latent_nmse = jnp.mean(per_batch)
+        return jnp.square(error).sum() / count, correction_rms, delta, latent_nmse
 
     flow_run = {budget: jax.jit(functools_partial(flow_of, definition),
-                                out_shardings=(replicated, replicated, replicated))
+                                out_shardings=(replicated, replicated, replicated, replicated))
                 for budget, definition in defs.items()}
 
     records = []
@@ -282,12 +295,13 @@ def main() -> None:
         for budget, run in flow_run.items():
             for name, conditioning in variants.items():
                 with sharding.set_mesh(mesh):
-                    flow, corr_rms, delta = run(params, observation,
-                                                jax.device_put(conditioning, replicated),
-                                                x_t, device["time"], device["mask"], count, device["u_t"])
+                    flow, corr_rms, delta, latent_nmse = run(
+                        params, observation, jax.device_put(conditioning, replicated),
+                        x_t, device["time"], device["mask"], count, device["u_t"])
                 row[f"flow_b{budget}_{name}"] = float(flow)
                 if name == "true":
                     row[f"correction_rms_b{budget}"] = float(corr_rms)
+                    row[f"latent_nmse_b{budget}"] = float(latent_nmse)
         base = row[f"flow_b{args.budgets[0]}_true"]
         for budget in args.budgets:
             row[f"delta_vs_b{args.budgets[0]}_b{budget}"] = (row[f"flow_b{budget}_true"] - base)
