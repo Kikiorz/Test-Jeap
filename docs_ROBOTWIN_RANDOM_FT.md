@@ -138,6 +138,52 @@ ValueError: RESOURCE_EXHAUSTED: ... Failed to write to file
 结果：`/dev/shm` 从 896M 空闲回到 **37G**，够 6000 / 8000 / 10000 三次存档
 （每次写完删掉上一个，收支平衡）。
 
+### 5.4 训练在 step 6000 崩掉，以及从 2000 续训（2026-09-13）
+
+5.3 的处置**不够**：真正致命的不是那次写失败本身，而是它**两小时后才炸**。
+orbax 的异步存档在 09:48 失败后，主线程在 11:49:06 走到 `wait_until_finished`
+时把这个异常重新抛出来：
+
+```
+[E] [process=0][thread=MainThread][step=4000][wait_until_finished] Save Finalize thread (save_finalize) failed.
+  File ".../orbax/checkpoint/checkpoint_manager.py", line 1315, in save
+ValueError: RESOURCE_EXHAUSTED: ... [OS error 28: ENOSPC No space left on device]
+```
+
+训练进程直接退出，GPU 归零。**这时盘上只有 step 2000 的 `params`（12G），它的
+`train_state` 已被 orbax 清理掉**——也就是无法原地 `--resume`。
+
+顺带暴露的第二个问题：链条把「训练进程消失」当成「训练跑完了」，直接拿 step
+2000 去跑评测（smoke 因为仿真还没 staging 而失败）。已修复：链条现在要求
+**step ≥ `EXPECT_MIN_STEP`（默认 9999）且 `params/manifest.ocdbt` 存在**，
+否则报错退出，不会拿半截/陈旧 checkpoint 去评测。
+
+**恢复过程**：
+
+1. `.102` 上还留着搬运时用的**完整 step 2000**（`params` 12G + `train_state`
+   19G）——把它 rsync 回 `.21`（19G @ 14MB/s ≈ 23 分钟）。
+2. 删 `/dev/shm/rt_ft/models/pi05_base`（12G）：`--resume` 时
+   `init_train_state(resume=True)` 根本不会走 weight loader，所以基座权重对续训
+   无用，需要时可以从 HF 重下。
+3. `RESUME=1` 重启，从 step 2000 续，优化器状态完整，学习率调度也接着原曲线。
+
+**踩到的坑（第二次启动失败）**：`HF_HOME` 必须是 `/dev/shm/rt_ft/hf_home`。
+第一次重启用了 `/workspace/.hf_home`（在根盘，只剩 6.5G），`load_dataset("parquet", ...)`
+要重建 arrow 缓存，直接 `OSError: [Errno 28] No space left on device`。用回
+`/dev/shm/rt_ft/hf_home`（22G，缓存命中）后 30 秒内进入训练。
+
+正确的重启命令（在 `/dev/shm/rt_ft/ws` 下）：
+
+```bash
+ROOT=/dev/shm/rt_ft/ws PYTHON=/opt/venv-robotwin/bin/python CKPT_DIR=/dev/shm/rt_ft/ckpt \
+  EXP=robotwin_random20_ft STEPS=10000 BATCH=128 FSDP=4 NUM_WORKERS=48 SAVE_INTERVAL=2000 \
+  RESUME=1 NCCL_PRELOAD=/opt/venv-jepa/lib/python3.11/site-packages/nvidia/nccl/lib/libnccl.so.2 \
+  LOG=/dev/shm/rt_ft/train.log HF_HOME=/dev/shm/rt_ft/hf_home \
+  bash scripts/run_robotwin_random_ft.sh
+```
+
+代价：step 2000→6000 的 4000 步白跑，从 2000 重新走，总计 8000 步 ≈ 8 小时。
+
 链条也据此加固：等训练退出后先等 `*.orbax-checkpoint-tmp-*` 消失，再取最大
 step，并**要求该 step 目录下有 `params/`**，否则直接报错退出，不会拿半截
 checkpoint 去评测。
