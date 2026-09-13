@@ -770,6 +770,25 @@ _CONFIGS = [
         ),
     ),
     TrainConfig(
+        # Same recipe on the subset of LIBERO-Plus episodes whose two camera
+        # videos are already on disk - used for early smoke runs while the full
+        # download finishes.
+        name="pi05_libero_plus_partial",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoPlusDataConfig(
+            repo_id="local/libero_plus_partial",
+            assets=AssetsConfig(asset_id="local/libero_plus_partial"),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-5),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
         # pi0.5 fine-tuned directly on the LIBERO-Plus training data (no Con1):
         # the base that any coupling experiment has to beat. Upstream's pi0.5
         # fine-tuning recipe, but over 40 tasks x perturbation families instead
