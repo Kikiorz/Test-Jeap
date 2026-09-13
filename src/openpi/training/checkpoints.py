@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
+import os
 from typing import Protocol
 
 from etils import epath
@@ -80,9 +81,15 @@ def save_state(
         train_state, params = _split_params(state)
     items = {
         "assets": save_assets,
-        "train_state": train_state,
         "params": {"params": params},
     }
+    # A full openpi train_state (params + AdamW moments + EMA params) is ~42 GiB
+    # for pi0.5, and orbax keeps the previous step alive while the next one is
+    # written, so a save peaks at ~84 GiB of disk. Set OPENPI_SAVE_OPT_STATE=0
+    # to write inference-ready params only, which is what serve_policy.py reads.
+    # The trade-off is that such a checkpoint cannot be used to resume training.
+    if os.environ.get("OPENPI_SAVE_OPT_STATE", "1") != "0":
+        items["train_state"] = train_state
     checkpoint_manager.save(step, items)
 
 
