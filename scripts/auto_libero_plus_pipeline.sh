@@ -11,7 +11,9 @@ cd "$ROOT"
 export PYTHONPATH="$ROOT/src"
 export HF_HOME=/workspace/.hf_home
 export HF_LEROBOT_HOME=/workspace/lerobot_home
-export HF_HUB_OFFLINE=1
+# The dataset sync below talks to the Hugging Face CDN, so keep the hub online;
+# the LeRobot loader reads straight from local disk regardless.
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
 
 VIDEOS_TOTAL="${VIDEOS_TOTAL:-28694}"
 EXP_NAME="${EXP_NAME:-libero_plus_30k}"

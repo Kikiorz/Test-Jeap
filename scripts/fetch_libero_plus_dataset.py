@@ -36,13 +36,15 @@ def fallback_list(root: pathlib.Path) -> list[str]:
     """Enumerate from local parquet shards when the API is unreachable."""
     files = ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]
     episodes = sorted((root / "data").glob("chunk-*/episode_*.parquet"))
-    if episodes:
-        pairs = [(parquet.parent.name, parquet.stem) for parquet in episodes]
-    else:
-        pairs = [
-            (f"chunk-{index // DEFAULT_CHUNK_SIZE:03d}", f"episode_{index:06d}")
-            for index in range(DEFAULT_EPISODES)
-        ]
+    pairs = [(parquet.parent.name, parquet.stem) for parquet in episodes]
+    # A partial mirror only enumerates the shards it already has, so always add
+    # the full declared set as well - otherwise missing parquet files are
+    # invisible and the sync reports a complete dataset that is not.
+    known = {episode for _, episode in pairs}
+    for index in range(DEFAULT_EPISODES):
+        episode = f"episode_{index:06d}"
+        if episode not in known:
+            pairs.append((f"chunk-{index // DEFAULT_CHUNK_SIZE:03d}", episode))
     for chunk, episode in pairs:
         files.append(f"data/{chunk}/{episode}.parquet")
         for view in ("observation.images.front", "observation.images.wrist"):
