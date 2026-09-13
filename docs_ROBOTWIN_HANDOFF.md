@@ -99,6 +99,39 @@ statement is two-part:
 That distinction is what matters for Con2: its premise needs *accuracy to
 translate into action*, and that is the step this experiment shows is missing.
 
+### 1f. Multiple-comparison correction: only two statements survive
+
+Ten rows invite a lot of comparisons and a bare t = -2.99 is not a claim.
+`scripts/robustness_report.py` recomputes the nine comparisons named in
+`docs_ROBOTWIN_READING_THE_TABLE.md` (fixed before the numbers) with
+Holm-Bonferroni at alpha = 0.05, n = 200 paired batches:
+
+| comparison | relative | t | p | Holm threshold | verdict |
+|---|---:|---:|---:|---:|---|
+| a_only_residual vs a | +4.97% | +2.84 | 0.00505 | 0.00625 | **survives** |
+| b vs base | -2.45% | -2.99 | 0.00316 | 0.00556 | **survives** |
+| d vs base | -2.29% | -2.66 | 0.00855 | 0.00714 | not significant |
+| c vs base | -2.10% | -1.80 | 0.0736 | 0.00833 | not significant |
+| b vs a | -1.46% | -1.65 | 0.101 | 0.0100 | not significant |
+| a_only_adapter vs a | +1.27% | +1.43 | 0.154 | 0.0125 | not significant |
+| a_graft vs a | +1.18% | +1.33 | 0.185 | 0.0167 | not significant |
+| d vs a | -1.29% | -1.06 | 0.290 | 0.0250 | not significant |
+| **a vs base** | -1.01% | -0.94 | 0.347 | 0.0500 | **not significant** |
+
+Two readings, both narrower than the raw table suggests:
+
+1. **`b vs base` is a comparison of B's full model against arm A's silenced
+   model**, so the defensible wording is "B beats the silence control". The
+   comparison that would license "Con2 helps over Con1" - `b vs a` - has p =
+   0.101 and does **not** survive.
+2. **`a_only_residual vs a` is the only mechanism statement that survives**:
+   keeping the delta path without the adapter makes things significantly worse,
+   so the delta path alone is insufficient.
+
+And note that **`a vs base` itself is not significant at 9,000 steps**
+(p = 0.347), against t = -7.0 at 4.5k and t = -3.14 at 15k. Any number quoted
+from this table has to carry its step count and its correction.
+
 48 paired batches, same loader, same seed. `base` = arm A with the correction
 silenced, so "vs base" isolates the correction.
 
