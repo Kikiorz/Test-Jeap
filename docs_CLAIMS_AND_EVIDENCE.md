@@ -1,5 +1,38 @@
 # Claims, evidence, and the wording that survives
 
+## Cross-platform correction: on LIBERO the flow proxy under-powers the method
+
+The LIBERO-Plus sweep (`docs_LIBERO_PLUS_RESULTS.md`, same session, other lane)
+finished while this document was being written, and it changes how the RoboTwin
+numbers below should be read.
+
+On LIBERO, *closed-loop* says the method works:
+
+| group | n | candidate | base | delta | p |
+|---|---:|---:|---:|---:|---:|
+| L5 (hardest) | 380 | 47.4% | 41.8% | **+5.5pp** | **0.0086** |
+| overall | 1061 | 73.0% | 70.9% | **+2.2pp** | **0.040** |
+
+The same model's *flow* check does not:
+
+| variant | flow | delta vs base | t |
+|---|---:|---:|---:|
+| Arm A (Con1 only) | 0.016334 | -1.10% | 1.5 |
+| Arm B (Con1 + Con2 + ctx, deployed) | 0.016327 | -1.14% | 1.6 |
+
+**The identical model is a significant +2.2pp closed-loop gain and a
+non-significant -1.1% flow gain.** So flow loss under-powers this method - on a
+platform where the answer is known.
+
+**Consequence for everything below**: every RoboTwin result in this document is a
+*flow* measurement, and they are therefore **lower bounds on resolution**. The
+"no difference" outcomes (all five arms within 0.7pp at 3k; B/C/D/E vs A not
+significant) are real for the flow metric, but they do not rule out
+closed-loop differences of the size LIBERO shows. The honest status of the
+RoboTwin comparison is "not resolved by the metric we have", and the only way to
+settle it is the simulator (see `docs_NEXT_STEPS.md`, option C, whose case this
+result strengthens).
+
 Every number produced in the 2026-09-12/13 RoboTwin session, sorted by whether it
 can actually be claimed. "corrected" means Holm-Bonferroni over the nine
 pre-registered comparisons at alpha = 0.05 (`scripts/robustness_report.py`).
