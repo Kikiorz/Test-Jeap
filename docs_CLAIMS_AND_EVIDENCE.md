@@ -38,6 +38,39 @@ is that accuracy transfers, and accuracy does not track the benefit anywhere.
 
 ## RETRACTED: the "threshold pattern" does not survive two consistency checks
 
+## The finding that dominates everything else: the benefit decays with training
+
+Arm A against its own silence control, at six checkpoints, same 200 batches and
+same seed throughout:
+
+| A checkpoint | benefit vs base | paired t |
+|---|---:|---:|
+| **3,000** | **-14.29%** | **-19.02** |
+| 4,500 (n=48) | -11.77% | -7.0 |
+| **6,000** | **-3.75%** | **-4.67** |
+| 9,000 | -1.01% | -0.94 |
+| **12,000** | **-0.87%** | **-1.05** |
+| 15,000 | -2.91% | -3.14 |
+
+One arm, one measurement protocol, a **16x range** - from an extremely strong
+effect (t = -19) to nothing - driven purely by which checkpoint is scored.
+
+This reframes the whole session:
+
+1. **The correction behaves as a warm-up accelerant.** It is worth 14% while the
+   policy is still poorly trained and almost nothing once the base path has
+   converged; there is simply less left for a residual to fix.
+2. **Every arm comparison in this document was made at step 9,000, which is
+   where the effect is near its minimum (-1.0%).** That is why B, C, D and E all
+   look indistinguishable: at a point where the whole effect is 1%, no
+   modification of it can be resolved.
+3. **Any future variant comparison should be scored early (3k-6k)**, where the
+   effect is 4-14% and the signal-to-noise is an order of magnitude better.
+
+Read together with the three-axis result below, the picture is: the correction's
+benefit is large early, decays as the base converges, and is not explained by the
+latent head's accuracy at any point.
+
 An earlier draft of this document argued that the head only has to reach ~0.81
 NMSE and that further accuracy is worthless, based on a five-arm cross-section.
 That draft was wrong twice over, and both errors are worth recording.
