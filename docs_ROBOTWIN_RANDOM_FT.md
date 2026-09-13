@@ -87,6 +87,26 @@ Clean/Random，与 PACE 表同口径对比。参考点：官方 cotrain（clean-
 
 `scripts/robotwin_ft_then_eval.sh` 会等训练进程退出，取最新 checkpoint，再自动跑完整套。
 
+### 5.2 训练/评测在两台机器上的布局
+
+两台机器都在跑实验，卡不共享；`.21` 的 `/dev/shm` 是 **noexec**，所以凡是需要执行
+`.so` 的东西（venv、curobo、sapien）只能放根盘，数据/checkpoint 放 `/dev/shm`，用软链
+把配置里写死的路径接上：
+
+| 路径 | 指向 | 位置 |
+|---|---|---|
+| `/workspace/robotwin_ws` | `/dev/shm/rt_ft/ws`（openpi 仓库） | 源码在 shm，venv 除外 |
+| `/opt/venv-robotwin` | — | 训练用 venv（`UV_PROJECT_ENVIRONMENT`，根盘，可执行） |
+| `/workspace/data/robotwin_random20_inline` | `/dev/shm/rt_ft/data/...` | 数据集 21 GB |
+| `/workspace/models/pi05_base` | `/dev/shm/rt_ft/models/pi05_base` | 基座 12 GB |
+| checkpoint | `/dev/shm/rt_ft/ckpt` | 31 GB/个，只留最新 |
+
+跨机搬运用 `.21 → .102` 的直连 ssh（把 `.21` 的公钥加进 `.102` 的
+`authorized_keys`），rsync 单流约 15 MB/s，三路并行约 45 MB/s：数据集 21 GB、
+checkpoint 31 GB、基座 12 GB，合计约 1 小时。搬完用
+`RESUME=1 PYTHON=/opt/venv-robotwin/bin/python bash scripts/run_robotwin_random_ft.sh`
+从最新 checkpoint 继续，不丢已训的步数。
+
 ### 5.1 这台机器上踩过的坑（都已解决，写下来省得重装）
 
 | 问题 | 处理 |
