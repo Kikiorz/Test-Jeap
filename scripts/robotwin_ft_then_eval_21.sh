@@ -66,10 +66,20 @@ if [[ -z "$STEP" ]]; then
   ls -la "$CKPT_DIR" | tee -a "$LOG"
   exit 1
 fi
-if [[ ! -d "$CKPT_DIR/$STEP/params" ]]; then
-  log "abort: $CKPT_DIR/$STEP has no params/ (incomplete save)"
+if [[ ! -f "$CKPT_DIR/$STEP/params/manifest.ocdbt" ]]; then
+  log "abort: $CKPT_DIR/$STEP/params has no manifest.ocdbt (incomplete save)"
   ls -la "$CKPT_DIR/$STEP" | tee -a "$LOG"
   exit 1
+fi
+# The trainer exiting is not on its own a reason to evaluate: on 2026-09-13 it
+# died at step 6000 when the step-4000 async save failed, and the chain happily
+# started evaluating the stale step-2000 checkpoint. Only a run that reached the
+# end of the schedule should be evaluated.
+EXPECT_MIN_STEP=${EXPECT_MIN_STEP:-9999}
+if (( STEP < EXPECT_MIN_STEP )); then
+  log "abort: trainer exited at step ${STEP}, expected >= ${EXPECT_MIN_STEP}; it probably crashed"
+  tail -5 /dev/shm/rt_ft/train.log 2>/dev/null | tr '\r' '\n' | tail -5 | tee -a "$LOG"
+  exit 3
 fi
 log "final checkpoint step=${STEP}"
 df -h /dev/shm | tail -1 | tee -a "$LOG"
