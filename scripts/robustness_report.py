@@ -30,6 +30,16 @@ FAMILY = (
     ("a_only_adapter", "a"),
 )
 
+# Arm E was built after the family above was fixed, so its comparisons are
+# corrected within their own family instead of being folded into the original
+# nine. Folding them in would silently move the pre-registered threshold.
+LATE_FAMILY = (
+    ("e", "base"),
+    ("e", "a"),
+    ("e", "b"),
+    ("e", "d"),
+)
+
 
 def parse() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -57,8 +67,13 @@ def main() -> None:
         if values is not None:
             series[name] = values
 
+    report_family(args, series, FAMILY, "pre-registered family")
+    report_family(args, series, LATE_FAMILY, "arm E family (added after the numbers)")
+
+
+def report_family(args, series, family, title) -> None:
     results = []
-    for left, right in FAMILY:
+    for left, right in family:
         if left not in series or right not in series:
             continue
         lv, rv = series[left], series[right]
@@ -74,8 +89,12 @@ def main() -> None:
         results.append({"pair": f"{left} vs {right}", "t": t, "p": p,
                         "relative": (sum(lv) / sum(rv) - 1) * 100, "n": n})
 
+    if not results:
+        print(f"== {title}: no complete comparison available yet\n")
+        return
     results.sort(key=lambda r: r["p"])
     m = len(results)
+    print(f"== {title}")
     print(f"family size {m}, alpha {args.alpha}, Holm-Bonferroni")
     print(f"{'comparison':>22} {'rel':>8} {'t':>7} {'p':>10} {'Holm thresh':>12} verdict")
     rejected = 0
