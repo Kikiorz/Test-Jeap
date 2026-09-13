@@ -101,6 +101,25 @@ translate into action*, and that is the step this experiment shows is missing.
 
 ### 1f. Multiple-comparison correction: only two statements survive
 
+### 1g. Consistency audit of the stored probe files
+
+Every paired comparison reported above assumes the rows share a checkpoint step,
+a batch count and a seed. Checked against the files rather than assumed:
+
+```
+artifacts/con2/hp/         9 files, step=9001, records=200, budgets=[0.05]
+artifacts/con2/hp_shuffle/ 2 files, step=9001, records=200
+                           (shuffle at 0.05, budget020 at 0.2 - that difference
+                            is the point of those two rows)
+```
+
+The seed equality was verified separately at the config level (TrainConfig.seed
+defaults to 42 with no override, and the loader forwards it to the shuffle
+generator). All 13 paths referenced by this document and by
+`docs_CLAIMS_AND_EVIDENCE.md` resolve: the docs are in this branch except
+`docs_ROBOTWIN_CON1_TRAINING.md`, which is on `robotwin`, and the four analysis
+scripts are present both locally and on the box.
+
 Ten rows invite a lot of comparisons and a bare t = -2.99 is not a claim.
 `scripts/robustness_report.py` recomputes the nine comparisons named in
 `docs_ROBOTWIN_READING_THE_TABLE.md` (fixed before the numbers) with
