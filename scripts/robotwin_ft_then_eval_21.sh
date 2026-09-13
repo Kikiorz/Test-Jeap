@@ -138,6 +138,25 @@ fi
 log "full suite: 20 tasks x {clean, random} x ${TRIALS} episodes, ${WORKERS} sims"
 bash "$ROOT/scripts/robotwin_eval_suite.sh" >>"$LOG" 2>&1
 rc=$?
+
+# The suite records "FAILED" for a config whose client died (dropped websocket,
+# simulator crash) rather than aborting the run. Retry those specifically: the
+# suite skips a config whose result file exists, so the failing marker has to be
+# removed first. The summary is append-only and the report takes the last row per
+# (task, config), so a successful retry supersedes the failure.
+SUMMARY_FILE="$RESULTS_DIR/summary_${RUN_NAME}_${STEP}.tsv"
+for attempt in 1 2; do
+  mapfile -t bad < <(grep -P "\tFAILED" "$SUMMARY_FILE" 2>/dev/null | cut -f1,2 | sort -u)
+  if [[ ${#bad[@]} -eq 0 ]]; then break; fi
+  log "retry ${attempt}: ${#bad[@]} failed config(s): ${bad[*]}"
+  for entry in "${bad[@]}"; do
+    task=${entry%%$'\t'*}
+    cfg=${entry##*$'\t'}
+    rm -f "$RESULTS_DIR/${task}_${cfg}_${STEP}.txt"
+  done
+  WORKERS=4 bash "$ROOT/scripts/robotwin_eval_suite.sh" >>"$LOG" 2>&1
+done
+
 log "suite exit=${rc}; summary:"
 cat "$RESULTS_DIR/summary_${RUN_NAME}_${STEP}.tsv" 2>/dev/null | tee -a "$LOG"
 
