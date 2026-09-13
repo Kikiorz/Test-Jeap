@@ -6,6 +6,42 @@ One page. Details live in the linked documents.
 
 ## 1b. FULL TABLE - ten rows at the shared step 9000 (all four arms)
 
+### 1c. HIGH-POWER REPLICATION (n = 200 paired batches, 1600 samples)
+
+Same checkpoints, same step, four times the data. This supersedes the 48-batch
+numbers below wherever they disagree. Files: `artifacts/con2/hp/`.
+
+| row | flow | vs base | paired t vs base | vs A |
+|---|---:|---:|---:|---:|
+| base (Con1 silenced) | 0.002868 | - | - | - |
+| arm A (Con1) | 0.002897 | -1.01% | **-0.94** | - |
+| **arm B (Con1+Con2+ctx)** | 0.002798 | **-2.45%** | **-2.99** | -1.65 |
+| arm C (Con1+action-cond) | 0.002808 | -2.10% | -1.80 | -0.92 |
+| arm D (Con1+head 5x LR) | 0.002803 | -2.29% | **-2.66** | -1.06 |
+| A + offline head | 0.002873 | +0.16% | +0.19 | +1.33 |
+| A, only the delta path | 0.002981 | +3.94% | - | **+2.84** |
+| A, only the adapter | 0.002875 | +0.24% | - | **+1.43 (ns)** |
+
+Four readings, all of which differ from the 48-batch version:
+
+1. **Arm A has no benefit at 9,000 steps** (-1.01%, t = -0.94, n = 1600). Not an
+   underpowered null - a real one.
+2. **No variant is significantly better than arm A** (B -1.65, D -1.06,
+   C -0.92). Which change helps is still unresolved.
+3. Against *base*, B reaches -2.45% (t = -2.99), the closest any row comes to the
+   pre-registered |t| >= 3 bar; D is -2.29% (t = -2.66), C -2.10% (t = -1.80).
+   With ten rows tested, t ~ 3 is not on its own a strong claim.
+4. **The decomposition flips the story**: keeping only the delta path costs
+   +4.97% (t = +2.84, clearly worse), while keeping only the adapter costs
+   +1.27% (t = +1.43, not significant). So **the latent-free adapter carries the
+   benefit** and the delta path only contributes in combination - a sharper
+   version of LIBERO's 58% attribution, and exactly what
+   `docs_LATENT_ACTION_INFORMATION.md` predicts.
+
+**Verdict against the pre-registered rule**: arm D's |t| >= 3 against arm A was
+**not met** (t = -1.06). By the rule fixed before the numbers arrived, "training
+the head properly is the lever" cannot be claimed.
+
 48 paired batches, same loader, same seed. `base` = arm A with the correction
 silenced, so "vs base" isolates the correction.
 
