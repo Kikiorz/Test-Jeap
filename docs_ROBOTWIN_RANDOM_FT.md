@@ -226,6 +226,27 @@ RuntimeError: Batch eval completed zero episodes. skipped_seeds=50
 GPU 1 起、两个配置都出结果写盘，`adjust_bottle` clean 0/1、random 1/1。
 按这个速度，40 个配置 ≈ 4–5 小时。
 
+### 5.6 如果要接着训（拉长步数）
+
+最终 checkpoint 的 `train_state` **不要删**（评测只读 `params`，但删了就只能从基座
+重训）。链条现在保留它。续训命令（在 `/dev/shm/rt_ft/ws` 下）：
+
+```bash
+RESUME=1 STEPS=30000 ROOT=/dev/shm/rt_ft/ws PYTHON=/opt/venv-robotwin/bin/python \
+  CKPT_DIR=/dev/shm/rt_ft/ckpt EXP=robotwin_random20_ft BATCH=128 FSDP=4 NUM_WORKERS=48 \
+  SAVE_INTERVAL=2000 \
+  NCCL_PRELOAD=/opt/venv-jepa/lib/python3.11/site-packages/nvidia/nccl/lib/libnccl.so.2 \
+  LOG=/dev/shm/rt_ft/train.log HF_HOME=/dev/shm/rt_ft/hf_home \
+  bash scripts/run_robotwin_random_ft.sh
+```
+
+注意两点：
+
+* **这是热重启**：`config.lr_schedule` 是按 `num_train_steps` 重建的余弦，把
+  10000 改成 30000 后续训，学习率会从「1 万步余弦的末端」跳回「3 万步余弦在
+  第 1 万步的值」——比原来高。想避免跳变就得自己换 schedule。
+* 存档节奏不变：每次 31G，写完删上一个，`/dev/shm` 里 48G 空闲刚好够周转。
+
 链条也据此加固：等训练退出后先等 `*.orbax-checkpoint-tmp-*` 消失，再取最大
 step，并**要求该 step 目录下有 `params/`**，否则直接报错退出，不会拿半截
 checkpoint 去评测。

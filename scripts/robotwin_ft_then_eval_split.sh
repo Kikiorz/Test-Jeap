@@ -72,8 +72,9 @@ if (( STEP < EXPECT_MIN_STEP )); then
 fi
 log "final checkpoint step=${STEP}"
 
-# The evaluation reads params only; the optimizer state is 19 GB of dead weight.
-rm -rf "$LOCAL_CKPT_DIR/$STEP/train_state" && log "dropped train_state from the final checkpoint"
+# The optimizer state stays on disk. It is 19 GB the evaluation never reads, but
+# it is also the only way to continue this run: deleting it would turn any later
+# "train it longer" into a restart from the base weights.
 
 log "copying params to ${REMOTE}:${REMOTE_CKPT_DIR}/${STEP}"
 "${SSH[@]}" "mkdir -p '${REMOTE_CKPT_DIR}/${STEP}'"
