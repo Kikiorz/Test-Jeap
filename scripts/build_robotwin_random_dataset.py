@@ -280,7 +280,18 @@ def main() -> None:
                 )
                 global_index += length
 
-                record_stats = {"observation.state": _stats(state), "action": _stats(action)}
+                record_stats = {
+                    "observation.state": _stats(state),
+                    "action": _stats(action),
+                    # Scalar bookkeeping columns; the release stores stats for
+                    # them too and some LeRobot paths assume every feature has one.
+                    "timestamp": _stats((frames / FPS).astype(np.float32)[:, None]),
+                    "frame_index": _stats(frames.astype(np.float64)[:, None]),
+                    "episode_index": _stats(np.full((length, 1), gid, dtype=np.float64)),
+                    "index": _stats(np.arange(global_index, global_index + length,
+                                               dtype=np.float64)[:, None]),
+                    "task_index": _stats(np.full((length, 1), task_index, dtype=np.float64)),
+                }
                 for _, target in CAMERAS:
                     if len(image_samples[target]) < args.max_image_stats_frames:
                         from PIL import Image
@@ -337,18 +348,22 @@ def main() -> None:
     with (output / "meta" / "episodes.jsonl").open("w") as stream:
         for record in episode_records:
             stream.write(json.dumps(record) + "\n")
-    with (output / "meta" / "episodes_stats.jsonl").open("w") as stream:
-        for record in episode_stats:
-            stream.write(json.dumps(_jsonify(record)) + "\n")
-
     for _, target in CAMERAS:
         stats = _image_stats(image_samples[target]) if image_samples[target] else None
         for record in episode_stats:
             record["stats"][target] = stats
+    with (output / "meta" / "episodes_stats.jsonl").open("w") as stream:
+        for record in episode_stats:
+            stream.write(json.dumps(_jsonify(record)) + "\n")
+
     global_stats = {
         "observation.state": _aggregate(episode_stats, "observation.state"),
         "action": _aggregate(episode_stats, "action"),
     }
+    global_stats.update({
+        key: _aggregate(episode_stats, key)
+        for key in ("timestamp", "frame_index", "episode_index", "index", "task_index")
+    })
     for _, target in CAMERAS:
         global_stats[target] = _image_stats(image_samples[target])
     (output / "meta" / "stats.json").write_text(
