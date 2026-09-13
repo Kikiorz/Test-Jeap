@@ -17,6 +17,7 @@ DEFAULT_ARMS = {
     "B": "pi05_robotwin_con1con2_ctx_20k/robotwin_b_full",
     "C": "pi05_robotwin_con1_actcond_20k/robotwin_c_actcond",
     "D": "pi05_robotwin_con1_headlr_20k/robotwin_d_headlr",
+    "E": "pi05_robotwin_con1_ctxheadlr_20k/robotwin_e_ctxheadlr",
 }
 
 

@@ -29,6 +29,42 @@ pre-registered comparisons at alpha = 0.05 (`scripts/robustness_report.py`).
 
 ## Still open
 
+## The threshold pattern: the head has to be good enough, and no better
+
+Putting all five arms on one axis (latent NMSE at the shared step versus the
+paired flow loss against the silence control, n = 200):
+
+| arm | `con1_delta_nmse` @9000 | flow | vs base |
+|---|---:|---:|---:|
+| E (ctx + head LR x5) | **0.6141** | 0.002803 | -2.29% |
+| D (head LR x5) | 0.6460 | 0.002803 | -2.29% |
+| B (whole-prefix ctx) | 0.7376 | 0.002798 | -2.45% |
+| C (action-conditioned head) | 0.8031 | 0.002808 | -2.10% |
+| **A (unmodified Con1)** | **0.8443** | **0.002839** | **-1.01%** |
+
+The four arms with NMSE <= 0.81 span a **24% relative range of latent accuracy**
+and their flow losses differ by **0.36%** - i.e. nothing. Crossing from 0.81 to
+0.84 costs 1.30%.
+
+That single pattern accounts for three otherwise separate observations:
+
+1. why three different head changes (B, D, E) all land in the same place - they
+   each cross the threshold and then saturate, and the two levers are not additive;
+2. why Con2 is inert - its whole objective is "predict better", and below the
+   threshold better prediction is worth nothing;
+3. why the within-experiment correlation between benefit and accuracy is zero
+   (r = -0.07) - inside the saturated regime accuracy is irrelevant by
+   construction.
+
+**Design rule it implies**: train the delta head until it is comfortably below
+~0.81 NMSE, then stop spending effort there and spend it somewhere the objective
+still moves.
+
+**Caveats, stated because they matter**: this is five points, the 0.81 cut is a
+post-hoc grouping, and A is the only arm above it - so the "threshold" could be
+an A-versus-everything-else difference. Confirming it would need arms tuned to
+land between 0.80 and 0.85.
+
 ## Arm E: the two head levers are not additive
 
 Arm E combines the two levers that each beat base on their own. The files are
