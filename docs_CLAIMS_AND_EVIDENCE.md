@@ -12,7 +12,7 @@ pre-registered comparisons at alpha = 0.05 (`scripts/robustness_report.py`).
 | **The delta path alone is insufficient** | keeping only the delta path (adapter removed) costs **+4.97%, p = 0.0051**, the only mechanism comparison surviving Holm | "Removing the latent-free adapter while retaining the latent path significantly degrades the objective, so the two paths are not interchangeable." |
 | **The latent head can be made better than linear** | arm D's head reaches **0.646** NMSE against a measured linear ridge ceiling of **0.659** | "The delta head can be trained past the linear predictor fitted on the same features." |
 | **Better latent prediction does not transfer** | arm B +0.107 NMSE and arm D +0.198 NMSE against arm A, both clearing the pre-registered head rule; neither clears the action rule (B vs A p = 0.101, D vs A p = 0.290) | "Substantial improvements in latent-prediction accuracy did not produce a significant action improvement, across two independently modified arms." |
-| **Relaxing the residual cap hurts** | budget 0.05 -> 0.20 makes the correction 3.4x larger and the flow **+60%**, paired **t = +4.18, p = 1.3e-4** (n = 48; the n=200 attempt OOM'd because the probe builds a second model to change the budget) | "The correction is at its useful magnitude; increasing the residual budget degrades the objective." |
+| **Relaxing the residual cap hurts** | budget 0.05 -> 0.20 makes the correction 2.8x larger and the flow **+57.5%**, paired **t = +7.41** at **n = 200** (0.002839 -> 0.004472, same 200 batches) | "The correction is at its useful magnitude; increasing the residual budget degrades the objective." |
 
 ## Refuted or unsupported
 
