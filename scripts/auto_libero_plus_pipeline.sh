@@ -13,7 +13,7 @@ export HF_HOME=/workspace/.hf_home
 export HF_LEROBOT_HOME=/workspace/lerobot_home
 export HF_HUB_OFFLINE=1
 
-VIDEOS_TOTAL="${VIDEOS_TOTAL:-28684}"
+VIDEOS_TOTAL="${VIDEOS_TOTAL:-28694}"
 EXP_NAME="${EXP_NAME:-libero_plus_30k}"
 STEPS="${STEPS:-30000}"
 BATCH="${BATCH:-64}"
@@ -27,9 +27,23 @@ while :; do
 done
 
 printf '[%s] computing norm stats\n' "$(date -u +%H:%M:%S)"
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/compute_norm_stats.py \
-  --config-name pi05_libero_plus --max-frames 200000 >/workspace/norm_libero_plus.log 2>&1 \
-  || { printf 'norm stats failed\n'; tail -20 /workspace/norm_libero_plus.log; exit 1; }
+norm_ok=0
+for frames in 200000 100000 50000 20000; do
+  printf '[%s] norm stats attempt max-frames=%s\n' "$(date -u +%H:%M:%S)" "$frames"
+  if CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/compute_norm_stats.py \
+      --config-name pi05_libero_plus --max-frames "$frames" \
+      >/workspace/norm_libero_plus.log 2>&1; then
+    norm_ok=1
+    break
+  fi
+  printf '[%s] attempt failed, retrying\n' "$(date -u +%H:%M:%S)"
+  tail -5 /workspace/norm_libero_plus.log
+  sleep 60
+done
+if [ "$norm_ok" != "1" ]; then
+  printf '[%s] norm stats failed after all attempts\n' "$(date -u +%H:%M:%S)"
+  exit 1
+fi
 
 printf '[%s] starting %s-step fine-tune\n' "$(date -u +%H:%M:%S)" "$STEPS"
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
