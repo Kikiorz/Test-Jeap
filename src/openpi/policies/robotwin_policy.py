@@ -33,17 +33,36 @@ class RoboTwinInputs(transforms.DataTransformFn):
 
     RoboTwin provides one head camera and two wrist cameras. All three are real
     observations, so unlike LIBERO we do not pad any view with zeros.
+
+    Two spellings occur in practice and both are accepted, because the training
+    pipeline and the RoboTwin evaluation client disagree:
+
+    * training / LeRobot v2.1 datasets: flat ``observation/image`` keys, produced
+      by ``LeRobotRoboTwinDataConfig``'s repack transform;
+    * the RoboTwin simulator client (``XPolicyLab/policy/Pi_05/model.py``):
+      ``{"state": ..., "images": {"cam_high": ...}, "prompt": ...}``, the shape
+      the released RoboTwin pi0.5 config is written against.
     """
 
     model_type: _model.ModelType
 
+    @staticmethod
+    def _image(data: dict, flat_key: str, nested_key: str) -> np.ndarray:
+        if flat_key in data:
+            return _parse_image(data[flat_key])
+        images = data.get("images")
+        if isinstance(images, dict) and nested_key in images:
+            return _parse_image(images[nested_key])
+        raise KeyError(f"missing image: neither '{flat_key}' nor 'images.{nested_key}' is present")
+
     def __call__(self, data: dict) -> dict:
-        base_image = _parse_image(data["observation/image"])
-        left_wrist = _parse_image(data["observation/wrist_image"])
-        right_wrist = _parse_image(data["observation/wrist_image_right"])
+        base_image = self._image(data, "observation/image", "cam_high")
+        left_wrist = self._image(data, "observation/wrist_image", "cam_left_wrist")
+        right_wrist = self._image(data, "observation/wrist_image_right", "cam_right_wrist")
+        state = data["observation/state"] if "observation/state" in data else data["state"]
 
         inputs = {
-            "state": data["observation/state"],
+            "state": state,
             "image": {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": left_wrist,
