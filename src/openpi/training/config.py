@@ -1362,15 +1362,21 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
-        num_train_steps=20_000,
+        # Measured 3.7 s/step at batch 128 on 4 GPUs (fsdp_devices=4, 48 loader
+        # workers, GPUs pinned at 100%), so 10k steps is a night-scale run:
+        # 1.28M samples ~ 2.2 epochs over the 4000 episodes.
+        num_train_steps=10_000,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000, peak_lr=2.5e-5, decay_steps=20_000, decay_lr=2.5e-6,
+            warmup_steps=500, peak_lr=5e-5, decay_steps=10_000, decay_lr=5e-6,
         ),
         save_interval=2_000,
-        keep_period=10_000,
-        log_interval=50,
+        # Only the newest checkpoint is ever kept: one is 31 GB (12 GB params +
+        # 19 GB optimizer state) and the box has ~50 GB to spare.
+        keep_period=100_000,
+        log_interval=20,
         batch_size=128,
-        num_workers=16,
+        num_workers=48,
+        fsdp_devices=4,
         seed=0,
         ema_decay=None,
     ),

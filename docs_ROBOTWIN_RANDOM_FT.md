@@ -59,9 +59,10 @@
 | 基座 | `/workspace/models/pi05_base/params` | 官方 π0.5 base，未被 RoboTwin 见过 |
 | 数据 | `/workspace/data/robotwin_random20_inline` | 上面的随机化集 |
 | 动作块 | `action_horizon=16` | 与本分支其它 RoboTwin 配置一致；推理端从 checkpoint 读回 |
-| batch / 卡 | 128 / 4×GPU，`fsdp_devices=4` | |
-| lr | cosine，warmup 1000，peak **2.5e-5** → 2.5e-6 | openpi 默认；官方 XPolicyLab 配方也是这个默认值 |
-| 步数 | 20,000 | 官方 `pi05_base_aloha_full_sim_*` 用 60k×256；我们按实测步时定 |
+| batch / 卡 | 128 / 4×GPU，`fsdp_devices=4`，48 个 loader worker | 实测 **3.7 s/step**，4 卡利用率 100%（不是数据瓶颈） |
+| lr | cosine，warmup 500，peak **5e-5** → 5e-6 | 步数比官方少一个量级，用更高峰值补偿 |
+| 步数 | 10,000（≈10.3 h） | 官方 `pi05_base_aloha_full_sim_*` 用 60k×256；我们按实测步时定 |
+| checkpoint | 每 2000 步，只保留最新 | 单个 ckpt 31 GB（12 GB 参数 + 19 GB 优化器状态），磁盘只有 ~50 GB |
 
 命令：
 
