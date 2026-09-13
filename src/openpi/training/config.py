@@ -398,9 +398,16 @@ class LeRobotRoboTwinDataConfig(DataConfigFactory):
     The dataset is LeRobot v3.0 with three cameras
     (``observation.images.cam_high``, ``cam_left_wrist``, ``cam_right_wrist``)
     and 14-dimensional bimanual actions/states.
+
+    ``action_key`` is the dataset column holding the action chunk. The
+    v3->v2.1 conversion that produced the older ``*_inline`` datasets renamed
+    the release's ``action`` column to openpi's ``actions``; the randomized set
+    built by ``scripts/build_robotwin_random_dataset.py`` keeps the release's
+    own name, so its config passes ``action_key="action"``.
     """
 
     extra_delta_transform: bool = False
+    action_key: str = "actions"
     vjepa_target_root: str | None = None
     vjepa_mmap_cache_size: int = 16
     vjepa_future_offset: int | None = None
@@ -417,7 +424,7 @@ class LeRobotRoboTwinDataConfig(DataConfigFactory):
             "observation/state": "observation.state",
             # The converted dataset uses openpi's column name (`actions`), as the
             # LIBERO dataset does.
-            "actions": "actions",
+            "actions": self.action_key,
             "prompt": "task",
         }
         if self.vjepa_target_root is not None:
@@ -1342,12 +1349,16 @@ _CONFIGS = [
         ),
         data=LeRobotRoboTwinDataConfig(
             repo_id="/workspace/data/robotwin_random20_inline",
+            # The builder keeps the release's own column names, so the action
+            # chunk lives in `action`, not in openpi's usual `actions`.
+            action_key="action",
             assets=AssetsConfig(
                 assets_dir="/workspace/robotwin_ws/assets/pi05_robotwin_random20",
                 asset_id="robotwin_random20",
             ),
             base_config=DataConfig(
                 prompt_from_task=True,
+                action_sequence_keys=("action",),
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
