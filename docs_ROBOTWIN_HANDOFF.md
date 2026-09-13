@@ -49,10 +49,27 @@ evidence that the arms beat the released policy by 98%.
 | stage | state |
 |---|---|
 | arm A (Con1 livecross, 15k) | **finished** 22:54, best `con1_delta_nmse` 0.737 |
-| arm B (Con1+Con2+ctx, 15k) | running, ~step 6.0k, ETA 01:00-01:30 |
-| arm C (action-conditioned head, 9001) | running, ETA ~03:35 |
-| arm D (head 5x LR, 9001) | queued, ETA ~05:25 |
-| 10-row paired probe | queued, ETA ~06:05 |
+| arm B (Con1+Con2+ctx, 15k) | **finished** 01:05, best `con1_delta_nmse` 0.644 |
+| arm C (action-conditioned head, 9001) | **finished** 03:34, final `con1_delta_nmse` 0.803 |
+| arm D (head 5x LR, 9001) | running, ETA ~05:22 |
+| paired probe at step 9000 | queued, ETA ~06:10 |
+
+Checkpoint steps, read off the live directories: A and B `3000 6000 9000 12000
+14999`, C `3000 6000 9000`, so the shared probe step is **9000** (verified with
+the real directories, not a synthetic set).
+
+Latent quality so far, one row per change made to arm A:
+
+| arm | change vs A | final `con1_delta_nmse` |
+|---|---|---:|
+| A | - | 0.760 (best 0.737) |
+| B | +Con2 refiner + whole-prefix context | **0.644** |
+| C | + action-conditioned head | 0.803 |
+| D | + head LR x5 | pending |
+
+C is worth a sentence: feeding the action chunk into the delta head did **not**
+make the latent prediction any better (0.803, same as arm A's neighbourhood).
+Only B's whole-prefix context moved it.
 
 Supervisor: `run_robotwin_cd_and_probe.sh` chains C -> D -> probe. Disk 102 GB
 free; four GPUs at ~17.4 GB each.
