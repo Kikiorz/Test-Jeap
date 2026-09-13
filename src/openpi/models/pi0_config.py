@@ -85,6 +85,11 @@ class Pi0Config(_model.BaseModelConfig):
     # Add the direct pooled linear readout to the delta head. Off by default so
     # checkpoints from the earlier head structure keep restoring.
     con1_direct_readout: bool = False
+    # Control for "does the correction read the latent at all?": rotate the
+    # predicted delta across the batch before it reaches the cross-attention, so
+    # the correction still sees a delta of the same shape and scale but from a
+    # different sample. No parameters change, so any checkpoint loads unchanged.
+    con1_shuffle_delta: bool = False
     # Feed the pooled full VLM prefix (image patches, language, state) into the
     # delta head alongside the predictive queries.
     con1_vlm_context: bool = False

@@ -92,6 +92,7 @@ class Pi0(_model.BaseModel):
         self.con1_residual_weight = config.con1_residual_weight
         self.con1_action_dims = config.con1_action_dims
         self.con1_action_conditioning = config.con1_action_conditioning
+        self.con1_shuffle_delta = config.con1_shuffle_delta
         self.con1_action_conditioning_source = config.con1_action_conditioning_source
         if self.con1_action_conditioning_source not in ("demonstration", "estimate"):
             raise ValueError("con1_action_conditioning_source must be 'demonstration' or 'estimate'")
@@ -398,6 +399,10 @@ class Pi0(_model.BaseModel):
     def _con1_context(self, observation, action_chunk=None):
         context, r_tokens, vlm_context = self._con1_prefix(observation)
         delta = self._con1_delta(r_tokens, observation.con1_current_latent, action_chunk, vlm_context)
+        if self.con1_shuffle_delta:
+            # Control: same shape, same scale, wrong sample. If the flow does not
+            # move, the correction is not reading the latent's content.
+            delta = jnp.roll(delta, 1, axis=0)
         return context, delta
 
     def _con1_velocity(self, observation, x_t, time, context, delta):

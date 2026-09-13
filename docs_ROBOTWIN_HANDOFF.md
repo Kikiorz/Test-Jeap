@@ -71,6 +71,34 @@ Four independent lines now agree: this measurement, the Delta z action-informati
 probe (R^2 0.033), the gradient-alignment measurement (orthogonal directions), and
 the decomposition above (the delta-free adapter carries the benefit).
 
+### 1e. Does the correction read the latent at all? Yes - measured
+
+`con1_shuffle_delta` rotates the predicted delta across the batch before the
+cross-attention sees it: same shape, same scale, wrong sample. No parameters
+change, so arm A's checkpoint restores unchanged and the row is directly paired
+with arm A on the same 200 batches.
+
+| row | flow | vs arm A | paired t |
+|---|---:|---:|---:|
+| arm A (real delta) | 0.002839 | - | - |
+| **arm A + shuffled delta** | 0.002941 | **+3.59%** | **+3.55** |
+
+So the correction **does** use the latent's content, significantly. This corrects
+an over-claim in an earlier draft of this document ("the benefits come from a
+delta-free side channel", implying the correction is content-blind). The precise
+statement is two-part:
+
+1. **The correction depends on the latent** - scrambling it costs 3.59% at
+   t = 3.55. Keeping only the adapter costs +1.27% (t = 1.43, ns) while keeping
+   only the delta path costs +4.97% (t = 2.84), so both paths matter and the
+   adapter alone is nearly sufficient.
+2. **Improving the latent's accuracy does not buy action accuracy** - arms B
+   (+0.107 NMSE) and D (+0.198 NMSE) both clear the pre-registered head rule and
+   both fail the action rule.
+
+That distinction is what matters for Con2: its premise needs *accuracy to
+translate into action*, and that is the step this experiment shows is missing.
+
 48 paired batches, same loader, same seed. `base` = arm A with the correction
 silenced, so "vs base" isolates the correction.
 

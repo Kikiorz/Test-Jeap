@@ -91,7 +91,8 @@ def main() -> None:
     print(f"{'difficulty':16s} {'n':>6s} {'success':>8s}")
     for level in sorted(difficulties, key=lambda x: (x is None, x)):
         ok, n = difficulties[level]
-        print(f"L{level:<15} {n:6d} {100 * ok / n:7.1f}%")
+        label = f"L{level}" if level is not None else "unknown"
+        print(f"{label:<16} {n:6d} {100 * ok / n:7.1f}%")
 
     total_ok = sum(v[0] for v in categories.values())
     total_n = sum(v[1] for v in categories.values())
