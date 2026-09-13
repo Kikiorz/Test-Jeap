@@ -14,6 +14,13 @@ pre-registered comparisons at alpha = 0.05 (`scripts/robustness_report.py`).
 | **The latent head can be made better than linear** | arm D's head reaches **0.646** NMSE against a measured linear ridge ceiling of **0.659** | "The delta head can be trained past the linear predictor fitted on the same features." |
 | **Better latent prediction does not transfer** | arm B +0.107 NMSE and arm D +0.198 NMSE against arm A, both clearing the pre-registered head rule; neither clears the action rule (B vs A p = 0.101, D vs A p = 0.290) | "Substantial improvements in latent-prediction accuracy did not produce a significant action improvement, across two independently modified arms." |
 | **Accuracy is not the mediator, measured within the experiment** | per-batch correlation between the correction's benefit and that batch's latent NMSE over 200 batches: **pearson r = -0.066 (p = 0.36)**, spearman -0.064; median split +5.3e-5 vs +5.2e-6, t = +0.77, p = 0.44 | "The correction's benefit is not significantly related to how accurately that sample's latent was predicted." (A directional hint that the better-predicted half benefits ~10x more exists but is not resolvable at this budget.) |
+
+**Accuracy is not the mediator, on any of the three axes we can measure.** The
+within-experiment correlation is zero; across arms the worst latent (C, 0.827)
+gets a better benefit than A (0.774); and across arm A's own training the biggest
+benefit belongs to its worst latent (0.874 at 4.5k, -11.8%). This is the single
+most consistent result of the session and it is what rules Con2 out: its premise
+is that accuracy transfers, and accuracy does not track the benefit anywhere.
 | **Relaxing the residual cap hurts** | budget 0.05 -> 0.20 makes the correction 2.8x larger and the flow **+57.5%**, paired **t = +7.41** at **n = 200** (0.002839 -> 0.004472, same 200 batches) | "The correction is at its useful magnitude; increasing the residual budget degrades the objective." |
 
 ## Refuted or unsupported
@@ -29,41 +36,43 @@ pre-registered comparisons at alpha = 0.05 (`scripts/robustness_report.py`).
 
 ## Still open
 
-## The threshold pattern: the head has to be good enough, and no better
+## RETRACTED: the "threshold pattern" does not survive two consistency checks
 
-Putting all five arms on one axis (latent NMSE at the shared step versus the
-paired flow loss against the silence control, n = 200):
+An earlier draft of this document argued that the head only has to reach ~0.81
+NMSE and that further accuracy is worthless, based on a five-arm cross-section.
+That draft was wrong twice over, and both errors are worth recording.
 
-| arm | `con1_delta_nmse` @9000 | flow | vs base |
+**Error 1 - the NMSE values were single log lines.** `con1_delta_nmse` in
+`metrics.jsonl` is one batch's value, logged every 10 steps, and it is noisy to
+about +-0.03: the same arm reads 0.8192 at step 9031 and 0.8443 at step 9041. A
+single line is not "the arm's NMSE". Using the median of the last 300 logged
+values instead:
+
+| arm | NMSE median (last 300) | NMSE near 9000 | vs base |
 |---|---:|---:|---:|
-| E (ctx + head LR x5) | **0.6141** | 0.002803 | -2.29% |
-| D (head LR x5) | 0.6460 | 0.002803 | -2.29% |
-| B (whole-prefix ctx) | 0.7376 | 0.002798 | -2.45% |
-| C (action-conditioned head) | 0.8031 | 0.002808 | -2.10% |
-| **A (unmodified Con1)** | **0.8443** | **0.002839** | **-1.01%** |
+| A | 0.7739 | 0.8175 | -1.01% |
+| B | 0.6680 | 0.7087 | -2.44% |
+| **C** | **0.8271** | 0.8056 | **-2.09%** |
+| D | 0.6677 | 0.6459 | -2.27% |
+| E | 0.6380 | 0.6157 | -2.27% |
 
-The four arms with NMSE <= 0.81 span a **24% relative range of latent accuracy**
-and their flow losses differ by **0.36%** - i.e. nothing. Crossing from 0.81 to
-0.84 costs 1.30%.
+**Arm C has the *worst* latent of any arm** (0.827, worse than A's 0.774) **and a
+better flow than A** (-2.09% vs -1.01%). The variable that was supposed to
+explain the pattern inverts it.
 
-That single pattern accounts for three otherwise separate observations:
+**Error 2 - arm A's own trajectory contradicts the pattern.** Its NMSE falls
+monotonically across training while its benefit does not:
 
-1. why three different head changes (B, D, E) all land in the same place - they
-   each cross the threshold and then saturate, and the two levers are not additive;
-2. why Con2 is inert - its whole objective is "predict better", and below the
-   threshold better prediction is worth nothing;
-3. why the within-experiment correlation between benefit and accuracy is zero
-   (r = -0.07) - inside the saturated regime accuracy is irrelevant by
-   construction.
+| A checkpoint | NMSE | A vs base |
+|---|---:|---:|
+| 4.5k | 0.8737 | **-11.77%** |
+| 9k | 0.8192 | -1.01% |
+| 15k | 0.7604 | -2.91% |
 
-**Design rule it implies**: train the delta head until it is comfortably below
-~0.81 NMSE, then stop spending effort there and spend it somewhere the objective
-still moves.
-
-**Caveats, stated because they matter**: this is five points, the 0.81 cut is a
-post-hoc grouping, and A is the only arm above it - so the "threshold" could be
-an A-versus-everything-else difference. Confirming it would need arms tuned to
-land between 0.80 and 0.85.
+The largest benefit belongs to the *worst* latent. Whatever drives the
+correction's benefit, it is not the head's accuracy - and that now holds on all
+three axes available: across arms, across training steps, and within the
+experiment (r = -0.07 between per-batch benefit and per-batch NMSE).
 
 ## Arm E: the two head levers are not additive
 
