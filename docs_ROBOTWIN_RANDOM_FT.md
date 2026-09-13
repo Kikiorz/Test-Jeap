@@ -76,3 +76,25 @@ bash scripts/run_robotwin_random_ft.sh                         # 训练
 
 RoboTwin 仿真（SAPIEN + Vulkan，本机 `.102` 已验证 Vulkan 可用）跑 20 任务 ×
 Clean/Random，与 PACE 表同口径对比。参考点：官方 cotrain（clean-only）π0 = 62.5 / 23.9。
+
+评测链路（`scripts/robotwin_eval_suite.sh`）：
+
+1. 起一个策略服务器（`XPolicyLab/setup_policy_server.py`，加载我们的 ckpt 与 norm stats）；
+2. 每个任务 × {`demo_clean`(seen), `demo_randomized`(unseen)} 调
+   `scripts/eval_policy_xpolicylab.py --eval_batch true --num_workers 8`，
+   8 个仿真并行、共享同一个服务器；
+3. 结果写进 `eval_result/.../_result.txt`，同时汇总成 `summary_<run>_<step>.tsv`。
+
+`scripts/robotwin_ft_then_eval.sh` 会等训练进程退出，取最新 checkpoint，再自动跑完整套。
+
+### 5.1 这台机器上踩过的坑（都已解决，写下来省得重装）
+
+| 问题 | 处理 |
+|---|---|
+| `assets/*.zip` 没下载 | `assets/_download.py`（objects/embodiments/background_texture ≈15 GB），解压后删 zip |
+| `curobo_left.yml` 不存在 | 必须跑 `scripts/update_embodiment_config_path.py`，它把 `*_tmp.yml` 里的 `${ASSETS_PATH}` 展开成真实路径 |
+| curobo 编译不过 | 机器只有 CUDA 13.2，torch 是 cu121；装 `cuda-toolkit-12-8` + torch 2.8.0+cu128（RTX PRO 6000 是 sm_120，cu121 的 torch 连 `torch.sign` 都跑不了），再 `CUDA_HOME=/usr/local/cuda-12.8 TORCH_CUDA_ARCH_LIST=12.0` 编译 curobo |
+| `warp.torch` 没了 | curobo 0.7.8 用旧 API，`scripts/patch_curobo_warp_api.py` 把它换成 `wp.device_from_torch` |
+| 评测要 conda | 两个官方 shell 脚本用 `conda info --base` 起服务器/客户端；这里直接按它们展开的命令跑（见 suite 脚本），不装 conda |
+| 客户端 obs 键名 | 训练数据是 `observation/image` 扁平键，仿真客户端发的是 `{"images": {"cam_high": ...}}`；`robotwin_policy.RoboTwinInputs` 现在两种都认 |
+| 磁盘 | 单 checkpoint 31 GB（12 GB 参数 + 19 GB 优化器态），只保留最新；为此清掉了 LIBERO-Plus 的中间数据（可从 HF 重下） |
