@@ -130,4 +130,17 @@ bash "$ROOT/scripts/robotwin_eval_suite.sh" >>"$LOG" 2>&1
 rc=$?
 log "suite exit=${rc}; summary:"
 cat "$RESULTS_DIR/summary_${RUN_NAME}_${STEP}.tsv" 2>/dev/null | tee -a "$LOG"
+
+# PACE-comparable table (ours vs the paper's pi0.5 column). The reporter ships
+# next to this script; it is looked up in a few places so the chain works whether
+# it was deployed from the repo or copied to /root.
+REPORT=${REPORT:-robotwin_eval_report.py}
+for cand in "$ROOT/scripts/$REPORT" "/root/$REPORT" "$(dirname "$0")/$REPORT"; do
+  if [[ -f "$cand" ]]; then
+    log "report from $cand:"
+    "$EVAL_PY" "$cand" "$RESULTS_DIR/summary_${RUN_NAME}_${STEP}.tsv" >>"$LOG" 2>&1
+    tail -35 "$LOG" 2>/dev/null
+    break
+  fi
+done
 log "chain finished"
