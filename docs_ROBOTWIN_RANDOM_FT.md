@@ -184,6 +184,48 @@ ROOT=/dev/shm/rt_ft/ws PYTHON=/opt/venv-robotwin/bin/python CKPT_DIR=/dev/shm/rt
 
 代价：step 2000→6000 的 4000 步白跑，从 2000 重新走，总计 8000 步 ≈ 8 小时。
 
+### 5.5 评测改到仿真机上跑（专家检查需要 curobo）
+
+「就地评测」这条路在 `.21` 上**跑不通**，而且是在 smoke 里抓到的，不是上线才发现：
+
+1. 补 `open3d` 和 RoboTwin 的资产之后，客户端能完整导入；
+2. 但没有 curobo 时 `envs/robot/planner.py` 里 `CuroboPlanner` 根本没定义，
+   `robot.py` 第一行 import 就炸——仓库里的 fallback 补丁（追加一个占位类）
+   能解决这一层；
+3. 真正的墙在下一层：RoboTwin **每个 seed 都要先跑一遍专家演示**
+   （`expert_check`，默认开），专家演示走 `robot.left_plan_grippers` →
+   curobo 的 `plan_grippers`。占位类只能让 import 过去，跑不出演示：
+
+```
+error occurs during expert check! seed=100041 err=AttributeError:
+curobo is not installed, so planner.plan_grippers is unavailable
+RuntimeError: Batch eval completed zero episodes. skipped_seeds=50
+```
+
+注意**策略本身不需要 curobo**：`_base_task.take_action(action_type='qpos')`
+用的是 mplib 的 TOPP（`left_mplib_planner.TOPP`）。所以 curobo 只在「专家检查」
+这一层被需要，而那一层决定了每个 seed 算不算有效 seed——关掉它
+（`--expert_check false`）就等于换了协议，和论文那一列没法直接比。
+
+三条路里选了第三条：
+
+| 方案 | 结论 |
+|---|---|
+| `.21` 上 `--expert_check false` | 能跑，但协议和 PACE 表不一致，**不采用** |
+| `.21` 上装 curobo | 要匹配 torch 的 CUDA toolkit（torch 是 cu126，curobo 要 cu128 编译）+ sm_120 编译，根盘只剩 6.5G，**不可行** |
+| **仿真机上跑评测** | `.102` 的 eval venv 里 curobo 能 import，192 核负载 ~9，每张卡 76G 空闲，**采用** |
+
+评测机上的分工：策略服务器用 **GPU 1**、仿真渲染用 **GPU 2**（这两张是四张里
+利用率最低的），`.102` 上的 LIBERO 训练不动。链条
+`scripts/robotwin_ft_then_eval_split.sh` 负责：等训练退出 → 校验 step ≥ 9999 且
+`params/manifest.ocdbt` 在 → 删掉 19G 的 `train_state` → rsync 最终 `params`
+到 `.102` → 专家检查按官方协议跑 1 任务 1 episode 的 smoke → 通过后跑满
+20 任务 × clean/random × 25 episodes → 拉回结果 + 出 PACE 对照表。
+
+**已经用 step 2000 把这条远端命令实测了一遍**（就是链条里那条命令）：服务器在
+GPU 1 起、两个配置都出结果写盘，`adjust_bottle` clean 0/1、random 1/1。
+按这个速度，40 个配置 ≈ 4–5 小时。
+
 链条也据此加固：等训练退出后先等 `*.orbax-checkpoint-tmp-*` 消失，再取最大
 step，并**要求该 step 目录下有 `params/`**，否则直接报错退出，不会拿半截
 checkpoint 去评测。
