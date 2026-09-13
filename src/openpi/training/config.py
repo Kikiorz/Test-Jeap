@@ -1319,6 +1319,51 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        # Fine-tunes the released pi0.5 base on the *randomized* RoboTwin 2.0
+        # demonstrations of the 20 benchmark tasks.
+        #
+        # Why this run exists: the official `RoboTwin_lerobot_v21/v30` release
+        # only ships the 50-task *clean* split (2500 episodes, 50 per task), so
+        # every published pi0.5 number on RoboTwin - including the pi0 column of
+        # the PACE table (62.5 clean / 23.9 random) - comes from a model that has
+        # never seen a randomized scene. The randomized demonstrations only
+        # exist per task as `aloha-agilex_randomized_500.zip`, converted here by
+        # `scripts/build_robotwin_random_dataset.py` (see
+        # `docs_ROBOTWIN_RANDOM_FT.md` for the convention checks).
+        #
+        # 16-step chunks match the rest of this branch's RoboTwin recipes; the
+        # horizon is not baked into the released weights, and the eval server
+        # reads it back from the checkpoint, so it stays self-consistent.
+        name="pi05_robotwin_random20_ft",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=False,
+            action_horizon=16,
+        ),
+        data=LeRobotRoboTwinDataConfig(
+            repo_id="/workspace/data/robotwin_random20_inline",
+            assets=AssetsConfig(
+                assets_dir="/workspace/robotwin_ws/assets/pi05_robotwin_random20",
+                asset_id="robotwin_random20",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/workspace/models/pi05_base/params"),
+        num_train_steps=20_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000, peak_lr=2.5e-5, decay_steps=20_000, decay_lr=2.5e-6,
+        ),
+        save_interval=2_000,
+        keep_period=10_000,
+        log_interval=50,
+        batch_size=128,
+        num_workers=16,
+        seed=0,
+        ema_decay=None,
+    ),
+    TrainConfig(
         # Arm A of the RoboTwin ablation: the livecross Con1 coupling only
         # (gated, budgeted cross-attention on the predicted latent delta plus the
         # latent-free action adapter), with Con2 and the whole-prefix VLM context
