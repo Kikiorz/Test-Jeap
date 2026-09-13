@@ -12,9 +12,10 @@ EXP_NAME="${EXP_NAME:-libero_plus_30k}"
 STEPS="${STEPS:-30000}"
 RUN_ID="${RUN_ID:-pi05-plus-30k}"
 PORT="${PORT:-8000}"
+WAIT_HOURS="${WAIT_HOURS:-72}"
 
 printf '[%s] waiting for the final checkpoint %s/%s/%s\n' "$(date -u +%H:%M:%S)" "$CKPT_ROOT" "$EXP_NAME" "$((STEPS - 1))"
-deadline=$(( $(date +%s) + 60 * 60 * 36 ))
+deadline=$(( $(date +%s) + 3600 * WAIT_HOURS ))
 while [ ! -d "$CKPT_ROOT/$EXP_NAME/$((STEPS - 1))" ]; do
   if [ "$(date +%s)" -gt "$deadline" ]; then
     printf '[%s] timed out waiting for the final checkpoint\n' "$(date -u +%H:%M:%S)"
