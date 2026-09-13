@@ -236,6 +236,9 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-image-stats-frames", type=int, default=4000)
+    parser.add_argument("--append", action="store_true",
+                        help="Extend an existing dataset instead of restarting episode numbering. "
+                             "Lets one archive be converted, checked and deleted at a time.")
     args = parser.parse_args()
 
     output = args.output
@@ -247,6 +250,32 @@ def main() -> None:
     episode_stats: list[dict] = []
     image_samples: dict[str, list[np.ndarray]] = {target: [] for _, target in CAMERAS}
     global_index = 0
+    carried_image_stats: dict[str, dict] = {}
+
+    if args.append:
+        episodes_path = output / "meta" / "episodes.jsonl"
+        if episodes_path.exists():
+            episode_records = [json.loads(line) for line in episodes_path.read_text().splitlines() if line]
+            previous_stats_path = output / "meta" / "episodes_stats.jsonl"
+            if previous_stats_path.exists():
+                episode_stats = [json.loads(line) for line in previous_stats_path.read_text().splitlines()
+                                 if line]
+            tasks_path = output / "meta" / "tasks.jsonl"
+            for line in tasks_path.read_text().splitlines():
+                if line:
+                    item = json.loads(line)
+                    tasks[item["task"]] = item["task_index"]
+            global_index = sum(record["length"] for record in episode_records)
+            print(f"[append] {len(episode_records)} episodes / {global_index} frames already present",
+                  flush=True)
+            stats_path = output / "meta" / "stats.json"
+            if stats_path.exists():
+                previous = json.loads(stats_path.read_text())
+                for _, target in CAMERAS:
+                    if target in previous:
+                        carried_image_stats[target] = previous[target]
+        else:
+            print(f"[append] {episodes_path} not found; starting a new dataset", flush=True)
 
     for spec in args.zips:
         task, _, zip_path = spec.partition("=")
@@ -259,6 +288,9 @@ def main() -> None:
             for name in names
             if name.startswith(f"{prefix}/data/") and name.endswith(".hdf5")
         )
+        if any(record.get("source_task") == task for record in episode_records):
+            print(f"[{task}] already converted; skipping", flush=True)
+            continue
         episodes = available[: args.episodes_per_task]
         print(f"[{task}] {len(episodes)}/{len(available)} episodes from {zip_path.name}", flush=True)
 
@@ -328,6 +360,7 @@ def main() -> None:
                     "episode_index": gid,
                     "tasks": [instruction],
                     "length": length,
+                    "source_task": task,
                 })
 
                 done += 1
@@ -371,7 +404,8 @@ def main() -> None:
         for record in episode_records:
             stream.write(json.dumps(record) + "\n")
     for _, target in CAMERAS:
-        stats = _image_stats(image_samples[target]) if image_samples[target] else None
+        stats = (_image_stats(image_samples[target]) if image_samples[target]
+                 else carried_image_stats.get(target))
         for record in episode_stats:
             record["stats"][target] = stats
     with (output / "meta" / "episodes_stats.jsonl").open("w") as stream:
@@ -387,7 +421,8 @@ def main() -> None:
         for key in ("timestamp", "frame_index", "episode_index", "index", "task_index")
     })
     for _, target in CAMERAS:
-        global_stats[target] = _image_stats(image_samples[target])
+        global_stats[target] = (_image_stats(image_samples[target]) if image_samples[target]
+                                else carried_image_stats.get(target))
     (output / "meta" / "stats.json").write_text(
         json.dumps(_jsonify(global_stats), indent=2, sort_keys=True) + "\n"
     )
