@@ -109,6 +109,39 @@ Clean/Random，与 PACE 表同口径对比。参考点：官方 cotrain（clean-
 
 **开跑前的预检（都已实测，不是假设）**：
 
+### 5.3 磁盘事故与处置（2026-09-13，step 4000）
+
+`/dev/shm` 被训练 checkpoint 填满（251G/251G，剩 896M），**step 4000 的存档直接
+写失败**：
+
+```
+ValueError: RESOURCE_EXHAUSTED: ... Failed to write to file
+[OS error 28: ENOSPC No space left on device]
+```
+
+训练本身没崩（异步存档失败只丢那一次存档），但如果不腾空间，**后面每次存档都会
+失败，包括最后 10000 步那次**——那样评测链就只能拿到 2000 步的 checkpoint。
+
+存档的算术：一次存档 = 12G params + 19G train_state = **31G**，而 orbax
+`max_to_keep=1` 是「先写新的、再删旧的」。所以稳定条件不是「腾一次」，而是
+**每次存档前必须有 ≥31G 空闲，并且上一个完整 checkpoint（31G）还在**，这样删旧
+的时候才能把空间退回来（`keep_period=100000` 大于总步数，等于只留最新一个）。
+
+处置（挑的都是**可再生成**的，没动用户数据）：
+
+| 动作 | 释放 | 理由 |
+|---|---:|---|
+| 删 `4000.orbax-checkpoint-tmp-0` | 22G | 写失败的半截目录，orbax 不认它 |
+| 删 `/dev/shm/robotwin` | 15G | 仿真代码+下载残留，评测链会从 `.102` 重新 rsync |
+| **没动** `/dev/shm/ts_jepa` | 132G | 旧 Con1 RoboTwin 特征缓存，删了要重算，属于要用户拍板的一次性操作 |
+
+结果：`/dev/shm` 从 896M 空闲回到 **37G**，够 6000 / 8000 / 10000 三次存档
+（每次写完删掉上一个，收支平衡）。
+
+链条也据此加固：等训练退出后先等 `*.orbax-checkpoint-tmp-*` 消失，再取最大
+step，并**要求该 step 目录下有 `params/`**，否则直接报错退出，不会拿半截
+checkpoint 去评测。
+
 | 检查 | 结果 |
 |---|---|
 | `/dev/shm` 能否执行 venv | **否**（`micromamba: Permission denied`），所以 venv 必须放根盘；容器没有 `CAP_SYS_ADMIN`，不能给 shm 加 `exec` |
