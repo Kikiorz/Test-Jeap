@@ -2,6 +2,25 @@
 
 One page. Details live in the linked documents.
 
+## 0. Final state
+
+Branch `feat/RoboTwin` is at the commit matching its upstream (**fully pushed**)
+and the working tree is **clean**, so the branch is portable as-is. Every
+analysis script listed below is tracked. The GPU box is idle; disk 63 GB. The
+three RoboTwin arms C and D trained, the ten-row probe ran, and the high-power
+(n=200) replication plus the two control rows (shuffled delta, relaxed budget)
+are all on disk.
+
+What is **not** finished, and needs a decision rather than more compute:
+
+1. **Closed-loop.** Every number here is flow loss. The simulator can be
+   installed on this box - feasibility checked - but it needs Vulkan packages,
+   conda, and disk headroom (see `docs_NEXT_STEPS.md` section C).
+2. **The paper's 20 Clean tasks.** The release carries no task identity, so this
+   needs an external mapping before it can even be attempted.
+3. **Con2's direction.** It is inert at every training point; the evidence says
+   the premise (accuracy transfers) is the problem, not the implementation.
+
 ## 1. What is running
 
 ## 1b. FULL TABLE - ten rows at the shared step 9000 (all four arms)
