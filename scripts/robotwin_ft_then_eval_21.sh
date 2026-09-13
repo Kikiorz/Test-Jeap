@@ -50,12 +50,29 @@ while pgrep -f "${TRAIN_MATCH}" >/dev/null 2>&1; do
 done
 log "trainer is gone"
 
+# A save that runs out of scratch space leaves an `*.orbax-checkpoint-tmp-*`
+# directory behind and no usable step directory (that is what happened at step
+# 4000 on 2026-09-13). Wait for any in-flight save to settle so the step we pick
+# is the real one, then require its params to be present.
+for _ in $(seq 1 30); do
+  if ! ls -d "$CKPT_DIR"/*.orbax-checkpoint-tmp-* >/dev/null 2>&1; then break; fi
+  log "waiting for an in-flight checkpoint save to settle"
+  sleep 60
+done
+
 STEP=$(ls -1 "$CKPT_DIR" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
 if [[ -z "$STEP" ]]; then
   log "abort: no checkpoint under $CKPT_DIR"
+  ls -la "$CKPT_DIR" | tee -a "$LOG"
+  exit 1
+fi
+if [[ ! -d "$CKPT_DIR/$STEP/params" ]]; then
+  log "abort: $CKPT_DIR/$STEP has no params/ (incomplete save)"
+  ls -la "$CKPT_DIR/$STEP" | tee -a "$LOG"
   exit 1
 fi
 log "final checkpoint step=${STEP}"
+df -h /dev/shm | tail -1 | tee -a "$LOG"
 
 # Free the scratch mount: the evaluation reads params only, and every other
 # checkpoint plus the optimizer state is dead weight at this point.
