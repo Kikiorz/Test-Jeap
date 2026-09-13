@@ -42,6 +42,35 @@ Four readings, all of which differ from the 48-batch version:
 **not met** (t = -1.06). By the rule fixed before the numbers arrived, "training
 the head properly is the lever" cannot be claimed.
 
+### 1d. The pre-registered audit, completed (latent quality at step 9000)
+
+`scripts/robotwin_arm_summary.py` reads the four metrics files:
+
+| arm | `con1_delta_nmse` @9000 | best | training flow_loss |
+|---|---:|---:|---:|
+| A | 0.8443 | 0.7371 | 0.00252 |
+| B | 0.7376 | 0.6304 | 0.00254 |
+| C | 0.8031 | 0.7867 | 0.00196 |
+| **D** | **0.6460** | **0.6282** | 0.00197 |
+
+| pre-registered rule | threshold | arm D | verdict |
+|---|---|---|---|
+| the head moved | delta NMSE >= 0.05 below A | **+0.198** | **met** |
+| it bought action accuracy | flow >= 2% better than A, t >= 3 | -1.29%, t = -1.06 | **not met** |
+
+Against arm A: B +0.1067 NMSE (met rule 1), C +0.0413 (below it), D +0.1983 (met).
+
+This is the second branch of the 2x2 fixed in `docs_CON1_LATENT_CEILING.md` before
+any of these numbers existed: **the latent head improves substantially and the
+action does not follow**. Two arms reach rule 1 independently (B and D) and
+neither reaches rule 2. Arm D's head reaches **0.646**, the best produced here and
+below the measured linear ceiling of 0.659, so the latent prediction was made
+better than linear and the action still did not move significantly.
+
+Four independent lines now agree: this measurement, the Delta z action-information
+probe (R^2 0.033), the gradient-alignment measurement (orthogonal directions), and
+the decomposition above (the delta-free adapter carries the benefit).
+
 48 paired batches, same loader, same seed. `base` = arm A with the correction
 silenced, so "vs base" isolates the correction.
 
