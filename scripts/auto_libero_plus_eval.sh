@@ -14,9 +14,10 @@ RUN_ID="${RUN_ID:-pi05-plus-30k}"
 PORT="${PORT:-8000}"
 
 printf '[%s] waiting for the final checkpoint %s/%s/%s\n' "$(date -u +%H:%M:%S)" "$CKPT_ROOT" "$EXP_NAME" "$((STEPS - 1))"
+deadline=$(( $(date +%s) + 60 * 60 * 36 ))
 while [ ! -d "$CKPT_ROOT/$EXP_NAME/$((STEPS - 1))" ]; do
-  if ! pgrep -f "scripts/train[.]py" >/dev/null; then
-    printf '[%s] no trainer running and no final checkpoint; aborting\n' "$(date -u +%H:%M:%S)"
+  if [ "$(date +%s)" -gt "$deadline" ]; then
+    printf '[%s] timed out waiting for the final checkpoint\n' "$(date -u +%H:%M:%S)"
     exit 1
   fi
   sleep 300
