@@ -72,7 +72,14 @@ SERVER_PID=$!
 
 echo "[eval] server pid=${SERVER_PID}; waiting for port ${PORT}"
 for _ in $(seq 1 180); do
-  if grep -q "Listening\|listening\|serve_forever\|Server started" "$SERVER_LOG" 2>/dev/null; then break; fi
+  # The server prints nothing before it starts serving, so poll the socket
+  # instead of the log (a bare TCP connect is enough; the websocket handshake
+  # happens later and logs its own failure if the server is not ready).
+  if (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
+    exec 3>&- 3<&- 2>/dev/null || true
+    echo "[eval] server is listening"
+    break
+  fi
   if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
     echo "[eval] server died; tail of $SERVER_LOG:"; tail -25 "$SERVER_LOG"; exit 1
   fi
