@@ -28,7 +28,7 @@ done
 
 printf '[%s] computing norm stats\n' "$(date -u +%H:%M:%S)"
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/compute_norm_stats.py \
-  --config-name pi05_libero_plus >/workspace/norm_libero_plus.log 2>&1 \
+  --config-name pi05_libero_plus --max-frames 200000 >/workspace/norm_libero_plus.log 2>&1 \
   || { printf 'norm stats failed\n'; tail -20 /workspace/norm_libero_plus.log; exit 1; }
 
 printf '[%s] starting %s-step fine-tune\n' "$(date -u +%H:%M:%S)" "$STEPS"
