@@ -26,6 +26,10 @@ KEEP_PERIOD="${KEEP_PERIOD:-100000}"
 RESUME="${RESUME:-0}"
 HF_HOME="${HF_HOME:-/workspace/.hf_home}"
 NCCL_PRELOAD="${NCCL_PRELOAD:-/usr/lib/x86_64-linux-gnu/libnccl.so.2}"
+# The interpreter can live outside the repo: on a box whose scratch filesystem is
+# mounted noexec (vast.ai's /dev/shm), the venv has to sit on the root disk while
+# the data and checkpoints stay on the fast scratch mount.
+PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
 
 if [[ "$RESUME" == "1" ]]; then
   RESUME_FLAG=(--resume)
@@ -49,7 +53,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}" \
 HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
 NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-  "$ROOT/.venv/bin/python" -u scripts/train.py pi05_robotwin_random20_ft \
+  "$PYTHON" -u scripts/train.py pi05_robotwin_random20_ft \
     --exp-name="$EXP" \
     --checkpoint-base-dir="$CKPT_DIR" \
     --no-wandb-enabled \
