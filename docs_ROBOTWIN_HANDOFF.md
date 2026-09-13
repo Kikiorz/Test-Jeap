@@ -159,7 +159,11 @@ Arm A re-evaluated with the residual cap relaxed:
 | budget | correction RMS | flow |
 |---|---:|---:|
 | 0.05 (deployed) | 0.508 | 0.003245 |
-| 0.20 | 1.743 | **0.005201** (+60%, t ~ +4.2) |
+| 0.20 | 1.743 | **0.005201** |
+
+Paired over the same 48 batches: **+60.28%, t = +4.18, p = 1.3e-4**. Only n = 48,
+because the probe changes a budget by building a second model instance and that
+OOM'd at 200 batches; the row needs two single-budget runs to reach n = 200.
 
 Relaxing the cap makes the correction 3.4x larger and the action **much worse**.
 So "the 5% budget is throttling a correction that wants to be bigger" is dead, in
