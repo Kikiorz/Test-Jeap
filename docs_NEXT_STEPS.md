@@ -34,6 +34,30 @@ become interpretable.
 handful of checkpoints already on disk (A, B, C, D). The checkpoints and the
 policy server path already exist; the simulator does not.
 
+### Feasibility check on this box (2026-09-13)
+
+Verified rather than assumed:
+
+| requirement | state |
+|---|---|
+| `NVIDIA_DRIVER_CAPABILITIES` includes `graphics` | **yes** - the container has `all`, and the RoboTwin docs call this essential (omitting it segfaults on missing Vulkan) |
+| NVIDIA driver >= 520 | **yes**, 580.95.05 |
+| RTX GPU for ray tracing | **yes**, 4x RTX 5090 |
+| network to github / huggingface / pypi | **yes**, all 200 |
+| root inside the container | **yes** |
+| Vulkan driver stack | **missing** - `vulkaninfo` exists but there is no `/usr/share/vulkan/icd.d`; needs `apt install libvulkan1 mesa-vulkan-drivers vulkan-tools` |
+| conda | **missing** - the official eval launcher takes `--eval-env-conda-env`, so a Miniconda install is the path of least resistance |
+| disk | **63 GB free, and this is the real risk** - the asset bundle's size is not documented up front |
+
+Install path: Vulkan packages, Miniconda, `git clone --recurse-submodules`
+RoboTwin, `scripts/_install.sh` (compiles CuRobo, mplib, pytorch3d - the docs say
+20 minutes but the builds usually take longer), then `scripts/_download_assets.sh`.
+
+**Disk remedy if needed**: `artifacts/con1/robotwin_clean20_19999_features_v1` is
+139 GB and is only needed to *train* Con1 - closed-loop evaluation of the existing
+checkpoints does not read it. Deleting it would take free space to ~200 GB, but it
+is a deliberate, one-way decision and it means re-caching before any retrain.
+
 **What would change our mind**: if arm A/B/C/D are indistinguishable in success
 rate but differ in flow (or vice versa), the flow-loss line has to be rebuilt
 around whatever the simulator says.
