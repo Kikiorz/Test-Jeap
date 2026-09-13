@@ -4,6 +4,35 @@ One page. Details live in the linked documents.
 
 ## 0. Final state
 
+**The headline result.** Arm A measured against its own silence control - the
+same checkpoint with the correction zeroed - at five checkpoints, n = 200 paired
+batches and the same seed at every point:
+
+| A checkpoint | benefit vs base | paired t |
+|---|---:|---:|
+| **3,000** | **-14.29%** | **-19.0** |
+| 6,000 | -3.75% | -4.7 |
+| 9,000 | -1.01% | -0.9 |
+| 12,000 | -0.87% | -1.1 |
+| 14,999 | -2.83% | -3.6 |
+
+The correction is a **warm-up accelerant**: large while the policy is still
+poorly trained, decaying to noise as the base path converges.
+
+**And no tested modification changes it.** Scoring all five arms at 3,000 steps,
+where the effect is 14% instead of 1%:
+
+| arm | vs base @3k | t |
+|---|---:|---:|
+| A (unmodified Con1) | -14.29% | -19.0 |
+| B (whole-prefix context) | -14.06% | -17.8 |
+| C (action-conditioned head) | -14.37% | -19.9 |
+| D (head LR x5) | -13.77% | -17.4 |
+| E (context + head LR) | -13.71% | -18.2 |
+
+Within 0.7 percentage points at t ~ 18. The difference is not unresolved - it is
+absent, measured with twenty times the signal-to-noise.
+
 Branch `feat/RoboTwin` is at the commit matching its upstream (**fully pushed**)
 and the working tree is **clean**, so the branch is portable as-is. Every
 analysis script listed below is tracked. The GPU box is idle; disk 63 GB. The
