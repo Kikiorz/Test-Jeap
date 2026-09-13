@@ -181,7 +181,7 @@ def _jsonify(value):
 
 
 def _aggregate(per_episode: list[dict], key: str) -> dict:
-    entries = [entry[key] for entry in per_episode]
+    entries = [entry["stats"][key] for entry in per_episode]
     counts = np.stack([entry["count"] for entry in entries]).astype(np.float64)
     total = counts.sum(axis=0)
 
