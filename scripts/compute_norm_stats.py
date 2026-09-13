@@ -108,7 +108,11 @@ def main(config_name: str, max_frames: int | None = None):
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    # Write where the loader (`DataConfigFactory._load_norm_stats`) and the
+    # checkpoint saver (`_checkpoints.save_state`) look for the stats: under the
+    # asset id, not under the repo id. The two coincide for the LIBERO configs;
+    # they do not for configs whose repo_id is an absolute dataset path.
+    output_path = config.assets_dirs / (data_config.asset_id or data_config.repo_id)
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 
