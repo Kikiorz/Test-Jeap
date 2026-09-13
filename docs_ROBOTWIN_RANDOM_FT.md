@@ -89,6 +89,34 @@ Clean/Random，与 PACE 表同口径对比。参考点：官方 cotrain（clean-
 
 ### 5.2 训练/评测在两台机器上的布局
 
+**当前实际安排（2026-09-13）**：微调在 `.21`（`154.59.156.21:45968`）跑，评测
+**就地**在 `.21` 跑（不占 `.102`，`.102` 上是你自己的 LIBERO-Plus 微调）。
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 训练 repo | `/dev/shm/rt_ft/ws`（`/workspace/robotwin_ws` 软链） | 分支 `feat/Robotwin-ran-ft`，venv 在根盘 `/opt/venv-robotwin`（shm noexec） |
+| checkpoint | `/dev/shm/rt_ft/ckpt/pi05_robotwin_random20_ft/robotwin_random20_ft/<step>` | 每 2000 步存一次，只留最新 |
+| 仿真 venv | `/opt/rt-eval`（根盘，2.0 GB） | 基解释器来自训练 venv，用 `_train_venv.pth` 把训练 venv 的 site-packages 接进来，再补 `sapien 3.0.0b1 / mplib 0.2.1 / toppra / open3d / msgpack-numpy / websockets / h5py / opencv-headless`。**同一个解释器同时当 policy server 和仿真客户端** |
+| 仿真代码+资产 | `/dev/shm/robotwin/code` | 资产是数据，可以放 noexec 的 shm；Meshes 16 GB 在评测链里才从 `.102` 拉 |
+| 结果 | `/dev/shm/rt_eval_results/summary_<exp>_<step>.tsv` | 每任务两行：`demo_clean`(seen) / `demo_randomized`(unseen) |
+
+评测链：`scripts/robotwin_ft_then_eval_21.sh`（`bash /root/rt_chain.sh`），
+已挂在 `.21` 上。它按顺序做：等训练进程退出 → 删掉非最终 checkpoint 和
+`train_state` 腾 shm → 从 `.102` rsync 仿真代码+资产 → 展开
+`*_embodiment_tmp.yml` 的 `${ASSETS_PATH}` → 先跑 1 任务 1 episode 的 smoke →
+再跑 20 任务 × {clean, random} × 25 episodes（8 个并行仿真）。smoke 失败就直接
+停，不浪费后面的 40 次客户端调用。
+
+**开跑前的预检（都已实测，不是假设）**：
+
+| 检查 | 结果 |
+|---|---|
+| `/dev/shm` 能否执行 venv | **否**（`micromamba: Permission denied`），所以 venv 必须放根盘；容器没有 `CAP_SYS_ADMIN`，不能给 shm 加 `exec` |
+| 根盘剩余 | 32 GB 总，当前剩 6.6 GB（`/opt/rt-eval` 2.0 GB） |
+| Vulkan | `apt install mesa-vulkan-drivers` 后 `vulkaninfo` 报 1.3.275；SAPIEN 离屏渲染实测出图（空场景 mean=0.0） |
+| policy server | 用 step 2000 起服务，**端口 5 秒内开始 listen** |
+| 仿真客户端 | `eval_policy_xpolicylab.py` 全模块导入通过（补完 `open3d` 和 `assets/*.json` 之后） |
+
 两台机器都在跑实验，卡不共享；`.21` 的 `/dev/shm` 是 **noexec**，所以凡是需要执行
 `.so` 的东西（venv、curobo、sapien）只能放根盘，数据/checkpoint 放 `/dev/shm`，用软链
 把配置里写死的路径接上：
