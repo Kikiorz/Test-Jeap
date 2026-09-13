@@ -160,10 +160,10 @@ def _image_stats(frames: list[np.ndarray]) -> dict:
             "mean": np.mean(stack, axis=axes, keepdims=True),
             "std": np.std(stack, axis=axes, keepdims=True)}
     return {
-        "min": keep["min"].reshape(3),
-        "max": keep["max"].reshape(3),
-        "mean": keep["mean"].reshape(3),
-        "std": keep["std"].reshape(3),
+        "min": keep["min"].reshape(3, 1, 1),
+        "max": keep["max"].reshape(3, 1, 1),
+        "mean": keep["mean"].reshape(3, 1, 1),
+        "std": keep["std"].reshape(3, 1, 1),
         "count": np.array([len(frames)]),
     }
 
