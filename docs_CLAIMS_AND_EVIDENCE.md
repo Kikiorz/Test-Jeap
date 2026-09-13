@@ -40,17 +40,18 @@ is that accuracy transfers, and accuracy does not track the benefit anywhere.
 
 ## The finding that dominates everything else: the benefit decays with training
 
-Arm A against its own silence control, at six checkpoints, same 200 batches and
-same seed throughout:
+Arm A against its own silence control. Every point below is n = 200, same seed,
+same protocol, and the base row is the *same checkpoint* with the correction
+silenced, so the comparison is paired within checkpoint:
 
 | A checkpoint | benefit vs base | paired t |
 |---|---:|---:|
 | **3,000** | **-14.29%** | **-19.02** |
-| 4,500 (n=48) | -11.77% | -7.0 |
+| 4,500 (n=48, earlier protocol) | -11.77% | -7.0 |
 | **6,000** | **-3.75%** | **-4.67** |
 | 9,000 | -1.01% | -0.94 |
 | **12,000** | **-0.87%** | **-1.05** |
-| 15,000 | -2.91% | -3.14 |
+| 14,999 | -2.83% | -3.6 |
 
 One arm, one measurement protocol, a **16x range** - from an extremely strong
 effect (t = -19) to nothing - driven purely by which checkpoint is scored.
@@ -66,6 +67,24 @@ This reframes the whole session:
    modification of it can be resolved.
 3. **Any future variant comparison should be scored early (3k-6k)**, where the
    effect is 4-14% and the signal-to-noise is an order of magnitude better.
+
+### ...and the variants are genuinely identical there
+
+Scoring every arm at 3,000 steps - where the effect is 14% rather than 1% - and
+at 6,000:
+
+| arm | vs base @3k | t | vs base @6k | t |
+|---|---:|---:|---:|---:|
+| A (unmodified Con1) | -14.29% | -19.0 | -3.75% | -4.7 |
+| B (whole-prefix ctx) | -14.06% | -17.8 | -4.13% | -5.4 |
+| C (action-conditioned head) | -14.37% | -19.9 | -3.79% | -4.1 |
+| D (head LR x5) | -13.77% | -17.4 | -1.60% | -1.5 |
+| E (ctx + head LR) | -13.71% | -18.2 | -3.19% | -3.6 |
+
+At 3,000 steps all five arms sit within 0.7 percentage points of each other at
+t ~ 18. This is not a failure to resolve a difference - it is a difference-free
+result measured with twenty times the signal-to-noise. **No tested modification
+to Con1 changes what the correction does.**
 
 Read together with the three-axis result below, the picture is: the correction's
 benefit is large early, decays as the base converges, and is not explained by the
