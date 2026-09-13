@@ -4,6 +4,48 @@ One page. Details live in the linked documents.
 
 ## 1. What is running
 
+## 1a. Results already in hand (15k, 48 paired batches, step 15000)
+
+| row | flow | vs base | paired t |
+|---|---:|---:|---:|
+| base (Con1 silenced) | 0.002894 | - | - |
+| **arm A (Con1 livecross)** | **0.002810** | **-2.91%** | **-3.14** |
+| arm B (Con1+Con2+ctx) | 0.002838 | -1.94% | -1.13 |
+| A + offline head (diagnostic) | 0.002961 | +2.33% | +1.53 |
+| A, only the delta path | 0.002967 | +2.55% | +2.94 vs A |
+| A, only the delta-free adapter | 0.002963 | +2.38% | +2.63 vs A |
+
+Raw files: `artifacts/con2/step15k/`, table in `robotwin_ab_table.json`.
+
+Four readings:
+
+1. Con1 still beats its own silence control at 15k (-2.91%, t=-3.14).
+2. **Con2 + whole-prefix context is inert for the second time** (t=0.49 at 15k,
+   t=0.16 at 4.5k), and now slightly the wrong way.
+3. **Both correction paths are necessary**: keeping only the delta path (+5.59%,
+   t=2.94) or only the delta-free adapter (+5.47%, t=2.63) is significantly worse
+   than arm A. That matches LIBERO's adapter-only +0.99pp vs adapter+latent
+   +1.70pp.
+4. The offline-trained head does not transfer (+5.39% when grafted); the fusion
+   path was adapted to the jointly trained head, as flagged when the row was built.
+
+### Correction to an earlier claim of mine
+
+The Con1 gain **decays with training**: -11.77% at 4.5k versus -2.91% at 15k. The
+silence control itself improved 0.004157 -> 0.002894 (1.44x) while arm A went
+0.003667 -> 0.002810 (1.30x), so the correction's marginal value falls as the
+action expert converges.
+
+This means the early framing "Con1's RoboTwin gain is an order of magnitude
+larger than LIBERO's (-11.8% vs -1.9%)" was a **training-budget artefact, not a
+platform difference**. At comparable convergence: LIBERO -2.38% at 3.3 sigma
+(`docs_CON1_LATENT_SPACE_AB.md`) versus RoboTwin -2.91% at t=-3.14. The two agree.
+
+**The row that must not be quoted**: `released base` scores 0.195 because it is
+being evaluated on the full 2,500-episode release while it was only trained on
+the 20-task Clean subset - it is an out-of-distribution number for that row, not
+evidence that the arms beat the released policy by 98%.
+
 | stage | state |
 |---|---|
 | arm A (Con1 livecross, 15k) | **finished** 22:54, best `con1_delta_nmse` 0.737 |
