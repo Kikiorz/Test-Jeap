@@ -21,6 +21,22 @@ SAVE_INTERVAL="${SAVE_INTERVAL:-2000}"
 # A checkpoint is 31 GB (12 GB params + 19 GB optimizer state) and the box has
 # ~35 GB spare, so nothing is retained beyond the newest one.
 KEEP_PERIOD="${KEEP_PERIOD:-100000}"
+# RESUME=1 continues from the newest checkpoint in CKPT_DIR instead of wiping it
+# (used after moving the run to another box).
+RESUME="${RESUME:-0}"
+HF_HOME="${HF_HOME:-/workspace/.hf_home}"
+NCCL_PRELOAD="${NCCL_PRELOAD:-/usr/lib/x86_64-linux-gnu/libnccl.so.2}"
+
+if [[ "$RESUME" == "1" ]]; then
+  RESUME_FLAG=(--resume)
+else
+  RESUME_FLAG=(--overwrite)
+fi
+if [[ -f "$NCCL_PRELOAD" ]]; then
+  PRELOAD_ENV=(LD_PRELOAD="$NCCL_PRELOAD")
+else
+  PRELOAD_ENV=()
+fi
 
 cd "$ROOT"
 mkdir -p "$CKPT_DIR"
@@ -29,8 +45,8 @@ echo "[$(date -u +%H:%M:%S)] pi05_robotwin_random20_ft exp=${EXP} steps=${STEPS}
 
 PYTHONPATH="$ROOT/src:$ROOT/packages/openpi-client/src" \
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}" \
-LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libnccl.so.2 \
-HF_HOME=/workspace/.hf_home HF_HUB_OFFLINE=1 \
+"${PRELOAD_ENV[@]}" \
+HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
 NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
   "$ROOT/.venv/bin/python" -u scripts/train.py pi05_robotwin_random20_ft \
@@ -43,7 +59,7 @@ NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
     --num-train-steps="$STEPS" \
     --save-interval="$SAVE_INTERVAL" \
     --keep-period="$KEEP_PERIOD" \
-    --overwrite \
+    "${RESUME_FLAG[@]}" \
     >>"$LOG" 2>&1
 
 echo "[$(date -u +%H:%M:%S)] training finished" | tee -a "$LOG"
