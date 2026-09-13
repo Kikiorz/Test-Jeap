@@ -36,24 +36,26 @@ if [[ "$RESUME" == "1" ]]; then
 else
   RESUME_FLAG=(--overwrite)
 fi
-if [[ -f "$NCCL_PRELOAD" ]]; then
-  PRELOAD_ENV=(LD_PRELOAD="$NCCL_PRELOAD")
-else
-  PRELOAD_ENV=()
-fi
 
 cd "$ROOT"
 mkdir -p "$CKPT_DIR"
 
 echo "[$(date -u +%H:%M:%S)] pi05_robotwin_random20_ft exp=${EXP} steps=${STEPS} batch=${BATCH} fsdp=${FSDP}" | tee -a "$LOG"
 
-PYTHONPATH="$ROOT/src:$ROOT/packages/openpi-client/src" \
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}" \
-"${PRELOAD_ENV[@]}" \
-HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 \
-XLA_PYTHON_CLIENT_PREALLOCATE=false \
-NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-  "$PYTHON" -u scripts/train.py pi05_robotwin_random20_ft \
+# Exported one by one rather than as a command prefix: an empty array expansion
+# in the assignment prefix terminates that prefix and bash then tries to run the
+# next word, which is why the first version failed on a box without system NCCL.
+export PYTHONPATH="$ROOT/src:$ROOT/packages/openpi-client/src"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+export HF_HOME="$HF_HOME"
+export HF_HUB_OFFLINE=1
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1
+if [[ -f "$NCCL_PRELOAD" ]]; then
+  export LD_PRELOAD="$NCCL_PRELOAD"
+fi
+
+"$PYTHON" -u scripts/train.py pi05_robotwin_random20_ft \
     --exp-name="$EXP" \
     --checkpoint-base-dir="$CKPT_DIR" \
     --no-wandb-enabled \
