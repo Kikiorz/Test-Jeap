@@ -29,6 +29,44 @@ pre-registered comparisons at alpha = 0.05 (`scripts/robustness_report.py`).
 
 ## Still open
 
+## Arm E: the two head levers are not additive
+
+Arm E combines the two levers that each beat base on their own. The files are
+distinct (different config, exp name, md5 and correction RMS) and the paired
+comparison is exact:
+
+| comparison (n = 200) | relative | t | p | Holm threshold | verdict |
+|---|---:|---:|---:|---:|---|
+| e vs base | -2.29% | -2.55 | 0.0116 | 0.0125 | **survives** |
+| e vs a | -1.29% | -1.14 | 0.257 | 0.0167 | not significant |
+| e vs b | +0.17% | +0.20 | 0.845 | 0.0250 | not significant |
+| **e vs d** | **0.00%** | **0.00** | **0.999** | 0.0500 | **identical** |
+
+Adding the whole-prefix context to the head-LR arm changes nothing. The levers
+saturate.
+
+### This corrects an over-statement of mine
+
+The full four-arm picture:
+
+```
+A (unmodified Con1)        vs base  -1.01%   p = 0.347   not significant
+B / D / E (head changed)   vs base  -2.3 to -2.5%   p < 0.012   all significant
+```
+
+So head quality **does** matter: every variant that changes the head clears the
+silence control, and the unmodified Con1 does not, worth about 1.3% - saturating
+at -2.3%.
+
+**But the statistical trap has to be stated alongside it**: the pairwise
+comparisons of B, D and E against A are *not* significant (p = 0.10 / 0.29 / 0.26).
+"A is not significant and B/D/E are" is **not** the same as "B/D/E beat A", and
+must not be written as if it were. The strongest defensible sentence is:
+
+> Three variants that change the delta head each beat the silence control at
+> p < 0.012 (-2.3% to -2.5%) while the unmodified Con1 does not (-1.0%, p = 0.35),
+> and the two levers do not combine (E and D are identical to within 0.00%).
+
 ## Outlier robustness of the paired statistics
 
 `scripts/robustness_trim.py` recomputes each comparison after dropping the 5% of

@@ -62,7 +62,7 @@ def flows(path: Path):
 def main() -> None:
     args = parse()
     series = {}
-    for name in {n for pair in FAMILY for n in pair}:
+    for name in {n for pair in FAMILY + LATE_FAMILY for n in pair}:
         values = flows(args.dir / f"robotwin_ab_{name}.json")
         if values is not None:
             series[name] = values
