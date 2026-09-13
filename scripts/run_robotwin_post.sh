@@ -20,7 +20,18 @@ if pgrep -f "scripts/train.py" >/dev/null 2>&1; then
   echo "[$(date -u +%H:%M:%S)] training restarted while waiting; giving up" | tee -a "$LOG"
   exit 1
 fi
-echo "[$(date -u +%H:%M:%S)] A/B finished; starting arms C and D" | tee -a "$LOG"
+echo "[$(date -u +%H:%M:%S)] A/B finished" | tee -a "$LOG"
+
+# Report A and B first instead of waiting for C and D to train. Only A and B
+# have checkpoints at this point, so the shared step is theirs (15k) and the
+# rows for C and D are skipped automatically. Written to its own directory so
+# the canonical 12k/9k probe later does not overwrite these files.
+echo "[$(date -u +%H:%M:%S)] early probe: A and B at their shared step" | tee -a "$LOG"
+OUT_DIR="${OUT_DIR:-/workspace/artifacts/con2}/step15k" \
+  LOG="$LOG" bash "$ROOT/scripts/robotwin_final_probe.sh" \
+  || echo "[$(date -u +%H:%M:%S)] early A/B probe failed; continuing" | tee -a "$LOG"
+
+echo "[$(date -u +%H:%M:%S)] starting arms C and D" | tee -a "$LOG"
 
 # The probe is still worth running for A and B even if arm C cannot start, so
 # failures here are reported rather than fatal.
@@ -30,6 +41,7 @@ STEPS="$STEPS" bash "$ROOT/scripts/run_robotwin_arm_c.sh" \
 STEPS="$STEPS" bash "$ROOT/scripts/run_robotwin_arm_d.sh" \
   || echo "[$(date -u +%H:%M:%S)] arm D failed; probing the arms that exist" | tee -a "$LOG"
 
+echo "[$(date -u +%H:%M:%S)] full probe for all arms" | tee -a "$LOG"
 LOG="$LOG" bash "$ROOT/scripts/robotwin_final_probe.sh" \
   || echo "[$(date -u +%H:%M:%S)] final probe failed" | tee -a "$LOG"
 
