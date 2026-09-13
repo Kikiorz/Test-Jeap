@@ -34,7 +34,13 @@ BENCH=${BENCH:-/workspace/robotwin/code}
 EVAL_PY=${EVAL_PY:-/workspace/robotwin/eval_venv/bin/python}
 POLICY_PY=${POLICY_PY:-$ROOT/.venv/bin/python}
 CKPT_DIR=${CKPT_DIR:-/workspace/artifacts/checkpoints_robotwin_random/robotwin_random20_ft}
-STEP=${STEP:-10000}
+if [[ -z "${STEP:-}" ]]; then
+  STEP=$(ls -1 "$CKPT_DIR" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
+fi
+if [[ -z "${STEP:-}" ]]; then
+  echo "[suite] no checkpoint found under $CKPT_DIR" >&2
+  exit 1
+fi
 TRIALS=${TRIALS:-25}
 WORKERS=${WORKERS:-4}
 POLICY_GPU=${POLICY_GPU:-0}
