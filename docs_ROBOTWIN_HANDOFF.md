@@ -4,6 +4,57 @@ One page. Details live in the linked documents.
 
 ## 1. What is running
 
+## 1b. FULL TABLE - ten rows at the shared step 9000 (all four arms)
+
+48 paired batches, same loader, same seed. `base` = arm A with the correction
+silenced, so "vs base" isolates the correction.
+
+| row | flow | vs base | paired t vs base |
+|---|---:|---:|---:|
+| released base | 0.195329 | -98.4% | -23.7 (see the warning below) |
+| base (Con1 silenced) | 0.003184 | - | - |
+| arm A (Con1) | 0.003245 | **+1.92%** | +0.72 |
+| arm B (Con1+Con2+ctx) | 0.003148 | -1.13% | -0.78 |
+| arm C (Con1+action-cond) | 0.003202 | +0.57% | +0.59 |
+| **arm D (Con1+head 5x LR)** | **0.003105** | **-2.49%** | **-1.92** |
+| A + offline head | 0.003200 | +0.51% | +0.45 |
+| A, only the delta path | 0.003295 | +3.49% | (vs A: +0.41) |
+| A, only the adapter | 0.003204 | +0.63% | (vs A: -0.64) |
+
+**At 9000 steps no arm reaches significance against base.** Arm D is the best
+(`-2.49%`, t = -1.92) - the right direction for the head-quality lever, but under
+the pre-registered |t| >= 3 bar. Arm C is flat. Arm B is not significant either
+way (t = -0.78 vs base, -1.47 vs A).
+
+### The budget row closes one hypothesis outright
+
+Arm A re-evaluated with the residual cap relaxed:
+
+| budget | correction RMS | flow |
+|---|---:|---:|
+| 0.05 (deployed) | 0.508 | 0.003245 |
+| 0.20 | 1.743 | **0.005201** (+60%, t ~ +4.2) |
+
+Relaxing the cap makes the correction 3.4x larger and the action **much worse**.
+So "the 5% budget is throttling a correction that wants to be bigger" is dead, in
+agreement with the LIBERO measurement, and consistent with the two paths acting
+partly as a counterweight.
+
+### Arm A's own gain is not monotone across training
+
+Three checkpoints of the same arm, same batches, same seed:
+
+| arm A checkpoint | A vs base | paired t |
+|---|---:|---:|
+| 4,500 | **-11.77%** | **-7.0** |
+| 9,000 | **+1.92%** | +0.72 |
+| 15,000 | **-2.91%** | **-3.14** |
+
+Strong, then gone, then moderate. The pairing rules out sampling noise as the
+explanation, so the honest reading is that **the correction's benefit on RoboTwin
+fluctuates during training rather than settling**. Any headline number has to
+carry its step count.
+
 ## 1a. Results already in hand (15k, 48 paired batches, step 15000)
 
 | row | flow | vs base | paired t |
