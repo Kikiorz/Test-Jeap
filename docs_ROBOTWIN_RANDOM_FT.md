@@ -4,6 +4,42 @@
 同样的 20 个任务上测 Clean / Random，回答"官方那份数据没有随机化，随机化数据练完
 到底能不能把 Random 那一列拉起来"。
 
+## 0. 从零复现清单（2026-09-14，两台机器已回收）
+
+先说结论：这一轮做完 10k 步微调 + 30/40 配置的闭环评测，**Random 列没有超过 π0.5**
+（−10.8pp），Clean 差 53.8pp，判断是**欠训练**。下次直接从 30k 步起步。按下面顺序做，
+坑都已经踩过：
+
+1. **机器**（两台最省时间）
+   * 训练机：4×sm_120 卡；`/dev/shm` 要 **≥120G**（一次存档 31G + 数据集 21G + 基座
+     12G + HF 缓存 22G），根盘 ≥40G。`/dev/shm` 若 noexec，venv 必须放根盘。
+   * **评测机必须能跑 curobo**：RoboTwin 每个 seed 都先跑专家演示（`expert_check`
+     默认开），专家演示走 curobo 的 `plan_grippers`。没有 curobo 只能关掉专家检查，
+     那就换了协议、和 PACE 表不可比（`--expert_check false` 只能是最后手段）。
+     编译 curobo：装与 torch 匹配的 CUDA toolkit，`TORCH_CUDA_ARCH_LIST=12.0`。
+   * 评测机还要 Vulkan：`apt install libvulkan1 mesa-vulkan-drivers vulkan-tools`，
+     `vulkaninfo` 能报 1.3。
+2. **数据**：`bash scripts/build_robotwin_random20.sh`（20 任务 × 200 条随机化演示，
+   LeRobot v2.1，约 15GB），再 `python scripts/compute_norm_stats.py
+   --config-name=pi05_robotwin_random20_ft`。
+3. **训练**：`STEPS=30000 bash scripts/run_robotwin_random_ft.sh`（基座 = 官方 π0.5
+   base）。两条硬约束：
+   * `HF_HOME` **不要指根盘**：`load_dataset` 会重建 arrow 缓存（20G+），根盘必炸。
+   * 存档算术：一次 = 12G params + 19G train_state = **31G**，orbax 先写后删。
+     **前两次存档前要 ≥62G 空闲**（那时没有旧存档可退），之后每次 ≥31G 即可。
+     写满的后果不是丢一次存档，而是**两小时后 `wait_until_finished` 抛异常、把训练
+     进程一起带走**（§5.4）。
+4. **评测**：`bash scripts/robotwin_eval_suite.sh`，20 任务 × {`demo_clean`(seen),
+   `demo_randomized`(unseen)} × 25 episodes。**并行度按显存算**：每个 SAPIEN 渲染器
+   约 8GB，`WORKERS ≈ 单卡显存/8` 再留余量（12 个渲染器会把 97.9G 的卡打到 96.8G，
+   然后卡死）；**policy server 要和渲染放不同卡**。suite 可续跑：已完成的配置按
+   `<task>_<cfg>_<step>.txt` 跳过，改参数重启不丢行。
+5. **出表**：`python scripts/robotwin_eval_report.py <summary.tsv>`，自动和论文 π0.5
+   那一列做配对均值对照（只统计跑完的任务）。
+6. **两个已知不稳定点**：低成功率配置每局跑满 400–700 步预算（慢 4 倍是正常的，不是
+   挂死）；真正挂死的表现是 worker 变僵尸 + client 停在 `poll` + 四卡 0%——单配置
+   `timeout 45min` 兜底，超时记 FAILED，事后单独重跑。
+
 ## 1. 为什么必须自己造数据
 
 `TianxingChen/RoboTwin2.0` 上的 LeRobot 发布包只有 **clean** 一份：
