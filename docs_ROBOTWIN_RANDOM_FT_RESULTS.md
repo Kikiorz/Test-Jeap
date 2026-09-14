@@ -40,7 +40,54 @@ batch 序列。要看的是趋势——**到 6000 步仍在下降**。
 `docs_ROBOTWIN_RANDOM_FT.md` §5.5）。链条跑完后这张表由
 `scripts/robotwin_eval_report.py` 直接输出：
 
-_待填：`summary_robotwin_random20_ft_<step>.tsv` 落地后粘贴。_
+**结果快照**：`results/summary_robotwin_random20_ft_9999.tsv`（30/40 个配置）。
+
+评测跑到 **36/40** 时两台机器被回收（连接全部拒绝），所以下表的 4 个任务缺席；
+快照里完整的 30 行如下（数值为 25 episodes 的成功率）：
+
+| 任务 | 我们 Clean | π0.5 Clean | 我们 Random | π0.5 Random |
+|---|---:|---:|---:|---:|
+| Adjust Bottle | 32 | 97 | 32 | 26 |
+| Beat Block Hammer | 16 | 76 | 8 | 9 |
+| Click Alarmclock | 52 | 90 | 56 | 63 |
+| Click Bell | 52 | 98 | 48 | 58 |
+| Dump Bin Bigbin | 0 | 95 | 8 | 42 |
+| Grab Roller | 24 | 92 | 16 | 64 |
+| Handover Mic | 8 | 84 | 16 | 8 |
+| Lift Pot | 20 | 63 | 8 | 4 |
+| Place Bread Basket | 0 | 51 | — | 27 |
+| Place Bread Skillet | 0 | 56 | 4 | 20 |
+| Place Burger Fries | 0 | 83 | 4 | 54 |
+| Place Cans Plasticbox | 0 | 36 | — | 42 |
+| Place Empty Cup | 4 | 74 | 0 | 59 |
+| Place Object Basket | 16 | 66 | 12 | 8 |
+| Place Shoe | 16 | 29 | 12 | 15 |
+| Press Stapler | 56 | 67 | **76** | 22 |
+| Shake Bottle Horizontally | 未跑 | 100 | 未跑 | 61 |
+| Shake Bottle | 未跑 | 99 | 未跑 | 82 |
+| Stack Bowls Three | 未跑 | 59 | 未跑 | 29 |
+| Stack Bowls Two | 未跑 | 87 | 未跑 | 40 |
+
+**配对均值（只统计我们有数的任务）**
+
+| | 我们 | 论文 π0.5 | 差 |
+|---|---:|---:|---:|
+| Clean（16 任务） | **18.5** | 72.3 | **−53.8** |
+| Random（14 任务） | **21.5** | 32.3 | **−10.8** |
+
+结论：**这个 10k 步的随机化微调没有把 Random 列拉起来**。个别任务（`press_stapler`
++54pp、`handover_mic` +8pp、`place_object_basket` +4pp）确实超过 π0.5，但
+`dump_bin_bigbin`（−34）、`grab_roller`（−48）、`place_burger_fries`（−50）
+把均值拉到 −10.8pp；Clean 更是差 53.8pp。
+
+**两点必须写进结论的限制**：
+
+1. **缺席的 4 个任务恰好是 π0.5 在 Random 上最强的**（82/61/40/29），所以
+   −10.8pp 这个数不能当作最终定论，但方向上不可能翻盘（需要它们把 21.5 拉到
+   32.3 以上，即平均要超过 60%）。
+2. 同一配置重跑两次的结果不一样（`place_object_basket` random 跑出过 3/25 和
+   9/25，`place_empty_cup` clean 跑出过 0/25、1/25、4/25），说明**除了二项噪声
+   之外还有运行间波动**，单任务差值（±10pp 量级）不要单独解读。
 
 ## 5. 怎么读
 

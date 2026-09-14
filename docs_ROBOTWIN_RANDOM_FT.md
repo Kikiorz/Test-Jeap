@@ -228,6 +228,14 @@ GPU 1 起、两个配置都出结果写盘，`adjust_bottle` clean 0/1、random 
 
 ### 5.6 如果要接着训（拉长步数）
 
+> **2026-09-14 状态**：两台机器（`.21` 训练机、`.102` 仿真机）已被回收，连接全部
+> 拒绝。于是：仿真环境、`/dev/shm` 里的数据集/缓存/checkpoint、以及
+> `train_state`（续训能力）**全部不可回收**；能保留的是
+> `results/summary_robotwin_random20_ft_9999.tsv`（30/40 配置）和本仓库的代码 +
+> 这些文档。要继续做 RoboTwin，需要新机器上重走 `docs_ROBOTWIN_RANDOM_FT.md`
+> §3–§5（造数据 → 训练 → 评测），下面的续训命令只在**还留着 checkpoint 的机器**
+> 上有意义。
+
 最终 checkpoint 的 `train_state` **不要删**（评测只读 `params`，但删了就只能从基座
 重训）。链条现在保留它。续训命令（在 `/dev/shm/rt_ft/ws` 下）：
 

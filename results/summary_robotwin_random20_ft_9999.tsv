@@ -1,0 +1,43 @@
+adjust_bottle	demo_clean	Final batch success rate: 8/25 = 32.0%
+adjust_bottle	demo_randomized	Final batch success rate: 8/25 = 32.0%
+beat_block_hammer	demo_clean	Final batch success rate: 4/25 = 16.0%
+beat_block_hammer	demo_randomized	Final batch success rate: 2/25 = 8.0%
+place_burger_fries	demo_clean	FAILED (see /dev/shm/rt_eval_logs/place_burger_fries_demo_clean_9999_client.log)
+place_burger_fries	demo_randomized	FAILED (see /dev/shm/rt_eval_logs_b/place_burger_fries_demo_randomized_9999_client.log)
+place_cans_plasticbox	demo_clean	FAILED (see /dev/shm/rt_eval_logs_b/place_cans_plasticbox_demo_clean_9999_client.log)
+place_cans_plasticbox	demo_randomized	FAILED (see /dev/shm/rt_eval_logs_b/place_cans_plasticbox_demo_randomized_9999_client.log)
+place_empty_cup	demo_clean	FAILED (see /dev/shm/rt_eval_logs_b/place_empty_cup_demo_clean_9999_client.log)
+place_empty_cup	demo_randomized	FAILED (see /dev/shm/rt_eval_logs_b/place_empty_cup_demo_randomized_9999_client.log)
+place_object_basket	demo_clean	FAILED (see /dev/shm/rt_eval_logs_b/place_object_basket_demo_clean_9999_client.log)
+place_object_basket	demo_randomized	FAILED (see /dev/shm/rt_eval_logs_b/place_object_basket_demo_randomized_9999_client.log)
+click_alarmclock	demo_clean	Final batch success rate: 13/25 = 52.0%
+click_alarmclock	demo_randomized	Final batch success rate: 14/25 = 56.0%
+place_shoe	demo_clean	Final batch success rate: 4/25 = 16.0%
+click_bell	demo_clean	Final batch success rate: 13/25 = 52.0%
+click_bell	demo_randomized	Final batch success rate: 12/25 = 48.0%
+place_shoe	demo_randomized	Final batch success rate: 3/25 = 12.0%
+press_stapler	demo_clean	Final batch success rate: 14/25 = 56.0%
+dump_bin_bigbin	demo_clean	Final batch success rate: 0/25 = 0.0%
+dump_bin_bigbin	demo_randomized	Final batch success rate: 2/24 = 8.3%
+grab_roller	demo_clean	Final batch success rate: 6/25 = 24.0%
+grab_roller	demo_randomized	Final batch success rate: 4/25 = 16.0%
+handover_mic	demo_clean	Final batch success rate: 2/25 = 8.0%
+place_burger_fries	demo_clean	Final batch success rate: 0/25 = 0.0%
+handover_mic	demo_randomized	Final batch success rate: 4/25 = 16.0%
+lift_pot	demo_clean	Final batch success rate: 5/25 = 20.0%
+place_burger_fries	demo_randomized	Final batch success rate: 1/25 = 4.0%
+lift_pot	demo_randomized	Final batch success rate: 2/25 = 8.0%
+place_bread_basket	demo_clean	Final batch success rate: 0/25 = 0.0%
+place_cans_plasticbox	demo_clean	Final batch success rate: 0/25 = 0.0%
+place_bread_basket	demo_randomized	FAILED (see /dev/shm/rt_eval_logs_a/place_bread_basket_demo_randomized_9999_client.log)
+place_cans_plasticbox	demo_randomized	FAILED (see /dev/shm/rt_eval_logs_b/place_cans_plasticbox_demo_randomized_9999_client.log)
+place_bread_skillet	demo_clean	Final batch success rate: 0/25 = 0.0%
+place_bread_skillet	demo_randomized	Final batch success rate: 1/25 = 4.0%
+place_empty_cup	demo_clean	Final batch success rate: 0/25 = 0.0%
+place_empty_cup	demo_clean	Final batch success rate: 1/25 = 4.0%
+place_empty_cup	demo_randomized	Final batch success rate: 2/25 = 8.0%
+place_empty_cup	demo_randomized	Final batch success rate: 0/25 = 0.0%
+place_object_basket	demo_clean	Final batch success rate: 2/25 = 8.0%
+place_object_basket	demo_clean	Final batch success rate: 4/25 = 16.0%
+place_object_basket	demo_randomized	Final batch success rate: 3/25 = 12.0%
+press_stapler	demo_randomized	Final batch success rate: 19/25 = 76.0%
