@@ -32,9 +32,11 @@ def summarise(run_id: str) -> str:
         raise SystemExit(f"no journals found under {log_root}")
     cmd = ["bash", str(ROOT / "scripts" / "run_libero_evaluation.sh"), "summary", *map(str, journals)]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # The summariser logs through `logging`, which writes to stderr.
+    output = proc.stdout + proc.stderr
     if proc.returncode != 0:
-        raise SystemExit(f"summary failed:\n{proc.stdout}\n{proc.stderr}")
-    return proc.stdout
+        raise SystemExit(f"summary failed:\n{output}")
+    return output
 
 
 def parse(output: str):
