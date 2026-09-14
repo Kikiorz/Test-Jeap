@@ -19,7 +19,8 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RESULT_RE = re.compile(
     r"^(?P<label>.+?): successes=(?P<successes>\d+) episodes=(?P<episodes>\d+) "
-    r"failures=(?P<failures>\d+) errors=(?P<errors>\d+) pending=(?P<pending>\d+) "
+    # Per-suite lines omit the failure count; category and difficulty lines carry it.
+    r"(?:failures=(?P<failures>\d+) )?errors=(?P<errors>\d+) pending=(?P<pending>\d+) "
     r"success_rate=(?P<rate>[0-9.]+)(?: official=(?P<official>\w+))?$"
 )
 
