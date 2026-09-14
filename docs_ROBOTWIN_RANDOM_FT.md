@@ -19,6 +19,9 @@
      编译 curobo：装与 torch 匹配的 CUDA toolkit，`TORCH_CUDA_ARCH_LIST=12.0`。
    * 评测机还要 Vulkan：`apt install libvulkan1 mesa-vulkan-drivers vulkan-tools`，
      `vulkaninfo` 能报 1.3。
+   * venv/JAX 那一步可以借 `scripts/bootstrap_blackwell.sh`（它解决的就是「仓库 pin 的
+     jax[cuda12]==0.5.3 在 sm_120 上看不见 GPU」，会建 venv 并把 JAX 升到验证过的
+     0.7.2）；注意它默认是 LIBERO 分支的目录布局，RoboTwin 用要改 `WORK/REPO/VENV`。
 2. **数据**：`bash scripts/build_robotwin_random20.sh`（20 任务 × 200 条随机化演示，
    LeRobot v2.1，约 15GB），再 `python scripts/compute_norm_stats.py
    --config-name=pi05_robotwin_random20_ft`。
